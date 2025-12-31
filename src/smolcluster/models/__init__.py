@@ -1,3 +1,3 @@
-from .SimpleNN import SimpleNN
+from .SimpleNN import SimpleMNISTModel
 
-__all__ = ['SimpleNN']
+__all__ = ['SimpleMNISTModel']

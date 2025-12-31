@@ -1,5 +1,7 @@
 import socket
 import pickle, struct
+from typing import Dict
+import torch
 
 def send_message(sock: socket.SocketType, message: dict):
     
@@ -23,4 +25,20 @@ def receive_message(sock: socket.SocketType) -> dict:
         else:
             break
     return pickle.loads(data)
+    
+
+def get_gradients(model : torch.nn.Module) -> Dict[str, torch.Tensor]:
+    
+    grads = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grads[name] = param.grad.detach().cpu().clone()
+    return grads     
+
+
+def set_weights(grads: Dict[str, torch.Tensor], model : torch.nn.Module):
+    
+    for name, param in model.named_parameters():
+        if name in grads:
+            param.grad = grads[name].clone()
     
