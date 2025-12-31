@@ -3,7 +3,7 @@ import pickle, struct
 from typing import Dict
 import torch
 
-def send_message(sock: socket.SocketType, message: dict):
+def send_message(sock: socket.SocketType, message: dict) -> None:
     
     data = pickle.dumps(message)
     sock.sendall(struct.pack('>I', len(data)) + data)

@@ -1,6 +1,7 @@
 batch_size: 32
 learning_rate: 0.001
 num_epochs: 10
+eval_step: 50
 model:
   type: SimpleNN
   input_dim: 784
