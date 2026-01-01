@@ -66,24 +66,31 @@ def evaluate(model, val_loader, criterion):
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 sock.connect((HOST_IP, PORT))
 
-print("Worker connected to server at {}:{}".format(HOST_IP, PORT))
+print(f"[Worker {RANK}] connected to server at {HOST_IP}:{PORT}")
 
-print("Starting training...")
 
 def main():
 
     model = SimpleMNISTModel(input_dim=nn_config['model']['input_dim'], hidden=nn_config['model']['hidden'], out=nn_config['model']['out'])
     model = model.to(get_device())
-    print("Model initialized on device:", get_device())
+    print(f"[Worker {RANK}] Model initialized on device: {get_device()}")
 
     train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, RANK)
-    print("Data loaders ready. Train size: {}, Test size: {}".format(len(train_loader), len(val_loader)))
+    print(f"[Worker {RANK}] Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}")
     
     
     num_epochs = nn_config['num_epochs']
     eval_step = nn_config['eval_step']
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=nn_config['learning_rate'])
+    
+    while True:
+        recv_command = receive_message(sock)
+        print(recv_command)
+        if recv_command == 'start_training':
+            print(f"[Worker {RANK}] Received start_training command from server.")
+            break
+    
     
     for epoch in range(num_epochs):
         model.train()
@@ -103,14 +110,26 @@ def main():
             grads = get_gradients(model)
 
             # Send gradients to server and receive updated weights
-            send_message(sock, ('COMPUTE_GRADIENTS', batch_idx, grads))
-            updated_grads, received_step = receive_message(sock)
+            send_message(sock, ('all_reduce', batch_idx, RANK, grads))
             
-            assert received_step == batch_idx, "Mismatched step from server"
+            data_recv = receive_message(sock)
             
-            set_weights(updated_grads, model)
+            print(data_recv, f"[Worker {RANK}] received data from server")
+            command, recv_step, updated_grads = data_recv 
+            
+            print(command, recv_step, updated_grads)
+            assert recv_step == batch_idx, f"[Worker {RANK}] Mismatched step from server"
+            
+            if recv_step > batch_idx:
+                batch_idx = recv_step
+            # else:
+                
+            if command == 'averaged_gradients':
+                set_weights(updated_grads, model)
+            
             optimizer.step()
             
+            print(f"[Worker {RANK}] Epoch {epoch+1}, Batch {batch_idx+1}/{len(train_loader)} completed.")
             if RANK == 0:
                 total_loss += loss.item()
             
