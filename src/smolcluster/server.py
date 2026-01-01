@@ -1,4 +1,3 @@
-
 from collections import defaultdict
 import time
 import socket
@@ -85,23 +84,26 @@ def compute_leader_gradients(model: torch.nn.Module, data: torch.Tensor, target:
 
 
 def handle_worker(conn: socket.SocketType, addr: Tuple[str, int]) -> None:
-
     print(f"[Leader] Handling worker at {addr}")
     
-    command, recv_step, rank, grads = receive_message(conn)
+    while True:
+        try:
+            command, recv_step, rank, grads = receive_message(conn)
+            
+            print(f"[Leader] Received gradients from worker {addr} with ID {rank} for batch {recv_step}") 
+            
+            if command == 'all_reduce':
+                print(f"[Leader] Storing gradients from worker {rank} for batch {recv_step}")
+                with lock:
+                    curr_step = recv_step
+                    grads_received[curr_step][rank] = grads
+                step_event.set()
+            # Add handling for other commands if needed, e.g., 'disconnect'
+        except Exception as e:
+            print(f"[Leader] Error handling worker {addr}: {e}")
+            break
     
-    print(f"[Leader] Received gradients from worker {addr} with ID {rank} for batch {recv_step}") 
-    
-    if command == 'all_reduce':
-        print(f"[Leader] Storing gradients from worker {rank} for batch {recv_step}")
-        with lock:
-            curr_step = recv_step
-            grads_received[curr_step][rank] = grads
-    
-    step_event.set()
-      
-     
-    print(f"[Leader] Worker {rank} disconnected")
+    print(f"[Leader] Worker {addr} disconnected")
     conn.close()
 
 def all_reduce(grads_dict: Dict[int, Dict[str, torch.Tensor]], num_workers_connected: int) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:

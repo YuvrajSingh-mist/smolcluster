@@ -114,10 +114,10 @@ def main():
             
             data_recv = receive_message(sock)
             
-            print(data_recv, f"[Worker {RANK}] received data from server")
+            # print(data_recv, f"[Worker {RANK}] received data from server")
             command, recv_step, updated_grads = data_recv 
             
-            print(command, recv_step, updated_grads)
+            # print(command, recv_step, updated_grads)
             assert recv_step == batch_idx, f"[Worker {RANK}] Mismatched step from server"
             
             if recv_step > batch_idx:
