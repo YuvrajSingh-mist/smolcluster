@@ -8,5 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Data and logs
+*/data/
 */wandb/
-data/

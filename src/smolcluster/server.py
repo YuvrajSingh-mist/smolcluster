@@ -62,7 +62,7 @@ def load_data(
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("data", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST(".", download=True, transform=transforms)
     lendata = len(data)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
@@ -279,16 +279,7 @@ def main():
 
                 set_weights(leader_reduced, model)
 
-                if RANK == 0 and track_gradients:
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            grad_norm = torch.norm(param.grad.detach(), 2).item()
-                            wandb.log(
-                                {
-                                    f"gradients/layer_{name}": grad_norm,
-                                    "step": step,
-                                }
-                            )
+
 
                 optimizer.step()
 
@@ -311,6 +302,17 @@ def main():
                 output = model(data.view(data.size(0), -1))
                 loss = criterion(output, target)
                 total_loss += loss.item()
+
+                if track_gradients:
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            grad_norm = torch.norm(param.grad.detach(), 2).item()
+                            wandb.log(
+                                {
+                                    f"gradients/layer_{name}": grad_norm,
+                                    "step": step,
+                                }
+                            )
 
                 wandb.log(
                     {
