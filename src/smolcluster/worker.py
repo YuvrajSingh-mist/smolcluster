@@ -48,7 +48,7 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST(".", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST("./data", download=True, transform=transforms)
     lendata = len(data)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
@@ -118,8 +118,8 @@ def main():
         total_loss = 0.0
 
         for batch_idx, (data, target) in enumerate(train_loader):
+            step = epoch * len(train_loader) + batch_idx
             optimizer.zero_grad()
-
             data, target = data.to(get_device()), target.to(get_device())
 
             output = model(data.view(data.size(0), -1))
@@ -129,26 +129,23 @@ def main():
             grads = get_gradients(model)
 
             # Send gradients to server and receive updated weights
-            send_message(sock, ("all_reduce", batch_idx, local_rank, grads))
+            send_message(sock, ("all_reduce", step, local_rank, grads))
 
             data_recv = receive_message(sock)
-            # print(data_recv, f"[Worker {local_rank}] received data from server")
+
             command, recv_step, updated_grads = data_recv
 
-            # print(command, recv_step, updated_grads)
-            assert recv_step == batch_idx, (
+            assert recv_step == step, (
                 f"[Worker {local_rank}] Mismatched step from server"
             )
 
-            if recv_step > batch_idx:
-                batch_idx = recv_step
-            # else:
+            if recv_step > step:
+                step = recv_step
 
             if command == "averaged_gradients":
                 set_weights(updated_grads, model)
 
             optimizer.step()
-
             logger.info(
                 f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(train_loader)} completed."
             )

@@ -1,8 +1,0 @@
-{"time":"2026-01-03T01:35:31.57929+05:30","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
-{"time":"2026-01-03T01:35:32.121999+05:30","level":"INFO","msg":"stream: created new stream","id":"tmwic2bg"}
-{"time":"2026-01-03T01:35:32.122405+05:30","level":"INFO","msg":"handler: started","stream_id":"tmwic2bg"}
-{"time":"2026-01-03T01:35:32.122481+05:30","level":"INFO","msg":"writer: started","stream_id":"tmwic2bg"}
-{"time":"2026-01-03T01:35:32.122658+05:30","level":"INFO","msg":"stream: started","id":"tmwic2bg"}
-{"time":"2026-01-03T01:35:32.123085+05:30","level":"INFO","msg":"sender: started","stream_id":"tmwic2bg"}
-{"time":"2026-01-03T01:37:26.943679+05:30","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/rentio/smolcluster/tmwic2bg/file_stream\": unexpected EOF"}
-{"time":"2026-01-03T01:37:38.8701+05:30","level":"INFO","msg":"stream: closing","id":"tmwic2bg"}

@@ -12,3 +12,4 @@ wheels/
 # Data and logs
 */data/
 */wandb/
+.ruff_cache/

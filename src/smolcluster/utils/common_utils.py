@@ -42,4 +42,4 @@ def set_weights(grads: dict[str, torch.Tensor], model: torch.nn.Module):
         if name in grads:
             if param.grad is not None:
                 grads[name] = grads[name].to(param.device)
-                param.grad.copy_(grads[name])
+                param.grad = grads[name].clone()

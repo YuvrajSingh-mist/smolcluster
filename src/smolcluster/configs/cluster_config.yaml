@@ -1,4 +1,4 @@
 host_ip: null  # Will default to socket.gethostbyname(socket.gethostname()) if null
 port: 65432
 num_workers: 2
-timeout: 0.5  # in seconds
+timeout: 0.1  # in seconds

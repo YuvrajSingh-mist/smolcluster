@@ -1,8 +1,0 @@
-{"time":"2026-01-03T01:42:58.697902+05:30","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
-{"time":"2026-01-03T01:43:00.19301+05:30","level":"INFO","msg":"stream: created new stream","id":"b1p71khr"}
-{"time":"2026-01-03T01:43:00.193419+05:30","level":"INFO","msg":"handler: started","stream_id":"b1p71khr"}
-{"time":"2026-01-03T01:43:00.19349+05:30","level":"INFO","msg":"writer: started","stream_id":"b1p71khr"}
-{"time":"2026-01-03T01:43:00.193823+05:30","level":"INFO","msg":"stream: started","id":"b1p71khr"}
-{"time":"2026-01-03T01:43:00.194126+05:30","level":"INFO","msg":"sender: started","stream_id":"b1p71khr"}
-{"time":"2026-01-03T01:46:46.182295+05:30","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/rentio/smolcluster/b1p71khr/file_stream\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}
-{"time":"2026-01-03T01:48:03.345232+05:30","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/rentio/smolcluster/b1p71khr/file_stream\": unexpected EOF"}

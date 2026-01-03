@@ -1,8 +1,0 @@
-{"time":"2026-01-03T19:15:31.577195+05:30","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
-{"time":"2026-01-03T19:15:32.062685+05:30","level":"INFO","msg":"stream: created new stream","id":"4zveruh9"}
-{"time":"2026-01-03T19:15:32.063057+05:30","level":"INFO","msg":"handler: started","stream_id":"4zveruh9"}
-{"time":"2026-01-03T19:15:32.063193+05:30","level":"INFO","msg":"writer: started","stream_id":"4zveruh9"}
-{"time":"2026-01-03T19:15:32.063377+05:30","level":"INFO","msg":"stream: started","id":"4zveruh9"}
-{"time":"2026-01-03T19:15:32.063896+05:30","level":"INFO","msg":"sender: started","stream_id":"4zveruh9"}
-{"time":"2026-01-03T19:25:17.105134+05:30","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/rentio/smolcluster/4zveruh9/file_stream\": http2: client conn could not be established"}
-{"time":"2026-01-03T19:25:34.144635+05:30","level":"INFO","msg":"stream: closing","id":"4zveruh9"}

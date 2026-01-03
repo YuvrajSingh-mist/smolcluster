@@ -1,7 +1,0 @@
-{"time":"2026-01-03T19:09:41.775318+05:30","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
-{"time":"2026-01-03T19:09:42.278891+05:30","level":"INFO","msg":"stream: created new stream","id":"hlx2ark5"}
-{"time":"2026-01-03T19:09:42.279293+05:30","level":"INFO","msg":"handler: started","stream_id":"hlx2ark5"}
-{"time":"2026-01-03T19:09:42.27938+05:30","level":"INFO","msg":"writer: started","stream_id":"hlx2ark5"}
-{"time":"2026-01-03T19:09:42.279514+05:30","level":"INFO","msg":"stream: started","id":"hlx2ark5"}
-{"time":"2026-01-03T19:09:42.279885+05:30","level":"INFO","msg":"sender: started","stream_id":"hlx2ark5"}
-{"time":"2026-01-03T19:14:44.428921+05:30","level":"INFO","msg":"stream: closing","id":"hlx2ark5"}

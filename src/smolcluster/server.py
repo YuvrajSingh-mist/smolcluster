@@ -62,7 +62,7 @@ def load_data(
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST(".", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST("./data", download=True, transform=transforms)
     lendata = len(data)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
@@ -146,24 +146,25 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
 
 def all_reduce(
     grads_dict: dict[int, dict[str, torch.Tensor]], num_workers_connected: int
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-    worker_reduced = {}
-    leader_reduced = {}
+) -> dict[str, torch.Tensor]:
+    # worker_reduced = {}
+    grads_reduced = {}
+    # leader_reduced = {}
     for worker_id in list(grads_dict):
-        if worker_id == RANK:
-            continue
+        # if worker_id == RANK:
+        #     continue
 
         for name, worker_grads in grads_dict[worker_id].items():
-            worker_reduced[name] = worker_reduced.get(name, 0.0) + (
+            grads_reduced[name] = grads_reduced.get(name, 0.0) + (
                 worker_grads / num_workers_connected
             )
 
-    for name in grads_dict[RANK]:
-        leader_reduced[name] = leader_reduced.get(name, 0.0) + (
-            grads_dict[RANK][name] / num_workers_connected
-        )
+    # for name in grads_dict[RANK]:
+    #     leader_reduced[name] = leader_reduced.get(name, 0.0) + (
+    #         grads_dict[RANK][name] / num_workers_connected
+    #     )
 
-    return leader_reduced, worker_reduced
+    return grads_reduced
 
 
 model = SimpleMNISTModel(
@@ -246,7 +247,7 @@ def main():
                     curr_workers_len = len(grads_received[step])
 
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len}/{NUM_WORKERS} workers."
+                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len}/{WORLD_SIZE} participants."
                 )
                 if curr_workers_len < NUM_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")
@@ -265,37 +266,27 @@ def main():
                     break
 
             if len(grads_received[step]) != 0:
-                leader_reduced, worker_reduced = all_reduce(
+                grads_reduced = all_reduce(
                     grads_received[step], len(grads_received[step])
                 )
 
                 # Send gradients to workers
                 for _worker_addr, worker_socket in workers.items():
                     send_message(
-                        worker_socket, ("averaged_gradients", step, worker_reduced)
+                        worker_socket, ("averaged_gradients", step, grads_reduced)
                     )
 
-                optimizer.zero_grad()
-
-                set_weights(leader_reduced, model)
-
-
+                set_weights(grads_reduced, model)
 
                 optimizer.step()
-
                 grads_received.pop(step, None)
-                del leader_reduced, worker_reduced, leader_grads
+                del grads_reduced, leader_grads
                 gc.collect()
 
             else:
                 logger.warning(
-                    f"No gradients received for step {step}. Skipping weight update. Proceeding with leader's weight update only."
+                    f"No gradients received for step {step}. Skipping weight update."
                 )
-
-                grads_received.pop(step, None)
-                del leader_grads
-                gc.collect()
-
             if RANK == 0:
                 data = data.to(get_device())
                 target = target.to(get_device())
@@ -327,7 +318,7 @@ def main():
 
                     wandb.log(
                         {
-                            "epoch": epoch + 1,
+                            "step": step,
                             "losses/val": val_loss,
                             "accuracy/val": val_acc,
                         }

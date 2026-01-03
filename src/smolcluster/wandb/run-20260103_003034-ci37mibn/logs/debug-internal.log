@@ -1,6 +1,0 @@
-{"time":"2026-01-03T00:30:34.976905+05:30","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
-{"time":"2026-01-03T00:30:35.457621+05:30","level":"INFO","msg":"stream: created new stream","id":"ci37mibn"}
-{"time":"2026-01-03T00:30:35.457967+05:30","level":"INFO","msg":"handler: started","stream_id":"ci37mibn"}
-{"time":"2026-01-03T00:30:35.458134+05:30","level":"INFO","msg":"writer: started","stream_id":"ci37mibn"}
-{"time":"2026-01-03T00:30:35.458293+05:30","level":"INFO","msg":"stream: started","id":"ci37mibn"}
-{"time":"2026-01-03T00:30:35.458354+05:30","level":"INFO","msg":"sender: started","stream_id":"ci37mibn"}

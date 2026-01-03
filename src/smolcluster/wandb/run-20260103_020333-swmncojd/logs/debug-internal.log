@@ -1,7 +1,0 @@
-{"time":"2026-01-03T02:03:33.410631+05:30","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
-{"time":"2026-01-03T02:03:33.985597+05:30","level":"INFO","msg":"stream: created new stream","id":"swmncojd"}
-{"time":"2026-01-03T02:03:33.985951+05:30","level":"INFO","msg":"handler: started","stream_id":"swmncojd"}
-{"time":"2026-01-03T02:03:33.986083+05:30","level":"INFO","msg":"writer: started","stream_id":"swmncojd"}
-{"time":"2026-01-03T02:03:33.986256+05:30","level":"INFO","msg":"stream: started","id":"swmncojd"}
-{"time":"2026-01-03T02:03:33.986618+05:30","level":"INFO","msg":"sender: started","stream_id":"swmncojd"}
-{"time":"2026-01-03T02:05:20.619503+05:30","level":"INFO","msg":"stream: closing","id":"swmncojd"}
