@@ -1,0 +1,37 @@
+{
+  "os": "macOS-26.2-arm64-arm-64bit-Mach-O",
+  "python": "CPython 3.13.2",
+  "startedAt": "2026-01-02T21:31:06.637832Z",
+  "program": "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/./server.py",
+  "codePath": "src/smolcluster/server.py",
+  "codePathLocal": "server.py",
+  "git": {
+    "remote": "https://github.com/YuvrajSingh-mist/smolcluster.git",
+    "commit": "ce1e74add5763665a3db50e3cba408117c23866c"
+  },
+  "email": "rajceo2031@gmail.com",
+  "root": "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster",
+  "host": "Yuvrajs-MacBook-Air-6210.local",
+  "executable": "/Users/yuvrajsingh9886/Desktop/smolcluster/.venv/bin/python3",
+  "cpu_count": 8,
+  "cpu_count_logical": 8,
+  "disk": {
+    "/": {
+      "total": "245107195904",
+      "used": "200590258176"
+    }
+  },
+  "memory": {
+    "total": "8589934592"
+  },
+  "apple": {
+    "name": "Apple M1",
+    "ecpuCores": 4,
+    "pcpuCores": 4,
+    "gpuCores": 7,
+    "memoryGb": 8,
+    "swapTotalBytes": "6442450944",
+    "ramTotalBytes": "8589934592"
+  },
+  "writerId": "f46uuw69g5kafalorhqouq364orcdxe8"
+}

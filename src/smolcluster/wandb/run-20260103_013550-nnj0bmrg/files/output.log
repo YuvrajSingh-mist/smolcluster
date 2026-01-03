@@ -1,0 +1,12 @@
+[Worker 1] Model initialized on device: mps
+2026-01-03 01:35:51,435 - Worker-1 - INFO - Model initialized on device: mps
+[Worker 1] Data loaders ready. Train size: 844, Test size: 188
+2026-01-03 01:35:51,498 - Worker-1 - INFO - Data loaders ready. Train size: 844, Test size: 188
+Traceback (most recent call last):
+  File "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/./worker.py", line 178, in <module>
+  File "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/./worker.py", line 116, in main
+    while True:
+
+  File "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/utils/common_utils.py", line 15, in receive_message
+    raw_msglen = sock.recv(4)
+KeyboardInterrupt

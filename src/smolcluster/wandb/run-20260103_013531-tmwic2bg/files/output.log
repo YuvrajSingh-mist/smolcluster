@@ -1,0 +1,25 @@
+[Leader] Accepted connection from ('127.0.0.1', 51045)
+[Leader] Handling worker at ('127.0.0.1', 51045)
+2026-01-03 01:35:49,260 - Server - INFO - Handling worker at ('127.0.0.1', 51045)
+[Leader] Error handling worker ('127.0.0.1', 51045): cannot unpack non-iterable NoneType object
+2026-01-03 01:37:28,157 - Server - ERROR - Error handling worker ('127.0.0.1', 51045): cannot unpack non-iterable NoneType object
+[Leader] Worker ('127.0.0.1', 51045) disconnected
+2026-01-03 01:37:28,157 - Server - INFO - Worker ('127.0.0.1', 51045) disconnected
+[Leader] Accepted connection from ('127.0.0.1', 51167)
+[Leader] Handling worker at ('127.0.0.1', 51167)
+2026-01-03 01:37:31,860 - Server - INFO - Handling worker at ('127.0.0.1', 51167)
+Traceback (most recent call last):
+  File "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/./server.py", line 313, in <module>
+    main()
+    ~~~~^^
+  File "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/./server.py", line 216, in main
+    send_message(worker_socket, "start_training")
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/utils/common_utils.py", line 11, in send_message
+    sock.sendall(struct.pack(">I", len(data)) + data)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 9] Bad file descriptor
+Traceback (most recent call last):
+  File "/opt/miniconda3/lib/python3.13/threading.py", line 1540, in _shutdown
+    _thread_shutdown()
+KeyboardInterrupt:

@@ -20,8 +20,7 @@ def receive_message(sock: socket.SocketType) -> dict:
     data = b""
     while True:
         chunk = sock.recv(msglen)
-        # print(len(chunk))
-        # print(msglen)
+
         data += chunk
         if msglen > 0:
             msglen -= len(chunk)
@@ -41,5 +40,6 @@ def get_gradients(model: torch.nn.Module) -> dict[str, torch.Tensor]:
 def set_weights(grads: dict[str, torch.Tensor], model: torch.nn.Module):
     for name, param in model.named_parameters():
         if name in grads:
-            grads[name] = grads[name].to(param.device)
-            param.grad = grads[name].clone()
+            if param.grad is not None:
+                grads[name] = grads[name].to(param.device)
+                param.grad.copy_(grads[name])

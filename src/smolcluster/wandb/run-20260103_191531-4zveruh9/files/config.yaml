@@ -1,0 +1,71 @@
+_wandb:
+    value:
+        cli_version: 0.23.1
+        e:
+            agc5ytxrjnabqyloypevbys5qrul2l7y:
+                apple:
+                    ecpuCores: 4
+                    gpuCores: 7
+                    memoryGb: 8
+                    name: Apple M1
+                    pcpuCores: 4
+                    ramTotalBytes: "8589934592"
+                    swapTotalBytes: "4294967296"
+                codePath: src/smolcluster/server.py
+                codePathLocal: server.py
+                cpu_count: 8
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "245107195904"
+                        used: "198631395328"
+                email: rajceo2031@gmail.com
+                executable: /Users/yuvrajsingh9886/Desktop/smolcluster/.venv/bin/python3
+                git:
+                    commit: ce1e74add5763665a3db50e3cba408117c23866c
+                    remote: https://github.com/YuvrajSingh-mist/smolcluster.git
+                host: Yuvrajs-MacBook-Air-6210.local
+                memory:
+                    total: "8589934592"
+                os: macOS-26.2-arm64-arm-64bit-Mach-O
+                program: /Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster/./server.py
+                python: CPython 3.13.2
+                root: /Users/yuvrajsingh9886/Desktop/smolcluster/src/smolcluster
+                startedAt: "2026-01-03T13:45:31.276457Z"
+                writerId: agc5ytxrjnabqyloypevbys5qrul2l7y
+        m: []
+        python_version: 3.13.2
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 13
+                - 16
+            "4": 3.13.2
+            "5": 0.23.1
+            "12": 0.23.1
+            "13": darwin-arm64
+batch_size:
+    value: 4
+dataset:
+    value:
+        name: MNIST
+eval_steps:
+    value: 2000
+learning_rate:
+    value: 0.001
+model:
+    value:
+        activation: relu
+        hidden: 128
+        input_dim: 784
+        out: 10
+        type: SimpleNN
+num_epochs:
+    value: 10
+track_gradients:
+    value: true

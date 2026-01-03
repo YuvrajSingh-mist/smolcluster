@@ -1,0 +1,9 @@
+{"time":"2026-01-03T01:42:44.087213+05:30","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
+{"time":"2026-01-03T01:42:45.111719+05:30","level":"INFO","msg":"stream: created new stream","id":"02n8wfvp"}
+{"time":"2026-01-03T01:42:45.114891+05:30","level":"INFO","msg":"handler: started","stream_id":"02n8wfvp"}
+{"time":"2026-01-03T01:42:45.114932+05:30","level":"INFO","msg":"writer: started","stream_id":"02n8wfvp"}
+{"time":"2026-01-03T01:42:45.115139+05:30","level":"INFO","msg":"stream: started","id":"02n8wfvp"}
+{"time":"2026-01-03T01:42:45.115841+05:30","level":"INFO","msg":"sender: started","stream_id":"02n8wfvp"}
+{"time":"2026-01-03T01:43:30.460314+05:30","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":1}
+{"time":"2026-01-03T01:43:30.460366+05:30","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":14318}
+{"time":"2026-01-03T01:46:46.849464+05:30","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/rentio/smolcluster/02n8wfvp/file_stream\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
