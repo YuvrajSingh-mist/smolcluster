@@ -1,4 +1,5 @@
-host_ip: "10.10.0.1"  # Server IP address
+host_ip: "0.0.0.0"  # Bind to all interfaces, workers connect via 172.18.3.80
+worker_connect_ip: "172.18.3.80"  # IP workers use to connect
 port: 65432
 num_workers: 2
 timeout: 0.1  # in seconds
