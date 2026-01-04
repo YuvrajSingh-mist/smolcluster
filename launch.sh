@@ -51,7 +51,7 @@ echo "✅ W&B API key found"
 # Test W&B login locally
 echo "🔑 Testing W&B login..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    if ! uv run wandb login --relogin "$WANDB_API_KEY" 2>/dev/null; then
+    if ! wandb login --relogin "$WANDB_API_KEY" 2>/dev/null; then
         echo "❌ Error: Failed to login to W&B. Please check your API key."
         exit 1
     fi
@@ -70,13 +70,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
         fi
         
         # Check if tmux is installed on remote node
-        if ! ssh "$node" "command -v tmux" >/dev/null 2>&1; then
+        if ! ssh "$node" "ls /opt/homebrew/bin/tmux >/dev/null 2>&1 || ls /usr/local/bin/tmux >/dev/null 2>&1 || command -v tmux >/dev/null 2>&1" 2>/dev/null; then
             echo "❌ Error: tmux is not installed on $node. Install with: ssh $node 'brew install tmux'"
             exit 1
         fi
         
         # Check if uv is installed on remote node
-        if ! ssh "$node" "command -v uv" >/dev/null 2>&1; then
+        if ! ssh "$node" "ls /opt/homebrew/bin/uv >/dev/null 2>&1 || ls /usr/local/bin/uv >/dev/null 2>&1 || ls ~/.local/bin/uv >/dev/null 2>&1 || command -v uv >/dev/null 2>&1" 2>/dev/null; then
             echo "❌ Error: uv is not installed on $node. Install with: ssh $node 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
             exit 1
         fi
@@ -84,7 +84,8 @@ if [[ "$DRY_RUN" != "true" ]]; then
         # Check if wandb is installed on remote node
         if ! ssh "$node" "uv run wandb --version" >/dev/null 2>&1; then
             echo "📦 Installing wandb on $node..."
-            if ! ssh "$node" "uv pip install wandb" >/dev/null 2>&1; then
+            # Try to find pip and use it for installation
+            if ! ssh "$node" "if command -v pip >/dev/null 2>&1; then pip install --user wandb; elif [ -f /opt/homebrew/bin/pip ]; then /opt/homebrew/bin/pip install --user wandb; elif [ -f /usr/local/bin/pip ]; then /usr/local/bin/pip install --user wandb; elif python3 -m pip --version >/dev/null 2>&1; then python3 -m pip install --user wandb; else echo 'No pip found - please install pip manually'; exit 1; fi"; then
                 echo "❌ Error: Failed to install wandb on $node"
                 exit 1
             fi
@@ -115,7 +116,7 @@ launch_on_node() {
     fi
 
     # SSH command with W&B login and tmux
-    ssh "$node" "export WANDB_API_KEY='$WANDB_API_KEY' && uv run wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'" 2>/dev/null || {
+    ssh "$node" "export WANDB_API_KEY='$WANDB_API_KEY' && uv run wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'" || {
         echo "❌ Failed to launch on $node"
         return 1
     }
