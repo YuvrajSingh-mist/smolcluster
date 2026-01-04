@@ -24,7 +24,7 @@ with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-HOST_IP = cluster_config.get("host_ip", "0.0.0.0")  # Bind to all interfaces
+HOST_IP = cluster_config.get("host_ip") or socket.gethostbyname(socket.gethostname())  
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
@@ -44,6 +44,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("Server")
+logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
 
 step_event = threading.Event()
 lock = threading.Lock()
