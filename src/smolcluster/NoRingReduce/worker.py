@@ -90,7 +90,7 @@ def evaluate(model, val_loader, criterion):
     return avg_loss, accuracy
 
 
-def connect_to_server(host: str, port: int, max_retries: int = 30, retry_delay: float = 2.0) -> socket.socket:
+def connect_to_server(host: str, port: int, max_retries: int = 60, retry_delay: float = 3.0) -> socket.socket:
     """Connect to server with retry logic."""
     for attempt in range(max_retries):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
