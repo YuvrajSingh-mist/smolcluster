@@ -83,11 +83,15 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check if wandb is installed on remote node
         if ! ssh "$node" "command -v wandb" >/dev/null 2>&1; then
-            echo "❌ Error: wandb is not installed on $node. Install with: ssh $node 'pip install wandb'"
-            exit 1
+            echo "📦 Installing wandb on $node..."
+            if ! ssh "$node" "uv pip install wandb" >/dev/null 2>&1; then
+                echo "❌ Error: Failed to install wandb on $node"
+                exit 1
+            fi
+            echo "✅ wandb installed on $node"
         fi
         
-        echo "✅ $node: SSH OK, tmux OK, uv OK, wandb OK"
+        echo "✅ $node: SSH OK, tmux OK, uv OK, wandb OK (installed if needed)"
     done
 else
     echo "✅ SSH and remote checks skipped (dry run)"
