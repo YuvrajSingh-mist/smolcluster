@@ -18,8 +18,8 @@ with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-# Workers connect to the server (mini1) by hostname
-HOST_IP = "mini1"  # Connect to mini1 by hostname
+# Workers connect to the server (mini1) by IP address
+HOST_IP = "10.10.0.1"  # mini1's IP on the cluster network
 print(f"Worker connecting to host IP: {HOST_IP}")
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
