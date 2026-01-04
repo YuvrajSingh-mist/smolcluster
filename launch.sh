@@ -8,7 +8,7 @@ set -e  # Exit on any error
 # Configuration
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config.yaml"
-REMOTE_PROJECT_DIR="~/smolcluster"  # Adjust if your remote path is different
+REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Check for dry-run flag
 DRY_RUN=false
@@ -111,12 +111,17 @@ launch_on_node() {
     echo "🔗 Launching on $node: $command"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "   [DRY RUN] Would execute: ssh $node \"export WANDB_API_KEY='$WANDB_API_KEY' && uv run wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'\""
+        echo "   [DRY RUN] Would execute: ssh $node \"export WANDB_API_KEY='$WANDB_API_KEY' && export PATH=\\\"/opt/homebrew/bin:/usr/local/bin:\\\$HOME/.local/bin:\\\$PATH\\\" && uv run wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'\""
         return 0
     fi
 
     # SSH command with W&B login and tmux
-    ssh "$node" "export WANDB_API_KEY='$WANDB_API_KEY' && uv run wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'" || {
+    ssh "$node" "export WANDB_API_KEY='$WANDB_API_KEY' && \
+export PATH=\"/opt/homebrew/bin:/usr/local/bin:\$HOME/Library/Python/3.9/bin:\$HOME/.local/bin:\$PATH\" && \
+command -v wandb >/dev/null 2>&1 || { echo 'wandb not found in PATH'; exit 1; } && \
+wandb login --relogin '$WANDB_API_KEY' && \
+cd $REMOTE_PROJECT_DIR && \
+/opt/homebrew/bin/tmux new -d -s $session_name /bin/zsh -c '$command'" || {
         echo "❌ Failed to launch on $node"
         return 1
     }
@@ -127,19 +132,19 @@ launch_on_node() {
 # Launch server on mini1
 echo ""
 echo "🖥️  Launching server on mini1..."
-SERVER_CMD="cd src/smolcluster && uv run python NoRingReduce/server.py"
+SERVER_CMD="export PATH=\"/opt/homebrew/bin:/usr/local/bin:\$HOME/Library/Python/3.9/bin:\$HOME/.local/bin:\$PATH\" && cd src/smolcluster && /opt/homebrew/bin/uv run python3 NoRingReduce/server.py"
 launch_on_node "mini1" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
-echo "⏳ Waiting 3 seconds for server to initialize..."
-sleep 3
+echo "⏳ Waiting 10 seconds for server to initialize..."
+sleep 10
 
 # Launch workers
 echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="mini$((i+1))"  # mini2, mini3, etc.
-    WORKER_CMD="cd src/smolcluster && uv run python NoRingReduce/worker.py"
+    WORKER_CMD="export PATH=\"/opt/homebrew/bin:/usr/local/bin:\$HOME/Library/Python/3.9/bin:\$HOME/.local/bin:\$PATH\" && cd src/smolcluster && /opt/homebrew/bin/uv run python3 NoRingReduce/worker.py"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
 done
 
@@ -147,13 +152,13 @@ echo ""
 echo "🎉 Launch complete!"
 echo ""
 echo "📊 Check status:"
-echo "   ssh mini1 'tmux ls'"
-echo "   ssh mini1 'tmux attach -t server'"
-echo "   ssh mini2 'tmux attach -t worker1'"
+echo "   ssh mini1 '/opt/homebrew/bin/tmux ls'"
+echo "   ssh mini1 '/opt/homebrew/bin/tmux attach -t server'"
+echo "   ssh mini2 '/opt/homebrew/bin/tmux attach -t worker1'"
 echo ""
 echo "🛑 To stop all:"
-echo "   ssh mini1 'tmux kill-session -t server'"
-echo "   ssh mini2 'tmux kill-session -t worker1'"
-echo "   ssh mini3 'tmux kill-session -t worker2'"
+echo "   ssh mini1 '/opt/homebrew/bin/tmux kill-session -t server'"
+echo "   ssh mini2 '/opt/homebrew/bin/tmux kill-session -t worker1'"
+echo "   ssh mini3 '/opt/homebrew/bin/tmux kill-session -t worker2'"
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"

@@ -10,17 +10,17 @@ import torchinfo
 import torchvision
 import wandb
 import yaml
-from models.SimpleNN import SimpleMNISTModel
+from smolcluster.models.SimpleNN import SimpleMNISTModel
 from torch.utils.data import DataLoader
-from utils.common_utils import get_gradients, receive_message, send_message, set_weights
-from utils.data import get_data_indices
-from utils.device import get_device
+from smolcluster.utils.common_utils import get_gradients, receive_message, send_message, set_weights
+from smolcluster.utils.data import get_data_indices
+from smolcluster.utils.device import get_device
 
 # Load configs
-with open("configs/nn_config.yaml") as f:
+with open("../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("configs/cluster_config.yaml") as f:
+with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
