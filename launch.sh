@@ -116,7 +116,7 @@ launch_on_node "mini1" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
 echo "⏳ Waiting 5 seconds for server to initialize..."
-sleep 30
+sleep 5
 
 # Launch workers
 echo ""

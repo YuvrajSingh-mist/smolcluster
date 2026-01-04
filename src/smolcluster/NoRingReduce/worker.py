@@ -1,6 +1,7 @@
 import logging
 import socket
 import sys
+import time
 
 import torch
 import torchvision
@@ -89,13 +90,29 @@ def evaluate(model, val_loader, criterion):
     return avg_loss, accuracy
 
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect((HOST_IP, PORT))
-
-logger.info(f"connected to server at {HOST_IP}:{PORT}")
+def connect_to_server(host: str, port: int, max_retries: int = 30, retry_delay: float = 2.0) -> socket.socket:
+    """Connect to server with retry logic."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    for attempt in range(max_retries):
+        try:
+            sock.connect((host, port))
+            logger.info(f"Connected to server at {host}:{port} on attempt {attempt + 1}")
+            return sock
+        except (OSError, ConnectionRefusedError) as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to connect to server after {max_retries} attempts")
+                raise
+    return sock
 
 
 def main():
+    # Connect to server with retry logic
+    sock = connect_to_server(HOST_IP, PORT)
+    
     model = SimpleMNISTModel(
         input_dim=nn_config["model"]["input_dim"],
         hidden=nn_config["model"]["hidden"],

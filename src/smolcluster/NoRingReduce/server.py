@@ -122,7 +122,15 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
 
     while True:
         try:
-            command, recv_step, rank, grads = receive_message(conn)
+            message = receive_message(conn)
+            
+            # Handle connection closed or empty message
+            if message is None:
+                logger.info(f"Worker {addr} closed connection")
+                break
+            
+            # Unpack the message tuple
+            command, recv_step, rank, grads = message
 
             logger.info(
                 f"Received gradients from worker {addr} with ID {rank} for batch {recv_step}"
