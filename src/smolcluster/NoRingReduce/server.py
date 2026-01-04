@@ -62,7 +62,7 @@ def load_data(
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("./data", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST("../data", download=True, transform=transforms)
     lendata = len(data)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]

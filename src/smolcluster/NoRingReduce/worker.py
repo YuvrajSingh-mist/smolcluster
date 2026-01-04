@@ -4,10 +4,10 @@ import socket
 import torch
 import torchvision
 import yaml
-from models.SimpleNN import SimpleMNISTModel
-from utils.common_utils import get_gradients, receive_message, send_message, set_weights
-from utils.data import get_data_indices
-from utils.device import get_device
+from smolcluster.models.SimpleNN import SimpleMNISTModel
+from smolcluster.utils.common_utils import get_gradients, receive_message, send_message, set_weights
+from smolcluster.utils.data import get_data_indices
+from smolcluster.utils.device import get_device
 
 # Load configs
 with open("configs/nn_config.yaml") as f:
@@ -48,7 +48,7 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("./data", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST("../data", download=True, transform=transforms)
     lendata = len(data)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
