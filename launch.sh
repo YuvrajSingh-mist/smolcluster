@@ -51,7 +51,7 @@ echo "✅ W&B API key found"
 # Test W&B login locally
 echo "🔑 Testing W&B login..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    if ! wandb login --relogin "$WANDB_API_KEY" 2>/dev/null; then
+    if ! uv run wandb login --relogin "$WANDB_API_KEY" 2>/dev/null; then
         echo "❌ Error: Failed to login to W&B. Please check your API key."
         exit 1
     fi
@@ -82,9 +82,9 @@ if [[ "$DRY_RUN" != "true" ]]; then
         fi
         
         # Check if wandb is installed on remote node
-        if ! ssh "$node" "command -v wandb" >/dev/null 2>&1; then
+        if ! ssh "$node" "uv run wandb --version" >/dev/null 2>&1; then
             echo "📦 Installing wandb on $node..."
-            if ! ssh "$node" "pip install wandb" >/dev/null 2>&1; then
+            if ! ssh "$node" "uv pip install wandb" >/dev/null 2>&1; then
                 echo "❌ Error: Failed to install wandb on $node"
                 exit 1
             fi
@@ -110,12 +110,12 @@ launch_on_node() {
     echo "🔗 Launching on $node: $command"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "   [DRY RUN] Would execute: ssh $node \"export WANDB_API_KEY='$WANDB_API_KEY' && wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'\""
+        echo "   [DRY RUN] Would execute: ssh $node \"export WANDB_API_KEY='$WANDB_API_KEY' && uv run wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'\""
         return 0
     fi
 
     # SSH command with W&B login and tmux
-    ssh "$node" "export WANDB_API_KEY='$WANDB_API_KEY' && wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'" 2>/dev/null || {
+    ssh "$node" "export WANDB_API_KEY='$WANDB_API_KEY' && uv run wandb login --relogin '$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name '$command'" 2>/dev/null || {
         echo "❌ Failed to launch on $node"
         return 1
     }
