@@ -84,7 +84,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
         # Check if wandb is installed on remote node
         if ! ssh "$node" "command -v wandb" >/dev/null 2>&1; then
             echo "📦 Installing wandb on $node..."
-            if ! ssh "$node" "uv pip install wandb" >/dev/null 2>&1; then
+            if ! ssh "$node" "pip install wandb" >/dev/null 2>&1; then
                 echo "❌ Error: Failed to install wandb on $node"
                 exit 1
             fi
