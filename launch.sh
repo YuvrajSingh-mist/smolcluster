@@ -60,6 +60,9 @@ fi
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 echo "Workers configured: $NUM_WORKERS"
 
+# Generate random worker IDs
+worker_ids=($(python3 -c "import random; random.seed(); ids=list(range(1, $NUM_WORKERS+1)); random.shuffle(ids); print(' '.join(map(str, ids)))"))
+
 # Function to launch on a node
 launch_on_node() {
     local node=$1
@@ -86,20 +89,28 @@ launch_on_node() {
 # Launch server on mini1
 echo ""
 echo "🖥️  Launching server on mini1..."
-SERVER_CMD="uv run python src/smolcluster/NoRingReduce/server.py"
+SERVER_CMD="cd src/smolcluster/NoRingReduce && uv run python server.py"
 launch_on_node "mini1" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
 echo "⏳ Waiting 3 seconds for server to initialize..."
-sleep 3
+sleep 10
 
 # Launch workers
 echo ""
 echo "👷 Launching workers..."
-for ((i=1; i<=NUM_WORKERS; i++)); do
-    node="mini$((i+1))"  # mini2, mini3, etc.
-    WORKER_CMD="uv run python src/smolcluster/NoRingReduce/worker.py"
-    launch_on_node "$node" "$WORKER_CMD" "worker$i"
+for ((i=0; i<NUM_WORKERS; i++)); do
+    worker_id=${worker_ids[$i]}
+    node="mini$((i+2))"  # mini2, mini3, etc.
+    WORKER_CMD="cd src/smolcluster/NoRingReduce && uv run python worker.py $worker_id"
+    launch_on_node "$node" "$WORKER_CMD" "worker$worker_id"
+done
+
+echo "Worker assignments:"
+for ((i=0; i<NUM_WORKERS; i++)); do
+    node="mini$((i+2))"
+    worker_id=${worker_ids[$i]}
+    echo "   $node: worker$worker_id"
 done
 
 echo ""
@@ -108,11 +119,18 @@ echo ""
 echo "📊 Check status:"
 echo "   ssh mini1 'tmux ls'"
 echo "   ssh mini1 'tmux attach -t server'"
-echo "   ssh mini2 'tmux attach -t worker1'"
+for ((i=0; i<NUM_WORKERS; i++)); do
+    node="mini$((i+2))"
+    worker_id=${worker_ids[$i]}
+    echo "   ssh $node 'tmux attach -t worker$worker_id'"
+done
 echo ""
 echo "🛑 To stop all:"
 echo "   ssh mini1 'tmux kill-session -t server'"
-echo "   ssh mini2 'tmux kill-session -t worker1'"
-echo "   ssh mini3 'tmux kill-session -t worker2'"
+for ((i=0; i<NUM_WORKERS; i++)); do
+    node="mini$((i+2))"
+    worker_id=${worker_ids[$i]}
+    echo "   ssh $node 'tmux kill-session -t worker$worker_id'"
+done
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"

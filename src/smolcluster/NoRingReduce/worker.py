@@ -1,5 +1,6 @@
 import logging
 import socket
+import sys
 
 import torch
 import torchvision
@@ -22,7 +23,10 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-WORKER_RANK = input(f"Enter worker ID (1 to {NUM_WORKERS}): ")
+if len(sys.argv) > 1:
+    WORKER_RANK = sys.argv[1]
+else:
+    WORKER_RANK = input(f"Enter worker ID (1 to {NUM_WORKERS}): ")
 
 # Set parameters
 local_rank = int(WORKER_RANK)
