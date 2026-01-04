@@ -214,19 +214,39 @@ def main():
         logger.info(model_summary)
         wandb.log({"model_structure": model_summary})
 
-    # Accept connections
-    while len(workers) < NUM_WORKERS:
+    # Accept connections and wait for registration
+    registered_workers = {}  # rank -> socket
+    while len(registered_workers) < NUM_WORKERS:
         client_socket, client_address = sock.accept()
         logger.info(f"Accepted connection from {client_address}")
-        # Handle the connection (you can add more logic here)
-        workers[client_address] = client_socket
-        threading.Thread(
-            target=handle_worker, args=(client_socket, client_address)
-        ).start()
+        
+        # Wait for registration message
+        try:
+            message = receive_message(client_socket)
+            if message is None:
+                logger.warning(f"Connection from {client_address} closed before registration")
+                client_socket.close()
+                continue
+            
+            command, rank = message
+            if command == "register":
+                logger.info(f"Worker {rank} registered from {client_address}")
+                registered_workers[rank] = client_socket
+                workers[client_address] = client_socket
+                threading.Thread(
+                    target=handle_worker, args=(client_socket, client_address)
+                ).start()
+            else:
+                logger.warning(f"Unexpected message from {client_address}: {command}")
+                client_socket.close()
+        except Exception as e:
+            logger.error(f"Error during registration from {client_address}: {e}")
+            client_socket.close()
+            continue
 
     logger.info("All workers connected. Starting training...")
 
-    for worker_socket in workers.values():
+    for worker_socket in registered_workers.values():
         send_message(worker_socket, "start_training")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])

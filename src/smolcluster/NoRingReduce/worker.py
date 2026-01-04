@@ -114,6 +114,10 @@ def main():
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
     
+    # Register with the server
+    logger.info(f"Registering as worker {local_rank} with server...")
+    send_message(sock, ("register", local_rank))
+    
     model = SimpleMNISTModel(
         input_dim=nn_config["model"]["input_dim"],
         hidden=nn_config["model"]["hidden"],
