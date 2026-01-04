@@ -44,6 +44,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(f"Worker-{local_rank}")
 
+logging.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
 
 def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
     # load MNIST
