@@ -10,10 +10,10 @@ from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
 # Load configs
-with open("configs/nn_config.yaml") as f:
+with open("../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("configs/cluster_config.yaml") as f:
+with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
