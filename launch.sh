@@ -60,12 +60,6 @@ fi
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 echo "Workers configured: $NUM_WORKERS"
 
-# Generate random worker IDs
-worker_ids=()
-while IFS= read -r id; do
-    worker_ids+=("$id")
-done < <(python3 -c "import random; random.seed(); ids=list(range(1, $NUM_WORKERS+1)); random.shuffle(ids); print('\n'.join(map(str, ids)))")
-
 # Function to launch on a node
 launch_on_node() {
     local node=$1
@@ -103,10 +97,11 @@ launch_on_node() {
 echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    ssh mini1 "/opt/homebrew/bin/tmux kill-session -t server || true"
+    ssh mini1 "/opt/homebrew/bin/tmux kill-session -t server 2>/dev/null || true"
     for ((i=1; i<=NUM_WORKERS; i++)); do
         node="mini$((i+1))"
-        ssh "$node" "/opt/homebrew/bin/tmux kill-session -t worker$i || true"
+        # Kill any session that starts with "worker"
+        ssh "$node" "/opt/homebrew/bin/tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^worker' | xargs -I {} /opt/homebrew/bin/tmux kill-session -t {} 2>/dev/null || true"
     done
     echo "✅ Cleanup complete"
 else
@@ -121,23 +116,16 @@ launch_on_node "mini1" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
 echo "⏳ Waiting 5 seconds for server to initialize..."
-sleep 5
+sleep 30
 
 # Launch workers
 echo ""
 echo "👷 Launching workers..."
-for ((i=0; i<NUM_WORKERS; i++)); do
-    worker_id=${worker_ids[$i]}
-    node="mini$((i+2))"  # mini2, mini3, etc.
-    WORKER_CMD="cd src/smolcluster/NoRingReduce && uv run python worker.py $worker_id"
-    launch_on_node "$node" "$WORKER_CMD" "worker$worker_id"
-done
-
-echo "Worker assignments:"
-for ((i=0; i<NUM_WORKERS; i++)); do
-    node="mini$((i+2))"
-    worker_id=${worker_ids[$i]}
-    echo "   $node: worker$worker_id"
+for ((i=1; i<=NUM_WORKERS; i++)); do
+    node="mini$((i+1))"  # mini2, mini3, etc.
+    WORKER_CMD="cd src/smolcluster/NoRingReduce && uv run python worker.py $i"
+    launch_on_node "$node" "$WORKER_CMD" "worker$i"
+    echo "   $node: worker$i"
 done
 
 echo ""

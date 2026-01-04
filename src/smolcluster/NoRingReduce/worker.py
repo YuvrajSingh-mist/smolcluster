@@ -19,8 +19,7 @@ with open("../configs/cluster_config.yaml") as f:
 
 # Extract values with defaults
 # Workers connect to the server (mini1) by IP address
-HOST_IP = "10.10.0.1"  # mini1's IP on the cluster network
-print(f"Worker connecting to host IP: {HOST_IP}")
+HOST_IP = cluster_config.get("host_ip")
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
