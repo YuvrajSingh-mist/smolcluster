@@ -1,4 +1,4 @@
-host_ip: 10.10.0.1  # Will default to socket.gethostbyname(socket.gethostname()) if null
+host_ip: "0.0.0.0"  # Server binds to all interfaces
 port: 65432
 num_workers: 2
 timeout: 0.1  # in seconds

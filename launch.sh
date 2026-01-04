@@ -61,7 +61,10 @@ NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 echo "Workers configured: $NUM_WORKERS"
 
 # Generate random worker IDs
-worker_ids=($(python3 -c "import random; random.seed(); ids=list(range(1, $NUM_WORKERS+1)); random.shuffle(ids); print(' '.join(map(str, ids)))"))
+worker_ids=()
+while IFS= read -r id; do
+    worker_ids+=("$id")
+done < <(python3 -c "import random; random.seed(); ids=list(range(1, $NUM_WORKERS+1)); random.shuffle(ids); print('\n'.join(map(str, ids)))")
 
 # Function to launch on a node
 launch_on_node() {
@@ -72,19 +75,43 @@ launch_on_node() {
     echo "🔗 Launching on $node: $command"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && uv run wandb login --relogin '$WANDB_API_KEY' && tmux new -d -s $session_name '$command'\""
+        log_file="\$HOME/${session_name}.log"
+        echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && /opt/homebrew/bin/tmux new -d -s $session_name \\\"bash -c '$command 2>&1 | tee $log_file; exec bash'\\\"\""
         return 0
     fi
 
-    # SSH command with W&B login and tmux
-    ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && uv run wandb login --relogin '$WANDB_API_KEY' && tmux new -d -s $session_name '$command'"|| {
+    # SSH command with tmux and logging
+    log_file="\$HOME/${session_name}.log"
+    ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && /opt/homebrew/bin/tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
         echo "❌ Failed to launch on $node"
         return 1
     }
 
-    echo "✅ Launched $session_name on $node"
+    echo "✅ Launched $session_name on $node (logs: $log_file)"
+    
+    # Give tmux a moment to start
+    sleep 1
+    
+    # Verify session exists
+    if ! ssh "$node" "/opt/homebrew/bin/tmux has-session -t $session_name 2>/dev/null"; then
+        echo "⚠️  Warning: Session $session_name on $node may have exited. Check logs: ssh $node 'tail -20 $log_file'"
+    fi
 }
 
+
+# Kill any existing sessions
+echo ""
+echo "🧹 Cleaning up existing sessions..."
+if [[ "$DRY_RUN" != "true" ]]; then
+    ssh mini1 "/opt/homebrew/bin/tmux kill-session -t server || true"
+    for ((i=1; i<=NUM_WORKERS; i++)); do
+        node="mini$((i+1))"
+        ssh "$node" "/opt/homebrew/bin/tmux kill-session -t worker$i || true"
+    done
+    echo "✅ Cleanup complete"
+else
+    echo "✅ Cleanup skipped (dry run)"
+fi
 
 # Launch server on mini1
 echo ""
@@ -93,8 +120,8 @@ SERVER_CMD="cd src/smolcluster/NoRingReduce && uv run python server.py"
 launch_on_node "mini1" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
-echo "⏳ Waiting 3 seconds for server to initialize..."
-sleep 10
+echo "⏳ Waiting 5 seconds for server to initialize..."
+sleep 5
 
 # Launch workers
 echo ""
@@ -119,18 +146,5 @@ echo ""
 echo "📊 Check status:"
 echo "   ssh mini1 'tmux ls'"
 echo "   ssh mini1 'tmux attach -t server'"
-for ((i=0; i<NUM_WORKERS; i++)); do
-    node="mini$((i+2))"
-    worker_id=${worker_ids[$i]}
-    echo "   ssh $node 'tmux attach -t worker$worker_id'"
-done
-echo ""
-echo "🛑 To stop all:"
-echo "   ssh mini1 'tmux kill-session -t server'"
-for ((i=0; i<NUM_WORKERS; i++)); do
-    node="mini$((i+2))"
-    worker_id=${worker_ids[$i]}
-    echo "   ssh $node 'tmux kill-session -t worker$worker_id'"
-done
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"
