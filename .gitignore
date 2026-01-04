@@ -10,6 +10,26 @@ wheels/
 .venv
 
 # Data and logs
+data/
+wandb/
 */data/
 */wandb/
 .ruff_cache/
+
+# User-specific configuration
+devices.json
+*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.bak

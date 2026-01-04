@@ -119,6 +119,7 @@ smolcluster/
 │   └── configs/
 │       ├── cluster_config.yaml  # Cluster settings
 │       └── nn_config.yaml       # Model/training settings
+├── launch.sh              # Automated cluster launch script
 ├── pyproject.toml         # Project dependencies and config
 ├── README.md             # This file
 └── .gitignore
@@ -132,12 +133,5 @@ smolcluster/
 4. **Model Updates**: Each node updates its model using the averaged gradients
 5. **Synchronization**: Process repeats for each batch across epochs
 
+For setup instructions for creating a Mac mini cluster using Thunderbolt and SSH, refer to the [setup_cluster.md](src/smolcluster/docs/setup_cluster.md) guide.
 
-
-MIT License - see LICENSE file for details
-
-## Acknowledgments
-
-- Built with PyTorch for neural network training
-- Uses Weights & Biases for experiment tracking
-- Inspired by federated learning research
