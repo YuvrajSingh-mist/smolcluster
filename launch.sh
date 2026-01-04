@@ -32,6 +32,13 @@ if ! command -v yq &> /dev/null; then
 fi
 echo "✅ yq found"
 
+# Check if uv is installed (needed locally)
+if ! command -v uv &> /dev/null; then
+    echo "❌ Error: uv is required to run Python scripts. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    exit 1
+fi
+echo "✅ uv found"
+
 # Check W&B API key
 if [[ -z "${WANDB_API_KEY}" ]]; then
     echo "❌ Error: WANDB_API_KEY environment variable is not set."
@@ -68,13 +75,19 @@ if [[ "$DRY_RUN" != "true" ]]; then
             exit 1
         fi
         
+        # Check if uv is installed on remote node
+        if ! ssh "$node" "command -v uv" >/dev/null 2>&1; then
+            echo "❌ Error: uv is not installed on $node. Install with: ssh $node 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
+            exit 1
+        fi
+        
         # Check if wandb is installed on remote node
         if ! ssh "$node" "command -v wandb" >/dev/null 2>&1; then
             echo "❌ Error: wandb is not installed on $node. Install with: ssh $node 'pip install wandb'"
             exit 1
         fi
         
-        echo "✅ $node: SSH OK, tmux OK, wandb OK"
+        echo "✅ $node: SSH OK, tmux OK, uv OK, wandb OK"
     done
 else
     echo "✅ SSH and remote checks skipped (dry run)"
