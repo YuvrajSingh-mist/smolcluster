@@ -133,5 +133,6 @@ smolcluster/
 4. **Model Updates**: Each node updates its model using the averaged gradients
 5. **Synchronization**: Process repeats for each batch across epochs
 
+## Setting Up a Mac Mini Cluster
 For setup instructions for creating a Mac mini cluster using Thunderbolt and SSH, refer to the [setup_cluster.md](src/smolcluster/docs/setup_cluster.md) guide.
 
