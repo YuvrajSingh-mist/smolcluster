@@ -30,7 +30,7 @@ with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-HOST_IP = cluster_config.get("host_ip")
+HOST_IP = cluster_config["host_ip"][cluster_config["server"]]
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)

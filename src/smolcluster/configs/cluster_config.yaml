@@ -1,4 +1,8 @@
-host_ip: "10.10.0.1"
+host_ip:
+  mini1: "10.10.0.1"
+  mini2: "10.10.0.1"
+  mini3: "10.10.0.1"
+  pi5: "172.18.3.80"
 port: 65432
 num_workers: 3
 timeout: 0.1  # in seconds
