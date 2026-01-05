@@ -1,4 +1,4 @@
 host_ip: "10.10.0.1"
 port: 65432
-num_workers: 2
+num_workers: 3
 timeout: 0.1  # in seconds
