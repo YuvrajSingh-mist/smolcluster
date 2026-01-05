@@ -1,5 +1,7 @@
 import logging
+import os
 import socket
+import subprocess
 import sys
 import time
 
@@ -92,14 +94,32 @@ def evaluate(model, val_loader, criterion):
 
 def connect_to_server(host: str, port: int, max_retries: int = 60, retry_delay: float = 3.0) -> socket.socket:
     """Connect to server with retry logic."""
+    # Ping to warm up ARP cache (especially important for WiFi networks)
+    logger.info(f"Warming up ARP cache by pinging {host}...")
+    try:
+        subprocess.run(["ping", "-c", "3", "-W", "1000", host], 
+                       capture_output=True, timeout=10)
+    except Exception as e:
+        logger.warning(f"ARP warmup ping failed: {e}")
+    
     for attempt in range(max_retries):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)  # 10 second timeout for connection
         try:
             sock.connect((host, port))
+            sock.settimeout(None)  # Remove timeout after connection
             logger.info(f"Connected to server at {host}:{port} on attempt {attempt + 1}")
             return sock
-        except (OSError, ConnectionRefusedError) as e:
+        except (OSError, ConnectionRefusedError, socket.timeout) as e:
             sock.close()  # Close the failed socket
+            # Re-ping every 5 attempts to keep ARP fresh
+            if attempt > 0 and attempt % 5 == 0:
+                logger.info(f"Re-pinging {host} to refresh ARP cache...")
+                try:
+                    subprocess.run(["ping", "-c", "2", "-W", "1000", host], 
+                                   capture_output=True, timeout=5)
+                except Exception:
+                    pass
             if attempt < max_retries - 1:
                 logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {retry_delay}s...")
                 time.sleep(retry_delay)
