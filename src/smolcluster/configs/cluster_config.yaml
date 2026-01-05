@@ -4,11 +4,6 @@ host_ip:
   mini3: "10.10.0.1"
   pi5: "172.18.3.80"
 
-# IP address each worker should use to connect to the server
-server_connect_ip:
-  mini2: "10.10.0.1"   # Mac minis connect via 10.10.0.x network
-  mini3: "10.10.0.1"
-  pi5: "172.18.3.80"    # Pi connects via 172.18.x.x network (server's IP on that network)
 
 port: 65432
 num_workers: 3
