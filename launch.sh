@@ -10,6 +10,12 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
+# Read configuration from YAML
+NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
+SERVER=$(yq '.server' "$CONFIG_FILE")
+WORKERS=($(yq '.workers[]' "$CONFIG_FILE"))
+ALL_NODES=("$SERVER" "${WORKERS[@]}")
+
 # Check for dry-run flag
 DRY_RUN=false
 if [[ "$1" == "--dry-run" ]]; then
@@ -33,7 +39,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check if tmux is installed on remote node
         if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && which tmux"; then
-            echo "❌ Error: tmux is not installed on $node. Install with: ssh $node 'brew install tmux'"
+            echo "❌ Error: tmux is not installed on $node. Install with: ssh $node 'brew install tmux' (macOS) or ssh $node 'sudo apt install tmux' (Linux)"
             exit 1
         fi
         
@@ -56,11 +62,7 @@ else
     echo "✅ SSH and remote checks skipped (dry run)"
 fi
 
-# Read configuration from YAML
-NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
-SERVER=$(yq '.server' "$CONFIG_FILE")
-WORKERS=($(yq '.workers[]' "$CONFIG_FILE"))
-ALL_NODES=("$SERVER" "${WORKERS[@]}")
+
 
 echo "Server: $SERVER"
 echo "Workers: ${WORKERS[*]}"
@@ -76,13 +78,13 @@ launch_on_node() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_file="\$HOME/${session_name}.log"
-        echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && /opt/homebrew/bin/tmux new -d -s $session_name \\\"bash -c '$command 2>&1 | tee $log_file; exec bash'\\\"\""
+        echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \\\"bash -c '$command 2>&1 | tee $log_file; exec bash'\\\"\""
         return 0
     fi
 
     # SSH command with tmux and logging
     log_file="\$HOME/${session_name}.log"
-    ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && /opt/homebrew/bin/tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
+    ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
         echo "❌ Failed to launch on $node"
         return 1
     }
@@ -93,7 +95,7 @@ launch_on_node() {
     sleep 1
     
     # Verify session exists
-    if ! ssh "$node" "/opt/homebrew/bin/tmux has-session -t $session_name 2>/dev/null"; then
+    if ! ssh "$node" "tmux has-session -t $session_name 2>/dev/null"; then
         echo "⚠️  Warning: Session $session_name on $node may have exited. Check logs: ssh $node 'tail -20 $log_file'"
     fi
 }
@@ -103,10 +105,10 @@ launch_on_node() {
 echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    ssh "$SERVER" "/opt/homebrew/bin/tmux kill-session -t server 2>/dev/null || true"
+    ssh "$SERVER" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux kill-session -t server 2>/dev/null || true"
     for worker_node in "${WORKERS[@]}"; do
         # Kill any session that starts with "worker"
-        ssh "$worker_node" "/opt/homebrew/bin/tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^worker' | xargs -I {} /opt/homebrew/bin/tmux kill-session -t {} 2>/dev/null || true"
+        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^worker' | xargs -I {} tmux kill-session -t {} 2>/dev/null || true"
     done
     echo "✅ Cleanup complete"
 else
