@@ -111,7 +111,7 @@ fi
 # Launch server on mini1
 echo ""
 echo "🖥️  Launching server on mini1..."
-SERVER_CMD="cd src/smolcluster/NoRingReduce && ../../.venv/bin/python server.py"
+SERVER_CMD="cd src/smolcluster/NoRingReduce && ../../../.venv/bin/python server.py"
 launch_on_node "mini1" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -123,7 +123,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="mini$((i+1))"  # mini2, mini3, etc.
-    WORKER_CMD="cd src/smolcluster/NoRingReduce && ../../.venv/bin/python worker.py $i"
+    WORKER_CMD="cd src/smolcluster/NoRingReduce && ../../../.venv/bin/python worker.py $i"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done
