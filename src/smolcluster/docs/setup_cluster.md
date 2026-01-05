@@ -99,8 +99,8 @@ Use the provided `launch.sh` script in the project root for automatic deployment
 
 This script:
 - Reads `num_workers` from `src/smolcluster/configs/cluster_config.yaml`
-- Launches server on `mini1` using NoRingReduce/server.py
-- Launches workers on `mini2`, `mini3`, etc. using NoRingReduce/worker.py
+- Launches server on `mini1` using SimpleAllReduce/server.py
+- Launches workers on `mini2`, `mini3`, etc. using SimpleAllReduce/worker.py
 - Uses `tmux` for persistent background sessions
 - Provides status checking commands
 
@@ -111,9 +111,9 @@ This script:
 Example parallel launch from MacBook:
 
 ```bash
-ssh mini1 "tmux new -d -s train 'cd ~/smolcluster && uv run python src/smolcluster/NoRingReduce/server.py'"
-ssh mini2 "tmux new -d -s train 'cd ~/smolcluster && uv run python src/smolcluster/NoRingReduce/worker.py'"
-ssh mini3 "tmux new -d -s train 'cd ~/smolcluster && uv run python src/smolcluster/NoRingReduce/worker.py'"
+ssh mini1 "tmux new -d -s train 'cd ~/smolcluster && uv run python src/smolcluster/SimpleAllReduce/server.py'"
+ssh mini2 "tmux new -d -s train 'cd ~/smolcluster && uv run python src/smolcluster/SimpleAllReduce/worker.py'"
+ssh mini3 "tmux new -d -s train 'cd ~/smolcluster && uv run python src/smolcluster/SimpleAllReduce/worker.py'"
 ```
 
 ## Networking Principles

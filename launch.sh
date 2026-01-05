@@ -25,7 +25,7 @@ echo "⚙️  Config file: $CONFIG_FILE"
 # Check SSH connectivity and remote requirements
 echo "🔗 Checking SSH connectivity and remote requirements..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    for node in mini1 mini2 mini3; do
+    for node in "${ALL_NODES[@]}"; do
         if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$node" "echo 'SSH OK'"; then
             echo "❌ Error: Cannot connect to $node via SSH. Please check SSH setup."
             exit 1
@@ -56,9 +56,15 @@ else
     echo "✅ SSH and remote checks skipped (dry run)"
 fi
 
-# Read number of workers from config
+# Read configuration from YAML
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
-echo "Workers configured: $NUM_WORKERS"
+SERVER=$(yq '.server' "$CONFIG_FILE")
+WORKERS=($(yq '.workers[]' "$CONFIG_FILE"))
+ALL_NODES=("$SERVER" "${WORKERS[@]}")
+
+echo "Server: $SERVER"
+echo "Workers: ${WORKERS[*]}"
+echo "All nodes: ${ALL_NODES[*]}"
 
 # Function to launch on a node
 launch_on_node() {
@@ -97,22 +103,21 @@ launch_on_node() {
 echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    ssh mini1 "/opt/homebrew/bin/tmux kill-session -t server 2>/dev/null || true"
-    for ((i=1; i<=NUM_WORKERS; i++)); do
-        node="mini$((i+1))"
+    ssh "$SERVER" "/opt/homebrew/bin/tmux kill-session -t server 2>/dev/null || true"
+    for worker_node in "${WORKERS[@]}"; do
         # Kill any session that starts with "worker"
-        ssh "$node" "/opt/homebrew/bin/tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^worker' | xargs -I {} /opt/homebrew/bin/tmux kill-session -t {} 2>/dev/null || true"
+        ssh "$worker_node" "/opt/homebrew/bin/tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^worker' | xargs -I {} /opt/homebrew/bin/tmux kill-session -t {} 2>/dev/null || true"
     done
     echo "✅ Cleanup complete"
 else
     echo "✅ Cleanup skipped (dry run)"
 fi
 
-# Launch server on mini1
+# Launch server on $SERVER
 echo ""
-echo "🖥️  Launching server on mini1..."
-SERVER_CMD="cd src/smolcluster/NoRingReduce && ../../../.venv/bin/python server.py"
-launch_on_node "mini1" "$SERVER_CMD" "server"
+echo "🖥️  Launching server on $SERVER..."
+SERVER_CMD="cd src/smolcluster/SimpleAllReduce && ../../../.venv/bin/python server.py"
+launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
 echo "⏳ Waiting 5 seconds for server to initialize..."
@@ -122,8 +127,8 @@ sleep 5
 echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
-    node="mini$((i+1))"  # mini2, mini3, etc.
-    WORKER_CMD="cd src/smolcluster/NoRingReduce && ../../../.venv/bin/python worker.py $i"
+    node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
+    WORKER_CMD="cd src/smolcluster/SimpleAllReduce && ../../../.venv/bin/python worker.py $i"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done
@@ -132,7 +137,7 @@ echo ""
 echo "🎉 Launch complete!"
 echo ""
 echo "📊 Check status:"
-echo "   ssh mini1 'tmux ls'"
-echo "   ssh mini1 'tmux attach -t server'"
+echo "   ssh $SERVER 'tmux ls'"
+echo "   ssh $SERVER 'tmux attach -t server'"
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"

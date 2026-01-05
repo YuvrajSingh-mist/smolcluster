@@ -114,7 +114,7 @@ ssh mini2 'tail -f ~/worker1.log'
 Open a terminal and start the central server:
 
 ```bash
-cd src/smolcluster/NoRingReduce
+cd src/smolcluster/SimpleAllReduce
 ../../../.venv/bin/python server.py
 ```
 
@@ -129,7 +129,7 @@ The server will:
 For each worker, open a new terminal and run:
 
 ```bash
-cd src/smolcluster/NoRingReduce
+cd src/smolcluster/SimpleAllReduce
 ../../../.venv/bin/python worker.py
 ```
 
@@ -153,7 +153,7 @@ Each worker will:
 ```
 smolcluster/
 ├── src/smolcluster/
-│   ├── NoRingReduce/       # Distributed training implementation
+│   ├── SimpleAllReduce/       # Distributed training implementation
 │   │   ├── server.py       # Central server coordinating training
 │   │   └── worker.py       # Worker node for distributed training
 │   ├── main.py            # (Optional) Standalone training script

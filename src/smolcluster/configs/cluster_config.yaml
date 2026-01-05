@@ -2,3 +2,10 @@ host_ip: "10.10.0.1"
 port: 65432
 num_workers: 3
 timeout: 0.1  # in seconds
+
+server: mini1
+workers: [
+  mini2,
+  mini3,
+  pi5
+]
