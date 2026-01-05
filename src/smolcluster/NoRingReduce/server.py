@@ -10,9 +10,15 @@ import torchinfo
 import torchvision
 import wandb
 import yaml
-from smolcluster.models.SimpleNN import SimpleMNISTModel
 from torch.utils.data import DataLoader
-from smolcluster.utils.common_utils import get_gradients, receive_message, send_message, set_weights
+
+from smolcluster.models.SimpleNN import SimpleMNISTModel
+from smolcluster.utils.common_utils import (
+    get_gradients,
+    receive_message,
+    send_message,
+    set_weights,
+)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
@@ -123,12 +129,12 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
     while True:
         try:
             message = receive_message(conn)
-            
+
             # Handle connection closed or empty message
             if message is None:
                 logger.info(f"Worker {addr} closed connection")
                 break
-            
+
             # Unpack the message tuple
             command, recv_step, rank, grads = message
 
@@ -219,15 +225,17 @@ def main():
     while len(registered_workers) < NUM_WORKERS:
         client_socket, client_address = sock.accept()
         logger.info(f"Accepted connection from {client_address}")
-        
+
         # Wait for registration message
         try:
             message = receive_message(client_socket)
             if message is None:
-                logger.warning(f"Connection from {client_address} closed before registration")
+                logger.warning(
+                    f"Connection from {client_address} closed before registration"
+                )
                 client_socket.close()
                 continue
-            
+
             command, rank = message
             if command == "register":
                 logger.info(f"Worker {rank} registered from {client_address}")

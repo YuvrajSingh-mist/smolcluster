@@ -1,5 +1,4 @@
 import logging
-import os
 import socket
 import subprocess
 import sys
@@ -8,8 +7,14 @@ import time
 import torch
 import torchvision
 import yaml
+
 from smolcluster.models.SimpleNN import SimpleMNISTModel
-from smolcluster.utils.common_utils import get_gradients, receive_message, send_message, set_weights
+from smolcluster.utils.common_utils import (
+    get_gradients,
+    receive_message,
+    send_message,
+    set_weights,
+)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
@@ -48,6 +53,7 @@ logging.basicConfig(
 logger = logging.getLogger(f"Worker-{local_rank}")
 
 logging.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
+
 
 def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
     # load MNIST
@@ -92,23 +98,28 @@ def evaluate(model, val_loader, criterion):
     return avg_loss, accuracy
 
 
-def connect_to_server(host: str, port: int, max_retries: int = 60, retry_delay: float = 3.0) -> socket.socket:
+def connect_to_server(
+    host: str, port: int, max_retries: int = 60, retry_delay: float = 3.0
+) -> socket.socket:
     """Connect to server with retry logic."""
     # Ping to warm up ARP cache (especially important for WiFi networks)
     logger.info(f"Warming up ARP cache by pinging {host}...")
     try:
-        subprocess.run(["ping", "-c", "3", "-W", "1000", host], 
-                       capture_output=True, timeout=10)
+        subprocess.run(
+            ["ping", "-c", "3", "-W", "1000", host], capture_output=True, timeout=10
+        )
     except Exception as e:
         logger.warning(f"ARP warmup ping failed: {e}")
-    
+
     for attempt in range(max_retries):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(10)  # 10 second timeout for connection
         try:
             sock.connect((host, port))
             sock.settimeout(None)  # Remove timeout after connection
-            logger.info(f"Connected to server at {host}:{port} on attempt {attempt + 1}")
+            logger.info(
+                f"Connected to server at {host}:{port} on attempt {attempt + 1}"
+            )
             return sock
         except (OSError, ConnectionRefusedError, socket.timeout) as e:
             sock.close()  # Close the failed socket
@@ -116,15 +127,22 @@ def connect_to_server(host: str, port: int, max_retries: int = 60, retry_delay: 
             if attempt > 0 and attempt % 5 == 0:
                 logger.info(f"Re-pinging {host} to refresh ARP cache...")
                 try:
-                    subprocess.run(["ping", "-c", "2", "-W", "1000", host], 
-                                   capture_output=True, timeout=5)
+                    subprocess.run(
+                        ["ping", "-c", "2", "-W", "1000", host],
+                        capture_output=True,
+                        timeout=5,
+                    )
                 except Exception:
                     pass
             if attempt < max_retries - 1:
-                logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {retry_delay}s...")
+                logger.warning(
+                    f"Connection attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {retry_delay}s..."
+                )
                 time.sleep(retry_delay)
             else:
-                logger.error(f"Failed to connect to server after {max_retries} attempts")
+                logger.error(
+                    f"Failed to connect to server after {max_retries} attempts"
+                )
                 raise
     # This should never be reached, but just in case
     raise RuntimeError("Failed to connect to server")
@@ -133,11 +151,11 @@ def connect_to_server(host: str, port: int, max_retries: int = 60, retry_delay: 
 def main():
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
-    
+
     # Register with the server
     logger.info(f"Registering as worker {local_rank} with server...")
     send_message(sock, ("register", local_rank))
-    
+
     model = SimpleMNISTModel(
         input_dim=nn_config["model"]["input_dim"],
         hidden=nn_config["model"]["hidden"],
