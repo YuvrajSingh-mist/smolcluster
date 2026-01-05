@@ -43,14 +43,14 @@ if [[ "$DRY_RUN" != "true" ]]; then
             exit 1
         fi
         
-        # Install project dependencies on remote node
-        echo "📦 Installing project dependencies on $node..."
-        if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"; then
-            echo "❌ Error: Failed to install project on $node"
-            exit 1
+        # Check that venv exists (don't run uv sync as it resets Python version)
+        echo "📦 Checking venv on $node..."
+        if ! ssh "$node" "test -f $REMOTE_PROJECT_DIR/.venv/bin/python"; then
+            echo "⚠️  Venv not found on $node. Creating with Python 3.9..."
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv venv --python 3.9.6 .venv && source .venv/bin/activate && uv pip install -e ."
         fi
         
-        echo "✅ $node: SSH OK, tmux OK, uv OK, dependencies OK"
+        echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
     done
 else
     echo "✅ SSH and remote checks skipped (dry run)"
@@ -111,7 +111,7 @@ fi
 # Launch server on mini1
 echo ""
 echo "🖥️  Launching server on mini1..."
-SERVER_CMD="cd src/smolcluster/NoRingReduce && uv run python server.py"
+SERVER_CMD="cd src/smolcluster/NoRingReduce && ../../.venv/bin/python server.py"
 launch_on_node "mini1" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -123,7 +123,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="mini$((i+1))"  # mini2, mini3, etc.
-    WORKER_CMD="cd src/smolcluster/NoRingReduce && uv run python worker.py $i"
+    WORKER_CMD="cd src/smolcluster/NoRingReduce && ../../.venv/bin/python worker.py $i"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done
