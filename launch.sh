@@ -16,6 +16,12 @@ SERVER=$(yq '.server' "$CONFIG_FILE")
 WORKERS=($(yq '.workers[]' "$CONFIG_FILE"))
 ALL_NODES=("$SERVER" "${WORKERS[@]}")
 
+# Validate configuration
+if [[ ${#WORKERS[@]} -ne $NUM_WORKERS ]]; then
+    echo "❌ Error: num_workers ($NUM_WORKERS) does not match the number of workers in the list (${#WORKERS[@]})"
+    exit 1
+fi
+
 # Check for dry-run flag
 DRY_RUN=false
 if [[ "$1" == "--dry-run" ]]; then

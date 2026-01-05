@@ -6,5 +6,6 @@ timeout: 0.1  # in seconds
 server: mini1
 workers: [
   mini2,
-  mini3
+  mini3,
+  pi5
 ]
