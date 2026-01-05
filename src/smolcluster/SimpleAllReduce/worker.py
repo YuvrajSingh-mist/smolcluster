@@ -45,8 +45,8 @@ else:
 # Set parameters
 local_rank = int(WORKER_RANK)
 
-# Workers connect to the server by IP address
-HOST_IP = cluster_config["host_ip"][cluster_config["server"]]
+# Workers connect to the server using the IP specified for this worker's hostname
+HOST_IP = cluster_config["server_connect_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
