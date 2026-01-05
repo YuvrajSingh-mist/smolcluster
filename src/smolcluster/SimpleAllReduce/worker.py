@@ -26,19 +26,27 @@ with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-# Workers connect to the server (mini1) by IP address
-HOST_IP = cluster_config["host_ip"][cluster_config["server"]]
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
+
+# Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
     WORKER_RANK = sys.argv[1]
 else:
     WORKER_RANK = input(f"Enter worker ID (1 to {NUM_WORKERS}): ")
 
+if len(sys.argv) > 2:
+    HOSTNAME = sys.argv[2]
+else:
+    HOSTNAME = input("Enter worker hostname: ")
+
 # Set parameters
 local_rank = int(WORKER_RANK)
+
+# Workers connect to the server by IP address
+HOST_IP = cluster_config["host_ip"][cluster_config["server"]]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]

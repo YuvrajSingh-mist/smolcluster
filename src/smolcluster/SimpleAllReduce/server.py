@@ -1,6 +1,7 @@
 import gc
 import logging
 import socket
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -22,6 +23,12 @@ from smolcluster.utils.common_utils import (
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
+# Get hostname from command-line argument
+if len(sys.argv) > 1:
+    HOSTNAME = sys.argv[1]
+else:
+    HOSTNAME = input("Enter server hostname: ")
+
 # Load configs
 with open("../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
@@ -30,7 +37,7 @@ with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-HOST_IP = cluster_config["host_ip"][cluster_config["server"]]
+HOST_IP = cluster_config["host_ip"][HOSTNAME]
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
