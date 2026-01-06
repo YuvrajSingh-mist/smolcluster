@@ -264,7 +264,7 @@ def main():
     for worker_socket in registered_workers.values():
         send_message(worker_socket, "start_training")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+    optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
 
     logger.info(f"Starting training for {num_epochs} epochs.")
     for epoch in range(num_epochs):
@@ -294,7 +294,7 @@ def main():
 
                     if curr_time - start_time >= TIMEOUT:
                         logger.warning(
-                            f"Timeout waiting for gradients for step {step}. Proceeding with available gradients."
+                            f"Timeout waiting for gradients for step {step}. Proceeding with available gradients {len(grads_received[step])}."
                         )
                         break
                     else:

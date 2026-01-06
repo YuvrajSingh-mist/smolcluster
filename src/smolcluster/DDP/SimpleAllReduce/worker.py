@@ -13,16 +13,16 @@ from smolcluster.utils.common_utils import (
     get_gradients,
     receive_message,
     send_message,
-    set_weights,
+    set_gradients,
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
 # Load configs
-with open("../configs/nn_config.yaml") as f:
+with open("../../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../configs/cluster_config.yaml") as f:
+with open("../../configs/cluster_config_ddp.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
@@ -46,7 +46,7 @@ else:
 local_rank = int(WORKER_RANK)
 
 # Workers connect to the server using the IP specified for this worker's hostname
-HOST_IP = cluster_config["host_ip"][HOSTNAME]
+HOST_IP = cluster_config["server_connect_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
@@ -71,7 +71,7 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("../data", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST("../../data", download=True, transform=transforms)
     lendata = len(data)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
@@ -157,6 +157,8 @@ def connect_to_server(
 
 
 def main():
+    
+    
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
@@ -176,6 +178,7 @@ def main():
     logger.info(
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
+    
 
     optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
@@ -188,7 +191,6 @@ def main():
 
     for epoch in range(num_epochs):
         model.train()
-
         total_loss = 0.0
 
         for batch_idx, (data, target) in enumerate(train_loader):
@@ -198,34 +200,31 @@ def main():
 
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
-
+            total_loss += loss.item()
             loss.backward()
             grads = get_gradients(model)
 
             # Send gradients to server and receive updated weights
-            send_message(sock, ("all_reduce", step, local_rank, grads))
+            send_message(sock, ("parameter_server_reduce", step, local_rank, grads))
 
             data_recv = receive_message(sock)
 
             command, recv_step, updated_grads = data_recv
 
-            assert recv_step == step, (
-                f"[Worker {local_rank}] Mismatched step from server"
-            )
-
-            if recv_step > step:
-                step = recv_step
+            assert recv_step == step, "Step mismatch in communication with server."
+                
 
             if command == "averaged_gradients":
-                set_weights(updated_grads, model)
+                set_gradients(updated_grads, model)
 
             optimizer.step()
-            logger.info(
-                f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(train_loader)} completed."
-            )
+        logger.info(
+            f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(train_loader)} completed."
+        )
 
-            total_loss += loss.item()
-
+            
+            
+    
 
 if __name__ == "__main__":
     main()

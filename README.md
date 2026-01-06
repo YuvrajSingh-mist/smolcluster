@@ -35,7 +35,7 @@ A simple distributed training framework for MNIST classification using PyTorch a
 
 The project uses two configuration files located in `src/smolcluster/configs/`:
 
-### cluster_config.yaml
+### cluster_config_ddp.yaml
 ```yaml
 host_ip: "10.10.0.1"        # IP address to bind the server (interface)
 port: 65432                  # TCP port for communication
@@ -114,8 +114,8 @@ ssh mini2 'tail -f ~/worker1.log'
 Open a terminal and start the central server:
 
 ```bash
-cd src/smolcluster/SimpleAllReduce
-../../../.venv/bin/python server.py
+cd src/smolcluster/DDP/SimpleAllReduce
+../../../../.venv/bin/python server.py
 ```
 
 The server will:
@@ -129,8 +129,8 @@ The server will:
 For each worker, open a new terminal and run:
 
 ```bash
-cd src/smolcluster/SimpleAllReduce
-../../../.venv/bin/python worker.py
+cd src/smolcluster/DDP/SimpleAllReduce
+../../../../.venv/bin/python worker.py
 ```
 
 When prompted, enter the worker ID (1, 2, ..., num_workers).
@@ -153,9 +153,10 @@ Each worker will:
 ```
 smolcluster/
 ├── src/smolcluster/
-│   ├── SimpleAllReduce/       # Distributed training implementation
-│   │   ├── server.py       # Central server coordinating training
-│   │   └── worker.py       # Worker node for distributed training
+│   ├── DDP/
+│   │   ├── SimpleAllReduce/       # Distributed training implementation
+│   │   │   ├── server.py       # Central server coordinating training
+│   │   │   └── worker.py       # Worker node for distributed training
 │   ├── main.py            # (Optional) Standalone training script
 │   ├── models/
 │   │   ├── __init__.py
@@ -169,7 +170,8 @@ smolcluster/
 │   │   └── MNIST/         # MNIST dataset (auto-downloaded)
 │   │       └── raw/       # Raw MNIST files
 │   └── configs/
-│       ├── cluster_config.yaml  # Cluster network settings
+│       ├── cluster_config_ddp.yaml  # DDP cluster network settings
+│       ├── cluster_config_edp.yaml  # EDP cluster network settings
 │       └── nn_config.yaml       # Model/training settings
 │   └── docs/
 │       └── setup_cluster.md     # Mac mini cluster setup guide

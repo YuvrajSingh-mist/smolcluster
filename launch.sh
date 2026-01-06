@@ -7,7 +7,7 @@ set -e  # Exit on any error
 
 # Configuration
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config.yaml"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_ddp.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
@@ -124,7 +124,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching server on $SERVER..."
-SERVER_CMD="cd src/smolcluster/SimpleAllReduce && ../../../.venv/bin/python server.py $SERVER"
+SERVER_CMD="cd src/smolcluster/DDP/SimpleAllReduce && ../../../../.venv/bin/python server.py $SERVER"
 launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -136,7 +136,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="cd src/smolcluster/SimpleAllReduce && ../../../.venv/bin/python worker.py $i $node"
+    WORKER_CMD="cd src/smolcluster/DDP/SimpleAllReduce && ../../../../.venv/bin/python worker.py $i $node"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done

@@ -37,9 +37,10 @@ def get_gradients(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return grads
 
 
-def set_weights(grads: dict[str, torch.Tensor], model: torch.nn.Module):
+def set_gradients(grads: dict[str, torch.Tensor], model: torch.nn.Module):
     for name, param in model.named_parameters():
         if name in grads:
             if param.grad is not None:
                 grads[name] = grads[name].to(param.device)
                 param.grad = grads[name].clone()
+
