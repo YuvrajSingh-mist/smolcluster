@@ -196,6 +196,7 @@ def main():
 
     # Initialize iterator for continuous training
     train_iter = iter(train_loader)
+    sock.settimeout(0.0)
     
     for step in range(total_steps):
         model.train()
@@ -237,15 +238,22 @@ def main():
             
                 logger.info(f"Pulling weights (version {new_version})")
                 send_message(sock, ("pull_weights", model_version))
-                weights, new_version = receive_message(sock)
-                set_weights(weights, model)
-                model_version = new_version
-                logger.info(f"Updated to model version {model_version}")
-
+                try:
+                    weights, new_version = receive_message(sock)
+                    set_weights(weights, model)
+                    model_version = new_version
+                    logger.info(f"Updated to model version {model_version}")
+                except socket.timeout:
+                    logger.warning("Timeout while pulling weights from server.")
+                    pass
+                except BlockingIOError:
+                    logger.warning("Non-blocking socket read had no data while pulling weights.")
+                    pass
+                
         total_loss += loss.item()
         
         logger.info(
-            f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(train_loader)} completed."
+            f"Step {step}/{total_steps} completed."
         )
         
 

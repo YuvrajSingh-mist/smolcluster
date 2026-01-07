@@ -178,16 +178,15 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 ip_address, port = addr
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[rank] = grads
+                        fast_workers_grads_received[(rank, model_version)] = grads
+                        
                     fast_step_event.set()
                     logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
                 
                 elif ip_address in all_workers_ips_addr["slow_workers"]:
                     with lock:
-                        slow_workers_grads_received[rank] = {
-                            "grads": grads,
-                            "model_version": worker_version,
-                        }
+                        slow_workers_grads_received[rank] = grads
+                     
                     slow_step_event.set()
                     logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
                         
@@ -337,9 +336,7 @@ def main():
             # slow_workers_grads_received[step][RANK] = leader_grads
             logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
             
-            FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
-            start_time = time.time()
-            
+        
             while True:
                 
                 with lock:
@@ -348,30 +345,30 @@ def main():
                 logger.info(
                     f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                 )
-                if curr_workers_len_fast < FAST_QUORUM:
-                    logger.info(f"Waiting for more gradients for step {step}...")
-                    curr_time = time.time()
-
-                    if curr_time - start_time >= FAST_WORKER_TIMEOUT:
-                        logger.warning(
-                            f"Timeout waiting for gradients for step {step} for fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}."
-                        )
-                        break
-                    else:
-                        fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
-                        fast_step_event.clear()
-
-                else:
+                
+                logger.info(f"Waiting for more gradients for step {step}...")
+            
+                FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
+                
+                if curr_workers_len_fast >= FAST_QUORUM:
+                    logger.warning(
+                        f"Timeout waiting for gradients for step {step} for fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}."
+                    )
                     break
+                else:
+                    fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
+                    fast_step_event.clear()
             
             if len(fast_workers_grads_received) != 0:
                 with lock:
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                 
+                fast_grads_dict = {key[0]: value for key, value in fast_grads_copy.items()}
+                
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
-                    fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
+                    fast_grads_dict, len(fast_grads_dict) + 1  # +1 for leader
                 )
                 
                 optimizer.zero_grad()
@@ -385,19 +382,8 @@ def main():
 
                 logger.info(f"Updated to model version {model_version}")
                 
-                # Send ACK only to workers who contributed gradients
-                for rank in fast_grads_copy.keys():
-                    for worker_addr, worker_socket in workers.items():
-                        # Match worker by checking if rank is in the payload they sent
-                        # We'll send to all workers for now (can optimize later with rank tracking)
-                        try:
-                            send_message(worker_socket, ("ACK_fast_grads_reduced", model_version, step))
-                            logger.info(f"Sent ACK to worker at {worker_addr} for step {step}")
-                        except Exception as e:
-                            logger.warning(f"Failed to send ACK to {worker_addr}: {e}")
-                        break  # Only send once per rank
-                    
-                del grads_reduced, leader_grads, fast_grads_copy
+              
+                del grads_reduced, leader_grads, fast_grads_copy, fast_grads_dict
                 gc.collect()
 
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
@@ -458,14 +444,7 @@ def main():
                     with lock:
                         model_version += 1
                     
-                    # Send ACK to the specific worker who contributed
-                    for worker_addr, worker_socket in workers.items():
-                        try:
-                            send_message(worker_socket, ("ACK_slow_grads_applied", model_version, step))
-                            logger.info(f"Sent ACK to slow worker at {worker_addr} for step {step}")
-                        except Exception as e:
-                            logger.warning(f"Failed to send ACK to slow worker {worker_addr}: {e}")
-                        break  # Only send once per rank
+                    
                 
                 del slow_grads_copy
                 gc.collect()
