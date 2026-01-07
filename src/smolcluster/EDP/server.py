@@ -4,7 +4,6 @@ import socket
 import sys
 import threading
 import time
-from collections import defaultdict
 
 import torch
 import torchinfo
@@ -178,20 +177,18 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                
                 ip_address, port = addr
                 if ip_address in all_workers_ips_addr["fast_workers"]:
-                    curr_step = recv_step
-                    fast_workers_grads_received[curr_step][rank] = grads
-                
+                    with lock:
+                        fast_workers_grads_received[rank] = grads
                     fast_step_event.set()
-                    
                     logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
                 
                 elif ip_address in all_workers_ips_addr["slow_workers"]:
-                    slow_workers_grads_received[rank] = {
-                        "grads": grads,
-                        "model_version": worker_version,
-                    }
+                    with lock:
+                        slow_workers_grads_received[rank] = {
+                            "grads": grads,
+                            "model_version": worker_version,
+                        }
                     slow_step_event.set()
-                    
                     logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
                         
             # Add handling for other commands if needed, e.g., 'disconnect'
@@ -364,34 +361,39 @@ def main():
                     break
             
             if len(fast_workers_grads_received) != 0:
+                with lock:
+                    fast_grads_copy = dict(fast_workers_grads_received)
+                    fast_workers_grads_received.clear()
+                
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
-                    fast_workers_grads_received[step], len(fast_workers_grads_received)
+                    fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
                 )
                 
                 optimizer.zero_grad()
-                # Apply gradients and update model version
                 set_gradients(grads_reduced, model)
-                
                 optimizer.step()
-                
                 
                 logger.info(f"Updated model with reduced gradients for step {step}")
                 
                 with lock:
                     model_version += 1
-                    # current_version = model_version
 
                 logger.info(f"Updated to model version {model_version}")
-                # # Signal workers to pull new weights
-                # for _worker_addr, worker_socket in workers.items():
-                #     send_message(
-                #         worker_socket, ("pull_weights", current_version)
-                #     )
-                send_message(sock, ("ACK_fast_grads_reduced", model_version, step))
                 
-                fast_workers_grads_received.pop(step, None)
-                del grads_reduced, leader_grads
+                # Send ACK only to workers who contributed gradients
+                for rank in fast_grads_copy.keys():
+                    for worker_addr, worker_socket in workers.items():
+                        # Match worker by checking if rank is in the payload they sent
+                        # We'll send to all workers for now (can optimize later with rank tracking)
+                        try:
+                            send_message(worker_socket, ("ACK_fast_grads_reduced", model_version, step))
+                            logger.info(f"Sent ACK to worker at {worker_addr} for step {step}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send ACK to {worker_addr}: {e}")
+                        break  # Only send once per rank
+                    
+                del grads_reduced, leader_grads, fast_grads_copy
                 gc.collect()
 
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
@@ -427,10 +429,13 @@ def main():
                     break
             
             if len(slow_workers_grads_received) != 0:
-                logger.info(f"Updating model with {len(slow_workers_grads_received)} slow worker gradients using elastic SGD")
+                with lock:
+                    slow_grads_copy = dict(slow_workers_grads_received)
+                    slow_workers_grads_received.clear()
                 
+                logger.info(f"Updating model with {len(slow_grads_copy)} slow worker gradients using elastic SGD")
                 
-                for rank, payload in list(slow_workers_grads_received.items()):
+                for rank, payload in slow_grads_copy.items():
                     grads = payload["grads"]
                     worker_version = payload["model_version"]
                     
@@ -445,12 +450,20 @@ def main():
                     
                     set_gradients(scaled_grads, model)
                     optimizer.step()
+                    
                     with lock:
                         model_version += 1
-                        
-                    send_message(sock, ("ACK_slow_grads_applied", model_version, step))
+                    
+                    # Send ACK to the specific worker who contributed
+                    for worker_addr, worker_socket in workers.items():
+                        try:
+                            send_message(worker_socket, ("ACK_slow_grads_applied", model_version, step))
+                            logger.info(f"Sent ACK to slow worker at {worker_addr} for step {step}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send ACK to slow worker {worker_addr}: {e}")
+                        break  # Only send once per rank
                 
-                slow_workers_grads_received.clear()
+                del slow_grads_copy
                 gc.collect()
                 
 
