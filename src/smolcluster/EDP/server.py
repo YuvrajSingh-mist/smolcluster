@@ -182,14 +182,18 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                         fast_workers_grads_received[curr_step][rank] = grads
                     
                         fast_step_event.set()
-                    
+                        
+                        logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
+                                
                     elif ip_address in all_workers_ips_addr["slow_workers"]:
                         slow_workers_grads_received[rank] = {
                             "grads": grads,
                             "model_version": worker_version,
                         }
                         slow_step_event.set()
-                logger.info(f"Gradients stored successfully for worker {rank} at step {recv_step}")    
+                        
+                        logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
+                           
             # Add handling for other commands if needed, e.g., 'disconnect'
             
             if command == "pull_weights":
@@ -337,6 +341,7 @@ def main():
                     f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} participants."
                 )
                 if curr_workers_len_fast < NUM_FAST_WORKERS:
+                    print("current workers len fast:", curr_workers_len_fast)
                     logger.info(f"Waiting for more gradients for step {step}...")
                     fast_step_event.wait()
                     fast_step_event.clear()
@@ -384,7 +389,7 @@ def main():
             while True:
                 with lock:
                     curr_workers_len_slow = len(slow_workers_grads_received)
-
+                    print("current workers len slow:", curr_workers_len_slow)
                 logger.info(
                     f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} participants."
                 )
