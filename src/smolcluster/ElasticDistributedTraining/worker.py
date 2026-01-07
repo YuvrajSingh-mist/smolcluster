@@ -235,7 +235,7 @@ def main():
         
         if step % slow_worker_update_interval == 0:
             
-                logger.info(f"Pulling weights (version {new_version})")
+                logger.info(f"Pulling weights from server at step {step}.")
                 send_message(sock, ("pull_weights", model_version))
                 sock.settimeout(0.0)  # Non-blocking socket read
                 try:
