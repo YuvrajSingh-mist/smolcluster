@@ -29,7 +29,7 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-update_freq = cluster_config["low_worker_update_freq"]
+update_freq = cluster_config["slow_worker_update_freq"]
 
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
