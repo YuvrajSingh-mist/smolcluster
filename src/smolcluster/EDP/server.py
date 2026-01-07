@@ -35,7 +35,7 @@ else:
 with open("../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../configs/cluster_config.yaml") as f:
+with open("../configs/cluster_config_edp.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
