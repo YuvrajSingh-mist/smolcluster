@@ -30,10 +30,10 @@ else:
     HOSTNAME = input("Enter server hostname: ")
 
 # Load configs
-with open("../../configs/nn_config.yaml") as f:
+with open("../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../../configs/cluster_config_ddp.yaml") as f:
+with open("../configs/cluster_config.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
@@ -56,7 +56,7 @@ criterion = torch.nn.CrossEntropyLoss()
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("[LEADER]")
+logger = logging.getLogger("Server")
 logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
 
 step_event = threading.Event()
@@ -76,7 +76,7 @@ def load_data(
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("../../data", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST("../data", download=True, transform=transforms)
     lendata = len(data)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
@@ -149,7 +149,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 f"Received gradients from worker {addr} with ID {rank} for batch {recv_step}"
             )
 
-            if command == "parameter_server_reduce":
+            if command == "all_reduce":
                 logger.info(
                     f"Storing gradients from worker {rank} for batch {recv_step}"
                 )
@@ -166,7 +166,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
     conn.close()
 
 
-def parameter_server_reduce(
+def all_reduce(
     grads_dict: dict[int, dict[str, torch.Tensor]], num_workers_connected: int
 ) -> dict[str, torch.Tensor]:
     # worker_reduced = {}
@@ -264,7 +264,7 @@ def main():
     for worker_socket in registered_workers.values():
         send_message(worker_socket, "start_training")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+    optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
 
     logger.info(f"Starting training for {num_epochs} epochs.")
     for epoch in range(num_epochs):
@@ -279,7 +279,8 @@ def main():
             )
             grads_received[step][RANK] = leader_grads
 
-           
+            start_time = time.time()
+
             while True:
                 with lock:
                     curr_workers_len = len(grads_received[step])
@@ -289,14 +290,22 @@ def main():
                 )
                 if curr_workers_len < NUM_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")
-                    step_event.wait()
-                    step_event.clear()
+                    curr_time = time.time()
+
+                    if curr_time - start_time >= TIMEOUT:
+                        logger.warning(
+                            f"Timeout waiting for gradients for step {step}. Proceeding with available gradients {len(grads_received[step])}."
+                        )
+                        break
+                    else:
+                        step_event.wait(timeout=TIMEOUT)
+                        step_event.clear()
 
                 else:
                     break
 
             if len(grads_received[step]) != 0:
-                grads_reduced = parameter_server_reduce(
+                grads_reduced = all_reduce(
                     grads_received[step], len(grads_received[step])
                 )
 
@@ -315,10 +324,8 @@ def main():
 
             else:
                 logger.warning(
-                    f"No gradients received for step {step}. Skipping grad update."
+                    f"No gradients received for step {step}. Skipping weight update."
                 )
-                del leader_grads
-                
             if RANK == 0:
                 data = data.to(get_device())
                 target = target.to(get_device())

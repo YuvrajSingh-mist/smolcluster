@@ -1,4 +1,4 @@
-from .common_utils import get_gradients, receive_message, send_message, set_gradients
+from .common_utils import get_gradients, receive_message, send_message, set_gradients, set_weights, get_weights
 from .data import get_data_indices
 from .device import get_device
 
@@ -9,4 +9,6 @@ __all__ = [
     "get_device",
     "get_gradients",
     "set_gradients",
+    "set_weights",
+    'get_weights',
 ]

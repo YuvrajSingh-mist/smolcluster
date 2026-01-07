@@ -46,7 +46,7 @@ else:
 local_rank = int(WORKER_RANK)
 
 # Workers connect to the server using the IP specified for this worker's hostname
-HOST_IP = cluster_config["server_connect_ip"][HOSTNAME]
+HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
@@ -58,9 +58,9 @@ criterion = torch.nn.CrossEntropyLoss()
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger(f"Worker-{local_rank}")
+logger = logging.getLogger(f"[WORKER-{local_rank}]")
 
-logging.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
+logger.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
 
 
 def load_data(batch_size, WORLD_SIZE, SEED, local_rank):

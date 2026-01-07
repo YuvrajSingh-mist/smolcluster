@@ -13,8 +13,7 @@ from smolcluster.utils.common_utils import (
     get_gradients,
     receive_message,
     send_message,
-    set_gradients,
-)
+    set_gradients, set_weights)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
@@ -30,6 +29,7 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
+update_freq = cluster_config["low_worker_update_freq"]
 
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
@@ -46,21 +46,25 @@ else:
 local_rank = int(WORKER_RANK)
 
 # Workers connect to the server using the IP specified for this worker's hostname
-HOST_IP = cluster_config["server_connect_ip"][HOSTNAME]
+HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
+gradient_scaling = nn_config.get("gradient_scaling", 0.0)
 
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
+
+# Track model version for elastic training
+model_version = 0
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger(f"Worker-{local_rank}")
+logger = logging.getLogger(f"[WORKER-{local_rank}]")
 
-logging.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
+logger.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
 
 
 def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
@@ -179,7 +183,8 @@ def main():
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
     
- 
+    total_steps = num_epochs * len(train_loader)
+    
     optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
 
     while True:
@@ -189,35 +194,57 @@ def main():
             logger.info("Received start_training command from server.")
             break
 
-    for epoch in range(num_epochs):
+    for step in range(total_steps):
         model.train()
 
         total_loss = 0.0
-       
-        for batch_idx, (data, target) in enumerate(train_loader):
-            step = epoch * len(train_loader) + batch_idx
-            optimizer.zero_grad()
-            data, target = data.to(get_device()), target.to(get_device())
+        epoch = step // len(train_loader)
+        batch_idx = step % len(train_loader)
+        data = train_loader.dataset[batch_idx * batch_size : (batch_idx + 1) * batch_size]
+        data, target = zip(*data)
+        
+        logger.info("Performing local forward and backward pass.")
+        # for batch_idx, (data, target) in enumerate(train_loader):
+            # step = epoch * len(train_loader) + batch_idx
+        optimizer.zero_grad()
+        data, target = data.to(get_device()), target.to(get_device())
 
-            output = model(data.view(data.size(0), -1))
-            loss = criterion(output, target)
-            total_loss += loss.item()
-            loss.backward()
-            grads = get_gradients(model)
+        output = model(data.view(data.size(0), -1))
+        loss = criterion(output, target)
 
-            # Send gradients to server and receive updated weights
-            send_message(sock, ("all_reduce", step, local_rank, grads))
+        loss.backward()
+        grads = get_gradients(model)
 
-            data_recv = receive_message(sock)
+        # Send gradients to server with version
+        send_message(sock, (
+            "parameter_server_reduce",
+            {
+                "step": step,
+                "rank": local_rank,
+                "grads": grads,
+                "model_version": model_version,
+            }
+        ))
 
-            command, _, updated_grads = data_recv
+        # Wait for signal to pull weights
+        data_recv = receive_message(sock)
 
-            if command == "averaged_gradients":
-                set_gradients(updated_grads, model)
+        command, new_version = data_recv
 
+        if command == "pull_weights":
+            logger.info(f"Pulling weights (version {new_version})")
+            send_message(sock, ("pull_weights", model_version))
+            weights, new_version = receive_message(sock)
+            set_weights(weights, model)
+            model_version = new_version
+            logger.info(f"Updated to model version {model_version}")
+
+        total_loss += loss.item()
+        
         logger.info(
             f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(train_loader)} completed."
         )
+        
 
 if __name__ == "__main__":
     main()

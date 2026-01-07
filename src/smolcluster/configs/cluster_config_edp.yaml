@@ -2,15 +2,19 @@ host_ip:
   mini1: "172.18.3.80"
   mini2: "172.18.3.80"
   mini3: "172.18.3.80"
-  # pi5: "172.18.3.80"
+  pi5: "172.18.3.80"
 
 port: 65432
 num_workers: 3
-timeout: 0.01  # in seconds
+timeout: 0.1  # in seconds
+slow_worker_update_freq: 50
+gradient_scaling: 0.95
 
 server: mini1
-workers: [
-  mini2,
-  mini3,
-  # pi5
-]
+fast_workers:
+  mini1: "172.18.3.180" 
+  mini2 : "172.18.3.160"
+  mini3 : "172.18.3.118"
+slow_workers: 
+  pi5: "172.18.4.24"
+
