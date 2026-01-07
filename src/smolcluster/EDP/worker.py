@@ -52,8 +52,6 @@ HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
-gradient_scaling = nn_config.get("gradient_scaling", 0.0)
-
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 
