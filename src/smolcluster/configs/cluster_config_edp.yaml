@@ -10,6 +10,11 @@ timeout: 0.1  # in seconds
 slow_worker_update_freq: 50
 gradient_scaling: 0.95
 
+workers: [
+  mini2,
+  mini3,
+  pi5
+]
 server: mini1
 fast_workers:
   mini1: "172.18.3.180" 
