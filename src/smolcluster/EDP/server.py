@@ -189,7 +189,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                             "model_version": worker_version,
                         }
                         slow_step_event.set()
-                        
+                logger.info(f"Gradients stored successfully for worker {rank} at step {recv_step}")    
             # Add handling for other commands if needed, e.g., 'disconnect'
             
             if command == "pull_weights":
