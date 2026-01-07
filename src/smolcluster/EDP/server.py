@@ -353,7 +353,7 @@ def main():
                         )
                         break
                     else:
-                        fast_step_event.wait(timeout=TIMEOUT)
+                        fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
                         fast_step_event.clear()
 
                 else:
@@ -414,7 +414,7 @@ def main():
                         )
                         break
                     else:
-                        slow_step_event.wait(timeout=TIMEOUT)
+                        slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT)
                         slow_step_event.clear()
 
                 else:
