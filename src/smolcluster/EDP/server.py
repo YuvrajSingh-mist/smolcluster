@@ -344,7 +344,7 @@ def main():
             while True:
                 
                 with lock:
-                    curr_workers_len_fast = len(fast_workers_grads_received[step])
+                    curr_workers_len_fast = len(fast_workers_grads_received)
                     # print("current workers len slow:", curr_workers_len_slow)
                 logger.info(
                     f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
@@ -365,10 +365,10 @@ def main():
                 else:
                     break
             
-            if len(fast_workers_grads_received[step]) != 0:
+            if len(fast_workers_grads_received) != 0:
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
-                    fast_workers_grads_received[step], len(fast_workers_grads_received[step])
+                    fast_workers_grads_received[step], len(fast_workers_grads_received)
                 )
                 send_message(sock, ("ACK_fast_grads_reduced", model_version, step))
                 optimizer.zero_grad()
