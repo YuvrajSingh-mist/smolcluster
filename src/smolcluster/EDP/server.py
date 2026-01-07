@@ -334,7 +334,7 @@ def main():
             )
             # fast_workers_grads_received[step][RANK] = leader_grads
             # slow_workers_grads_received[step][RANK] = leader_grads
-            
+            start_time = time.time()
             while True:
                 
                 with lock:
