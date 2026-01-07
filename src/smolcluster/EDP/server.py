@@ -20,7 +20,7 @@ from smolcluster.utils.common_utils import (
     send_message,
     set_gradients,
     get_weights,
-    set_weights,
+    
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
@@ -46,11 +46,11 @@ NUM_SLOW_WORKERS = len(cluster_config.get("slow_workers") or [])
 NUM_FAST_WORKERS = len(cluster_config.get("fast_workers") or [])
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-TIMEOUT = cluster_config["timeout"]
 FAST_WORKERS_IPS = cluster_config.get("fast_workers") or {}
 SLOW_WORKERS_IPS = cluster_config.get("slow_workers") or {}
 RANK = 0
-
+FAST_WORKER_TIMEOUT = cluster_config["fast_worker_timeout"]
+SLOW_WORKER_TIMEOUT = cluster_config["slow_worker_timeout"]
 
 batch_size = nn_config["batch_size"]
 eval_steps = nn_config["eval_steps"]
@@ -202,7 +202,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 logger.info(f"Worker {addr} requested weights (current version: {model_version})")
                 with lock:
                     weights = get_weights(model)
-                    send_message(conn, (weights, model_version))
+                    send_message(conn, (weights, model_version, recv_step))
                 slow_step_event.set()
                 fast_step_event.set()
                 
@@ -336,20 +336,25 @@ def main():
             # slow_workers_grads_received[step][RANK] = leader_grads
             
             while True:
-                with lock:
-                    curr_workers_len_fast = len(fast_workers_grads_received[step])
-
-                print("current workers len fast:", curr_workers_len_fast)
                 
+                with lock:
+                    curr_workers_len_fast = len(fast_workers_grads_received)
+                    # print("current workers len slow:", curr_workers_len_slow)
                 logger.info(
                     f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                 )
-                # print("current workers len fast:", curr_workers_len_fast)
                 if curr_workers_len_fast < NUM_FAST_WORKERS:
-                    
                     logger.info(f"Waiting for more gradients for step {step}...")
-                    fast_step_event.wait()
-                    fast_step_event.clear()
+                    curr_time = time.time()
+
+                    if curr_time - start_time >= FAST_WORKER_TIMEOUT:
+                        logger.warning(
+                            f"Timeout waiting for gradients for step {step} for fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}."
+                        )
+                        break
+                    else:
+                        fast_step_event.wait(timeout=TIMEOUT)
+                        fast_step_event.clear()
 
                 else:
                     break
@@ -370,14 +375,14 @@ def main():
                 
                 with lock:
                     model_version += 1
-                    current_version = model_version
+                    # current_version = model_version
 
                 logger.info(f"Updated to model version {model_version}")
-                # Signal workers to pull new weights
-                for _worker_addr, worker_socket in workers.items():
-                    send_message(
-                        worker_socket, ("pull_weights", current_version)
-                    )
+                # # Signal workers to pull new weights
+                # for _worker_addr, worker_socket in workers.items():
+                #     send_message(
+                #         worker_socket, ("pull_weights", current_version)
+                #     )
 
                 fast_workers_grads_received.pop(step, None)
                 del grads_reduced, leader_grads
@@ -403,9 +408,9 @@ def main():
                     logger.info(f"Waiting for more gradients for step {step}...")
                     curr_time = time.time()
 
-                    if curr_time - start_time >= TIMEOUT:
+                    if curr_time - start_time >= SLOW_WORKER_TIMEOUT:
                         logger.warning(
-                            f"Timeout waiting for gradients for step {step}. Proceeding with available gradients {len(slow_workers_grads_received)}."
+                            f"Timeout waiting for gradients for step {step} for slow workers. Proceeding with available gradients {len(slow_workers_grads_received)}."
                         )
                         break
                     else:
@@ -418,22 +423,23 @@ def main():
             if len(slow_workers_grads_received) != 0:
                 logger.info(f"Updating model with {len(slow_workers_grads_received)} slow worker gradients using elastic SGD")
                 
-                with lock:
-                    for rank, payload in list(slow_workers_grads_received.items()):
-                        grads = payload["grads"]
-                        worker_version = payload["model_version"]
-                        
-                        staleness = model_version - worker_version
-                        scale = 1.0 / (1.0 + staleness)
-                        
-                        logger.info(f"Applying slow worker {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
-                        
-                        # Scale gradients by staleness
-                        optimizer.zero_grad()
-                        scaled_grads = {k: v * scale for k, v in grads.items()}
-                        
-                        set_gradients(scaled_grads, model)
-                        optimizer.step()
+                
+                for rank, payload in list(slow_workers_grads_received.items()):
+                    grads = payload["grads"]
+                    worker_version = payload["model_version"]
+                    
+                    staleness = model_version - worker_version
+                    scale = 1.0 / (1.0 + staleness)
+                    
+                    logger.info(f"Applying slow worker {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
+                    
+                    # Scale gradients by staleness
+                    optimizer.zero_grad()
+                    scaled_grads = {k: v * scale for k, v in grads.items()}
+                    
+                    set_gradients(scaled_grads, model)
+                    optimizer.step()
+                    with lock:
                         model_version += 1
                     
                     slow_workers_grads_received.clear()

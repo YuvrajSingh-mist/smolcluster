@@ -226,18 +226,23 @@ def main():
         ))
 
         logger.info("Waiting for server response...")
+        
         # Wait for signal to pull weights
         data_recv = receive_message(sock)
 
-        command, new_version = data_recv
-
-        if command == "pull_weights":
-            logger.info(f"Pulling weights (version {new_version})")
-            send_message(sock, ("pull_weights", model_version))
-            weights, new_version = receive_message(sock)
-            set_weights(weights, model)
-            model_version = new_version
-            logger.info(f"Updated to model version {model_version}")
+        command, new_version, recv_step = data_recv
+        
+        if step != recv_step:
+            logger.warning(
+                f"Step mismatch in communication with server. Local step: {step}, Received step: {recv_step}"
+            )
+            if command == "pull_weights":
+                logger.info(f"Pulling weights (version {new_version})")
+                send_message(sock, ("pull_weights", model_version))
+                weights, new_version = receive_message(sock)
+                set_weights(weights, model)
+                model_version = new_version
+                logger.info(f"Updated to model version {model_version}")
 
         total_loss += loss.item()
         
