@@ -31,8 +31,6 @@ SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 
 
-update_freq = cluster_config["slow_worker_update_freq"]
-
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
     WORKER_RANK = sys.argv[1]
