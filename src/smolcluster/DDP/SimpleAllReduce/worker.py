@@ -43,7 +43,7 @@ else:
     HOSTNAME = input("Enter worker hostname: ")
 
 # Set parameters
-local_rank = int(WORKER_RANK)
+local_rank = int(WORKER_RANK) - 1
 
 # Workers connect to the server using the IP specified for this worker's hostname
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
@@ -73,6 +73,9 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
     )
     data = torchvision.datasets.MNIST("../../data", download=True, transform=transforms)
     lendata = len(data)
+    
+    torch.manual_seed(SEED)
+     
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )

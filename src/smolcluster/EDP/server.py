@@ -94,6 +94,7 @@ def load_data(
     )
     data = torchvision.datasets.MNIST("../data", download=True, transform=transforms)
     lendata = len(data)
+    torch.manual_seed(SEED)
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )
@@ -238,7 +239,7 @@ model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
 
 
-train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, RANK)
+train_loader, val_loader = load_data(batch_size, NUM_WORKERS, SEED, RANK)
 
 
 logger.info(

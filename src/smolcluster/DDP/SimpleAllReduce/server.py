@@ -44,7 +44,7 @@ SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 TIMEOUT = cluster_config["timeout"]
 
-RANK = 0
+local_rank = 0
 batch_size = nn_config["batch_size"]
 eval_steps = nn_config["eval_steps"]
 num_epochs = nn_config["num_epochs"]
@@ -67,7 +67,7 @@ grads_received = defaultdict(dict)
 
 
 def load_data(
-    batch_size: int, WORLD_SIZE: int, SEED: int, RANK: int
+    batch_size: int, WORLD_SIZE: int, SEED: int, rank: int
 ) -> tuple[DataLoader, DataLoader]:
     # load MNIST
     transforms = torchvision.transforms.Compose(
@@ -78,6 +78,9 @@ def load_data(
     )
     data = torchvision.datasets.MNIST("../../data", download=True, transform=transforms)
     lendata = len(data)
+    
+    torch.manual_seed(SEED)
+     
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )
@@ -85,7 +88,7 @@ def load_data(
         testset, batch_size=batch_size, shuffle=False
     )
     batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
-    train_data = torch.utils.data.Subset(trainset, batch_indices[RANK])
+    train_data = torch.utils.data.Subset(trainset, batch_indices[rank])
     train_loader = torch.utils.data.DataLoader(
         train_data, batch_size=batch_size, shuffle=False
     )
@@ -193,7 +196,7 @@ model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
 
 
-train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, RANK)
+train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, rank=local_rank)
 
 
 logger.info(
@@ -219,7 +222,7 @@ def main():
         config=nn_config,
     )
 
-    if RANK == 0:
+    if local_rank == 0:
         model_summary = str(
             torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
         )
@@ -269,7 +272,7 @@ def main():
     logger.info(f"Starting training for {num_epochs} epochs.")
     for epoch in range(num_epochs):
         model.train()
-        if RANK == 0:
+        if local_rank == 0:
             total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
         for batch_idx, (data, target) in enumerate(train_loader):
@@ -277,7 +280,7 @@ def main():
             leader_grads = compute_leader_gradients(
                 model, data, target, criterion, optimizer
             )
-            grads_received[step][RANK] = leader_grads
+            grads_received[step][local_rank] = leader_grads
 
            
             while True:
@@ -319,7 +322,7 @@ def main():
                 )
                 del leader_grads
                 
-            if RANK == 0:
+            if local_rank == 0:
                 data = data.to(get_device())
                 target = target.to(get_device())
                 output = model(data.view(data.size(0), -1))

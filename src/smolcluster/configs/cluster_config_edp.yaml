@@ -5,7 +5,7 @@ host_ip:
   pi5: "172.18.3.80"
 
 port: 65432
-num_workers: 2
+num_workers: 3
 timeout: 0.1  # in seconds
 
 workers: [
