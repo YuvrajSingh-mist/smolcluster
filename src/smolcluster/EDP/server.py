@@ -353,7 +353,7 @@ def main():
                 optimizer.step()
                 
                 with lock:
-                    global model_version
+                    # global model_version
                     model_version += 1
                     current_version = model_version
 
@@ -401,7 +401,7 @@ def main():
                 logger.info(f"Updating model with {len(slow_workers_grads_received)} slow worker gradients using elastic SGD")
                 
                 with lock:
-                    global model_version
+                    # global model_version
                     
                     for rank, payload in list(slow_workers_grads_received.items()):
                         grads = payload["grads"]
