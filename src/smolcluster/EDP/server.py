@@ -175,7 +175,9 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 logger.info(
                     f"Storing gradients from worker {rank} for batch {recv_step}"
                 )
-                
+                print("ips: slow: ", all_workers_ips_addr["slow_workers"])
+                print("ips: fast: ", all_workers_ips_addr["fast_workers"])
+                print("addr is: ", addr)
                 ip_address, port = addr
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     curr_step = recv_step
