@@ -175,37 +175,36 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 logger.info(
                     f"Storing gradients from worker {rank} for batch {recv_step}"
                 )
-                with lock:
-                    ip_address, port = addr
-                    print("Worker IP address:", ip_address)
-                    print("All workers IP addresses:", all_workers_ips_addr)
-                    if ip_address in all_workers_ips_addr["fast_workers"]:
-                        curr_step = recv_step
-                        fast_workers_grads_received[curr_step][rank] = grads
+                
+                ip_address, port = addr
+                if ip_address in all_workers_ips_addr["fast_workers"]:
+                    curr_step = recv_step
+                    fast_workers_grads_received[curr_step][rank] = grads
+                
+                    fast_step_event.set()
                     
-                        fast_step_event.set()
-                        
-                        logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
+                    logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
+                
+                elif ip_address in all_workers_ips_addr["slow_workers"]:
+                    slow_workers_grads_received[rank] = {
+                        "grads": grads,
+                        "model_version": worker_version,
+                    }
+                    slow_step_event.set()
                     
-                    elif ip_address in all_workers_ips_addr["slow_workers"]:
-                        slow_workers_grads_received[rank] = {
-                            "grads": grads,
-                            "model_version": worker_version,
-                        }
-                        slow_step_event.set()
+                    logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
                         
-                        logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
-                           
             # Add handling for other commands if needed, e.g., 'disconnect'
             
             if command == "pull_weights":
                 logger.info(f"Worker {addr} requested weights (current version: {model_version})")
-                with lock:
-                    weights = get_weights(model)
-                    send_message(conn, (weights, model_version, recv_step))
+                
+                weights = get_weights(model)
+                send_message(conn, (weights, model_version, recv_step))
+                
                 slow_step_event.set()
                 fast_step_event.set()
-                
+                logger.info(f"Weights sent to worker {addr}")
                 
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
