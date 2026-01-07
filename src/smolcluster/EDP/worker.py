@@ -164,7 +164,7 @@ def connect_to_server(
 
 def main():
     
-    
+    global model_version
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
