@@ -197,6 +197,9 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 with lock:
                     weights = get_weights(model)
                     send_message(conn, (weights, model_version))
+                slow_step_event.set()
+                fast_step_event.set()
+                
                 
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
@@ -331,7 +334,7 @@ def main():
                     curr_workers_len_fast = len(fast_workers_grads_received[step])
 
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{WORLD_SIZE} participants."
+                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} participants."
                 )
                 if curr_workers_len_fast < NUM_FAST_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")
@@ -353,10 +356,13 @@ def main():
                 
                 optimizer.step()
                 
+                logger.info(f"Updated model with reduced gradients for step {step}")
+                
                 with lock:
                     model_version += 1
                     current_version = model_version
 
+                logger.info(f"Updated to model version {model_version}")
                 # Signal workers to pull new weights
                 for _worker_addr, worker_socket in workers.items():
                     send_message(
@@ -367,6 +373,7 @@ def main():
                 del grads_reduced, leader_grads
                 gc.collect()
 
+                logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
             else:
                 logger.warning(
                     f"No gradients received for step {step} for fast workers. Skipping grad update."
@@ -379,7 +386,7 @@ def main():
                     curr_workers_len_slow = len(slow_workers_grads_received)
 
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{WORLD_SIZE} participants."
+                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} participants."
                 )
                 if curr_workers_len_slow < NUM_SLOW_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")

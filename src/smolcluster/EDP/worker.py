@@ -213,6 +213,7 @@ def main():
         loss.backward()
         grads = get_gradients(model)
 
+        logger.info("local forward and backward pass done. Sending gradients to server.")
         # Send gradients to server with version
         send_message(sock, (
             "parameter_server_reduce",
@@ -224,6 +225,7 @@ def main():
             }
         ))
 
+        logger.info("Waiting for server response...")
         # Wait for signal to pull weights
         data_recv = receive_message(sock)
 
