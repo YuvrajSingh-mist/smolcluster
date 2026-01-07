@@ -74,7 +74,7 @@ lock = threading.Lock()
 model_version = 0  # Track global model version for elastic training
 
 workers = {}
-fast_workers_grads_received = defaultdict(dict)
+fast_workers_grads_received = {}
 slow_workers_grads_received = {}
 all_workers_ips_addr = {
     "fast_workers": [ip for ip in FAST_WORKERS_IPS.values()],
@@ -214,7 +214,9 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
 
     logger.info(f"Worker {addr} disconnected")
     conn.close()
-
+    # Remove disconnected worker
+    with lock:
+        workers.pop(addr, None)
 
 def parameter_server_reduce(
     leader_grads: dict[str, torch.Tensor],
@@ -368,7 +370,7 @@ def main():
                     leader_grads,
                     fast_workers_grads_received[step], len(fast_workers_grads_received[step])
                 )
-
+                send_message(sock, ("ACK_fast_grads_reduced", model_version, step))
                 optimizer.zero_grad()
                 # Apply gradients and update model version
                 set_gradients(grads_reduced, model)
@@ -440,7 +442,7 @@ def main():
                     # Scale gradients by staleness
                     optimizer.zero_grad()
                     scaled_grads = {k: v * scale for k, v in grads.items()}
-                    
+                    send_message(sock, ("ACK_slow_grads_applied", model_version, step))
                     set_gradients(scaled_grads, model)
                     optimizer.step()
                     with lock:
