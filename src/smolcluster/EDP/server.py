@@ -266,7 +266,10 @@ sock.listen(5)
 logger.info(f"Server listening on {HOST_IP}:{PORT}")
 
 
+
 def main():
+    global model_version
+    
     # Initialize W&B
     wandb.init(
         project="smolcluster",
