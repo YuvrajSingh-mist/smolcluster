@@ -337,11 +337,14 @@ def main():
                 with lock:
                     curr_workers_len_fast = len(fast_workers_grads_received[step])
 
+                print("current workers len fast:", curr_workers_len_fast)
+                
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} participants."
+                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                 )
+                # print("current workers len fast:", curr_workers_len_fast)
                 if curr_workers_len_fast < NUM_FAST_WORKERS:
-                    print("current workers len fast:", curr_workers_len_fast)
+                    
                     logger.info(f"Waiting for more gradients for step {step}...")
                     fast_step_event.wait()
                     fast_step_event.clear()
@@ -387,11 +390,12 @@ def main():
             start_time = time.time()
 
             while True:
+                print("current workers len fast:", curr_workers_len_fast)
                 with lock:
                     curr_workers_len_slow = len(slow_workers_grads_received)
-                    print("current workers len slow:", curr_workers_len_slow)
+                    # print("current workers len slow:", curr_workers_len_slow)
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} participants."
+                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} slow participants."
                 )
                 if curr_workers_len_slow < NUM_SLOW_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")
