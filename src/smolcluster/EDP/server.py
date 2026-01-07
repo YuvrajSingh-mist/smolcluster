@@ -340,7 +340,7 @@ def main():
             while True:
                 
                 with lock:
-                    curr_workers_len_fast = len(fast_workers_grads_received)
+                    curr_workers_len_fast = len(fast_workers_grads_received[step])
                     # print("current workers len slow:", curr_workers_len_slow)
                 logger.info(
                     f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
@@ -385,7 +385,7 @@ def main():
                 #     send_message(
                 #         worker_socket, ("pull_weights", current_version)
                 #     )
-
+                
                 fast_workers_grads_received.pop(step, None)
                 del grads_reduced, leader_grads
                 gc.collect()
