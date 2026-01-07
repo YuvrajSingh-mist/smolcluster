@@ -42,8 +42,8 @@ with open("../configs/cluster_config_edp.yaml") as f:
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
-NUM_SLOW_WORKERS = cluster_config["slow_workers"] 
-NUM_FAST_WORKERS = cluster_config["fast_workers"]
+NUM_SLOW_WORKERS = int(cluster_config["slow_workers"])
+NUM_FAST_WORKERS = int(cluster_config["fast_workers"])
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 TIMEOUT = cluster_config["timeout"]
@@ -148,6 +148,7 @@ def compute_leader_gradients(
 
 
 def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
+    global model_version
     logger.info(f"Handling worker at {addr}")
 
     while True:
@@ -353,7 +354,6 @@ def main():
                 optimizer.step()
                 
                 with lock:
-                    # global model_version
                     model_version += 1
                     current_version = model_version
 
@@ -401,8 +401,6 @@ def main():
                 logger.info(f"Updating model with {len(slow_workers_grads_received)} slow worker gradients using elastic SGD")
                 
                 with lock:
-                    # global model_version
-                    
                     for rank, payload in list(slow_workers_grads_received.items()):
                         grads = payload["grads"]
                         worker_version = payload["model_version"]

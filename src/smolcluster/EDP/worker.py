@@ -200,8 +200,7 @@ def main():
         total_loss = 0.0
         epoch = step // len(train_loader)
         batch_idx = step % len(train_loader)
-        data = train_loader.dataset[batch_idx * batch_size : (batch_idx + 1) * batch_size]
-        data, target = zip(*data)
+        data, target = list(train_loader)[batch_idx]
         
         logger.info("Performing local forward and backward pass.")
         # for batch_idx, (data, target) in enumerate(train_loader):
