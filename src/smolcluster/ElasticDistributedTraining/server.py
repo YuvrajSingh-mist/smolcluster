@@ -161,21 +161,23 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
 
             # Unpack the message tuple
             command, payload = message
-            recv_step = payload["step"]
-            rank = payload["rank"]
-            grads = payload["grads"]
-            worker_version = payload["model_version"]
+   
 
             logger.info(
-                f"Received gradients from worker {addr} with ID {rank} for batch {recv_step} (worker version: {worker_version})"
+                f"Received gradients from worker {addr} with ID {rank})"
             )
 
             if command == "parameter_server_reduce":
+                recv_step = payload["step"]
+                rank = payload["rank"]
+                grads = payload["grads"]
+                _worker_version = payload["model_version"]
+                
                 logger.info(
                     f"Storing gradients from worker {rank} for batch {recv_step}"
                 )
                
-                ip_address, port = addr
+                ip_address, _port = addr
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
                         fast_workers_grads_received[(rank, model_version)] = grads
@@ -192,9 +194,10 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                         
             # Add handling for other commands if needed, e.g., 'disconnect'
             
-            if command == "pull_weights":
+            elif command == "pull_weights":
                 logger.info(f"Worker {addr} requested weights (current version: {model_version})")
-                
+                _worker_version = payload["model_version"]
+            
                 weights = get_weights(model)
                 send_message(conn, (weights, model_version, recv_step))
                 
@@ -352,7 +355,7 @@ def main():
                 
                 if curr_workers_len_fast >= FAST_QUORUM:
                     logger.warning(
-                        f"Timeout waiting for gradients for step {step} for fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}."
+                        f"Enough fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}."
                     )
                     break
                 else:
