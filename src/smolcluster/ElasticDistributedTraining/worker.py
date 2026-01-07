@@ -196,8 +196,7 @@ def main():
 
     # Initialize iterator for continuous training
     train_iter = iter(train_loader)
-    sock.settimeout(0.0)
-    
+ 
     for step in range(total_steps):
         model.train()
 
@@ -238,6 +237,7 @@ def main():
             
                 logger.info(f"Pulling weights (version {new_version})")
                 send_message(sock, ("pull_weights", model_version))
+                sock.settimeout(0.0)  # Non-blocking socket read
                 try:
                     weights, new_version = receive_message(sock)
                     set_weights(weights, model)
@@ -249,6 +249,7 @@ def main():
                 except BlockingIOError:
                     logger.warning("Non-blocking socket read had no data while pulling weights.")
                     pass
+                sock.settimeout(None)  # Restore blocking socket read
                 
         total_loss += loss.item()
         
