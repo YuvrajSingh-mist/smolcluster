@@ -175,9 +175,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 logger.info(
                     f"Storing gradients from worker {rank} for batch {recv_step}"
                 )
-                print("ips: slow: ", all_workers_ips_addr["slow_workers"])
-                print("ips: fast: ", all_workers_ips_addr["fast_workers"])
-                print("addr is: ", addr)
+               
                 ip_address, port = addr
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     curr_step = recv_step
@@ -370,12 +368,13 @@ def main():
                     leader_grads,
                     fast_workers_grads_received[step], len(fast_workers_grads_received)
                 )
-                send_message(sock, ("ACK_fast_grads_reduced", model_version, step))
+                
                 optimizer.zero_grad()
                 # Apply gradients and update model version
                 set_gradients(grads_reduced, model)
                 
                 optimizer.step()
+                
                 
                 logger.info(f"Updated model with reduced gradients for step {step}")
                 
@@ -389,6 +388,7 @@ def main():
                 #     send_message(
                 #         worker_socket, ("pull_weights", current_version)
                 #     )
+                send_message(sock, ("ACK_fast_grads_reduced", model_version, step))
                 
                 fast_workers_grads_received.pop(step, None)
                 del grads_reduced, leader_grads
@@ -403,7 +403,7 @@ def main():
             start_time = time.time()
 
             while True:
-                print("current workers len fast:", curr_workers_len_fast)
+                
                 with lock:
                     curr_workers_len_slow = len(slow_workers_grads_received)
                     # print("current workers len slow:", curr_workers_len_slow)
@@ -442,13 +442,15 @@ def main():
                     # Scale gradients by staleness
                     optimizer.zero_grad()
                     scaled_grads = {k: v * scale for k, v in grads.items()}
-                    send_message(sock, ("ACK_slow_grads_applied", model_version, step))
+                    
                     set_gradients(scaled_grads, model)
                     optimizer.step()
                     with lock:
                         model_version += 1
-                    
-                    slow_workers_grads_received.clear()
+                        
+                    send_message(sock, ("ACK_slow_grads_applied", model_version, step))
+                
+                slow_workers_grads_received.clear()
                 gc.collect()
                 
 
