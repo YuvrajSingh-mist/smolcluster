@@ -30,7 +30,7 @@ NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 
-
+slow_worker_update_interval = cluster_config.get("slow_worker_update_interval", 0.5)
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
     WORKER_RANK = sys.argv[1]
@@ -50,6 +50,7 @@ HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
+
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -193,17 +194,22 @@ def main():
             logger.info("Received start_training command from server.")
             break
 
+    # Initialize iterator for continuous training
+    train_iter = iter(train_loader)
+    
     for step in range(total_steps):
         model.train()
 
         total_loss = 0.0
-        epoch = step // len(train_loader)
-        batch_idx = step % len(train_loader)
-        data, target = list(train_loader)[batch_idx]
+        
+        # Fetch next batch, cycling through dataset
+        try:
+            data, target = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            data, target = next(train_iter)
         
         logger.info("Performing local forward and backward pass.")
-        # for batch_idx, (data, target) in enumerate(train_loader):
-            # step = epoch * len(train_loader) + batch_idx
         optimizer.zero_grad()
         data, target = data.to(get_device()), target.to(get_device())
 
@@ -227,16 +233,8 @@ def main():
 
         logger.info("Waiting for server response...")
         
-        # Wait for signal to pull weights
-        data_recv = receive_message(sock)
-
-        command, new_version, recv_step = data_recv
-        
-        if step != recv_step:
-            logger.warning(
-                f"Step mismatch in communication with server. Local step: {step}, Received step: {recv_step}"
-            )
-            if command == "pull_weights":
+        if step % slow_worker_update_interval == 0:
+            
                 logger.info(f"Pulling weights (version {new_version})")
                 send_message(sock, ("pull_weights", model_version))
                 weights, new_version = receive_message(sock)
