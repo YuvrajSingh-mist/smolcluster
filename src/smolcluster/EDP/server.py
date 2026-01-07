@@ -42,13 +42,13 @@ with open("../configs/cluster_config_edp.yaml") as f:
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
-NUM_SLOW_WORKERS = len(cluster_config.get("slow_workers", []))
-NUM_FAST_WORKERS = len(cluster_config.get("fast_workers", []))
+NUM_SLOW_WORKERS = len(cluster_config.get("slow_workers") or [])
+NUM_FAST_WORKERS = len(cluster_config.get("fast_workers") or [])
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 TIMEOUT = cluster_config["timeout"]
-FAST_WORKERS_IPS = cluster_config["fast_workers"]
-SLOW_WORKERS_IPS = cluster_config["slow_workers"]
+FAST_WORKERS_IPS = cluster_config.get("fast_workers", {})
+SLOW_WORKERS_IPS = cluster_config.get("slow_workers", {})
 RANK = 0
 
 
