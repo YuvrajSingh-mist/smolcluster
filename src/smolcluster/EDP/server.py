@@ -47,8 +47,8 @@ NUM_FAST_WORKERS = len(cluster_config.get("fast_workers") or [])
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 TIMEOUT = cluster_config["timeout"]
-FAST_WORKERS_IPS = cluster_config.get("fast_workers", {})
-SLOW_WORKERS_IPS = cluster_config.get("slow_workers", {})
+FAST_WORKERS_IPS = cluster_config.get("fast_workers") or {}
+SLOW_WORKERS_IPS = cluster_config.get("slow_workers") or {}
 RANK = 0
 
 
