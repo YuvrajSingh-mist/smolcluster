@@ -177,6 +177,8 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 )
                 with lock:
                     ip_address, port = addr
+                    print("Worker IP address:", ip_address)
+                    print("All workers IP addresses:", all_workers_ips_addr)
                     if ip_address in all_workers_ips_addr["fast_workers"]:
                         curr_step = recv_step
                         fast_workers_grads_received[curr_step][rank] = grads
@@ -184,7 +186,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                         fast_step_event.set()
                         
                         logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
-                                
+                    
                     elif ip_address in all_workers_ips_addr["slow_workers"]:
                         slow_workers_grads_received[rank] = {
                             "grads": grads,
