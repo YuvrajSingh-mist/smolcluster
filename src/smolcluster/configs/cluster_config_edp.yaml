@@ -12,6 +12,7 @@ fast_worker_timeout: 0.1  # in seconds
 slow_worker_timeout: 1.0  # in seconds
 slow_worker_update_interval: 10
 
+num_workers: 2
 workers: [
   mini2,
   mini3,
