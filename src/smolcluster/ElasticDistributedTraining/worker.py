@@ -253,7 +253,9 @@ def main():
         logger.info(
             f"Step {step}/{total_steps} completed."
         )
-        
+    send_message(sock, ("disconnect", None))
+    sock.close()
+    logger.info("Training complete. Worker disconnecting.")
 
 if __name__ == "__main__":
     main()

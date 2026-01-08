@@ -180,7 +180,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[(rank, model_version)] = grads
+                        fast_workers_grads_received[rank] = grads
                         
                     fast_step_event.set()
                     logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
@@ -202,7 +202,13 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 send_message(conn, (weights, model_version))
                 
                 logger.info(f"Weights sent to worker {addr}")
-                
+            
+            elif command == "disconnect":
+                logger.info(f"Worker {addr} requested disconnection.")
+                with lock:
+                    workers.pop(addr, None)
+                break
+            
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
             break
@@ -358,11 +364,9 @@ def main():
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                 
-                fast_grads_dict = {key[0]: value for key, value in fast_grads_copy.items()}
-                
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
-                    fast_grads_dict, len(fast_grads_dict) + 1  # +1 for leader
+                    fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
                 )
                 
                 optimizer.zero_grad()
@@ -377,7 +381,7 @@ def main():
                 logger.info(f"Updated to model version {model_version}")
                 
               
-                del grads_reduced, leader_grads, fast_grads_copy, fast_grads_dict
+                del grads_reduced, leader_grads, fast_grads_copy
                 gc.collect()
 
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
