@@ -41,9 +41,9 @@ NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 STALENESS_FACTOR = cluster_config.get("staleness_factor", 0)
-STALENESS_HALT_TIME = cluster_config.get("staleness_halt_time", 30)
+STALENESS_HALT_TIME = cluster_config.get("staleness_halt_time", 5)
 
-slow_worker_update_interval = cluster_config.get("slow_worker_update_interval", 0.5)
+slow_worker_update_interval = cluster_config.get("slow_worker_update_interval", 5)
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
     WORKER_RANK = sys.argv[1]
@@ -267,6 +267,8 @@ def main():
             logger.warning(
                         f"Model version mismatch when receiving weights: expected {model_version}, got {recv_model_version}"
                     )
+            model_version = recv_model_version
+            logger.info(f"Updated local model version to {model_version}.")
             time.sleep(STALENESS_HALT_TIME)
                 
         total_loss += loss.item()
