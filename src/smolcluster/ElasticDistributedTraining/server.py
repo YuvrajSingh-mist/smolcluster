@@ -373,9 +373,7 @@ def main():
         
         epoch = step // len(train_loader)
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
-        leader_grads = compute_leader_gradients(
-            model, data, target, criterion, optimizer
-        )
+        
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
         
         # Handle fast workers
@@ -403,12 +401,16 @@ def main():
             if len(fast_workers_grads_received) != 0:
                 logger.info(f"Received gradients from fast workers for step {step}.")
                 with lock:
-                
+                    
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                     
                     fast_workers_grads_updated = {k[0]: v for k, v in fast_grads_copy.items() if k[1] == step}
-                    
+                
+                leader_grads = compute_leader_gradients(
+                model, data, target, criterion, optimizer
+            )
+                
                 logger.info("Reducing gradients from fast workers and leader.")
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
@@ -434,6 +436,9 @@ def main():
             
             else:
                 logger.info("No fast worker gradients available after filtering, using only leader gradients.")
+                leader_grads = compute_leader_gradients(
+                model, data, target, criterion, optimizer
+        )
                 optimizer.zero_grad()
                 set_gradients(leader_grads, model)
                 optimizer.step()
