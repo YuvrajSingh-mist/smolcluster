@@ -385,7 +385,7 @@ def main():
         if NUM_FAST_WORKERS > 0 and len(fast_workers_grads_received) != 0:
             with lock:
                 
-                print(fast_workers_grads_received)
+              
                 fast_grads_copy = dict(fast_workers_grads_received)
                 fast_workers_grads_received.clear()
             
@@ -520,7 +520,7 @@ def main():
     )
 
     logger.info(
-        f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader)} completed."
+        f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader) * NUM_WORKERS} completed."
     )
 
     wandb.finish()
