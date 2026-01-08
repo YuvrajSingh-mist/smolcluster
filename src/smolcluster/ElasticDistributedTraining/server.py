@@ -178,11 +178,11 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 worker_version = payload["model_version"]
                 
                 logger.info(
-                    f"Received gradients from worker {addr} with ID {rank} for batch {recv_step} (worker version: {worker_version})"
+                    f"Received gradients from worker {addr} with ID {rank} for received step {recv_step} (worker version: {worker_version})"
                 )
                 
                 logger.info(
-                    f"Storing gradients from worker {rank} for batch {recv_step}"
+                    f"Storing gradients from worker {rank} for received step {recv_step}"
                 )
                
                 ip_address, _port = addr
@@ -192,6 +192,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                         fast_workers_grads_received[rank] = grads
                         
                     fast_step_event.set()
+                    print(len(fast_workers_grads_received))
                     logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
                 
                 elif ip_address in all_workers_ips_addr["slow_workers"]:
@@ -340,7 +341,7 @@ def main():
     logger.info(f"Starting training for {num_epochs} epochs.")
     
     train_iter = iter(train_loader)
-    val_iter = iter(val_loader)
+
     total_steps = num_epochs * len(train_loader)
    
     for step in range(total_steps):
