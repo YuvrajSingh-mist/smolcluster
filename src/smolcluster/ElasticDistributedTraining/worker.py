@@ -248,14 +248,14 @@ def main():
         if step % slow_worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             send_message(sock, ("pull_weights", model_version))
-            sock.settimeout(2.0)  # Wait up to 2 seconds for weights
+            sock.settimeout(1.0)  # Wait up to 1 second for weights
             try:
                 weights, new_version = receive_message(sock)
                     
                 set_weights(weights, model)
-                model_version = new_version
+                
                 recv_model_version = new_version
-                logger.info(f"Updated to model version {model_version}")
+                logger.info(f"Updated to model version {recv_model_version} from server.")
             except socket.timeout:
                 logger.warning("Timeout while pulling weights from server.")
             except BlockingIOError:
@@ -263,9 +263,9 @@ def main():
             finally:
                 sock.settimeout(None)  # Restore blocking socket
         
-        if abs(model_version - recv_model_version) > STALENESS_FACTOR and recv_model_version != -1:
+        if abs(model_version - recv_model_version) >= STALENESS_FACTOR and recv_model_version != -1:
             logger.warning(
-                        f"Step mismatch when receiving weights: expected {model_version}, got {recv_model_version}"
+                        f"Model version mismatch when receiving weights: expected {model_version}, got {recv_model_version}"
                     )
             time.sleep(STALENESS_HALT_TIME)
                 
