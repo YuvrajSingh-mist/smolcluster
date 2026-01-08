@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -6,6 +7,7 @@ import time
 
 import torch
 import torchvision
+import wandb
 import yaml
 
 from smolcluster.models.SimpleNN import SimpleMNISTModel
@@ -16,6 +18,15 @@ from smolcluster.utils.common_utils import (
     set_weights)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
+
+# Login to wandb using API key from environment variable
+if "WANDB_API_KEY" in os.environ:
+    wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+    logger_temp = logging.getLogger("[WORKER-INIT]")
+    logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
+else:
+    logger_temp = logging.getLogger("[WORKER-INIT]")
+    logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
 
 # Load configs
 with open("../configs/nn_config.yaml") as f:
@@ -239,7 +250,7 @@ def main():
             send_message(sock, ("pull_weights", model_version))
             sock.settimeout(2.0)  # Wait up to 2 seconds for weights
             try:
-                weights, new_version, recv_step = receive_message(sock)
+                weights, new_version = receive_message(sock)
                     
                 set_weights(weights, model)
                 model_version = new_version
