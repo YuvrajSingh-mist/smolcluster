@@ -373,9 +373,11 @@ def main():
             while True:
                 with lock:
                     curr_workers_len_fast = len(fast_workers_grads_received)
+                    # Debug: log what gradients we have
+                    stored_steps = {k[1] for k in fast_workers_grads_received.keys()} if fast_workers_grads_received else set()
                     
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
+                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants. Stored steps: {sorted(stored_steps)}"
                 )
                 
                 FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
@@ -388,8 +390,8 @@ def main():
                     fast_step_event.clear()
         
             if len(fast_workers_grads_received) != 0:
+                logger.info(f"Received gradients from fast workers for step {step}.")
                 with lock:
-                    
                 
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
@@ -420,7 +422,7 @@ def main():
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
             
             else:
-                logger.info("No fast workers configured or workers exhausted, using only leader gradients.")
+                logger.info("No fast worker gradients available after filtering, using only leader gradients.")
                 optimizer.zero_grad()
                 set_gradients(leader_grads, model)
                 optimizer.step()
