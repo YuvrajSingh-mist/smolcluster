@@ -1,33 +1,18 @@
 host_ip:
-  # mini1: "172.18.3.80"
-  # mini2: "172.18.3.80"
-  # mini3: "172.18.3.80"
-  # pi5: "172.18.3.80"
   mini1: "10.10.0.1"
   mini2: "10.10.0.1"
   mini3: "10.10.0.1"
+  # pi5: "10.10.0.1"
 
 port: 65432
-fast_worker_timeout: 0.1  # in seconds
-slow_worker_timeout: 1.0  # in seconds
-slow_worker_update_interval: 10
-staleness_factor: 50
-staleness_halt_time: 2.0  # in seconds
 
+# Worker update settings
+worker_update_interval: 5  # How often workers pull latest weights (in steps)
+
+# Randomness seed
+seed: 42
+
+# Cluster configuration
 num_workers: 2
-workers: [
-  mini2,
-  mini3,
-  # pi5
-]
-server: mini1
-fast_workers:
-  mini2: "10.10.0.2"
-  mini3: "10.10.0.3"
-  # mini1: "172.18.3.180" 
-  # mini2 : "172.18.3.160"
-  # mini3 : "172.18.3.118"
-slow_workers: 
-  # pi5: "172.18.4.24"
-  # macbook: "10.10.0.4"
-
+workers: [mini2, mini3]  # Worker hostnames
+server: mini1  # Server hostname

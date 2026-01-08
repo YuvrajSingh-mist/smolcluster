@@ -50,21 +50,15 @@ with open("../configs/cluster_config_edp.yaml") as f:
 # Extract values with defaults
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
 PORT = cluster_config["port"]
-NUM_SLOW_WORKERS = len(cluster_config.get("slow_workers") or [])
-NUM_FAST_WORKERS = len(cluster_config.get("fast_workers") or [])
-NUM_WORKERS = NUM_SLOW_WORKERS + NUM_FAST_WORKERS
+NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-FAST_WORKERS_IPS = cluster_config.get("fast_workers") or {}
-SLOW_WORKERS_IPS = cluster_config.get("slow_workers") or {}
 RANK = 0
-FAST_WORKER_TIMEOUT = cluster_config["fast_worker_timeout"]
-SLOW_WORKER_TIMEOUT = cluster_config["slow_worker_timeout"]
 
 batch_size = nn_config["batch_size"]
 eval_steps = nn_config["eval_steps"]
 num_epochs = nn_config["num_epochs"]
-track_gradients = nn_config["track_gradients"]
+track_gradients = nn_config.get("track_gradients", False)
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -76,19 +70,13 @@ logging.basicConfig(
 logger = logging.getLogger("[SERVER]")
 logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
 
-fast_step_event = threading.Event()
-slow_step_event = threading.Event()
+gradients_event = threading.Event()
 lock = threading.Lock()
 
 model_version = 0  # Track global model version for elastic training
 
 workers = {}
-fast_workers_grads_received = {}
-slow_workers_grads_received = {}
-all_workers_ips_addr = {
-    "fast_workers": [ip for ip in FAST_WORKERS_IPS.values()],
-    "slow_workers": [ip for ip in SLOW_WORKERS_IPS.values()],
-}
+workers_grads_received = {}  # Single dict for all worker gradients: {(rank, recv_step, worker_version): grads}
 
 
 def load_data(
@@ -171,70 +159,48 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
     logger.info(f"Handling worker at {addr}")
 
     while True:
-        try:
-            message = receive_message(conn)
+        
+        message = receive_message(conn)
 
-            # Handle connection closed or empty message
-            if message is None:
-                logger.info(f"Worker {addr} closed connection")
-                break
-
-            # Unpack the message tuple
-            command, payload = message
-
-            if command == "parameter_server_reduce":
-                recv_step = payload["step"]
-                rank = payload["rank"]
-                grads = payload["grads"]
-                worker_version = payload["model_version"]
-                
-                logger.info(
-                    f"Received gradients from worker {addr} with ID {rank} for received step {recv_step} (worker version: {worker_version})"
-                )
-                
-                logger.info(
-                    f"Storing gradients from worker {rank} for received step {recv_step}"
-                )
-               
-                ip_address, _port = addr
-                
-                if ip_address in all_workers_ips_addr["fast_workers"]:
-                    with lock:
-                        fast_workers_grads_received[(rank, recv_step)] = grads  # Use recv_step instead of worker_version
-                        
-                    fast_step_event.set()
-                    
-                    logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
-                
-                elif ip_address in all_workers_ips_addr["slow_workers"]:
-                    with lock:
-                        slow_workers_grads_received[(rank, worker_version)] = grads
-                    
-                    slow_step_event.set()
-                    logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
-                        
-            # Add handling for other commands if needed, e.g., 'disconnect'
-            
-            elif command == "pull_weights":
-                worker_version = payload  # payload is just the model_version integer
-                logger.info(f"Worker {addr} requested weights (worker version: {worker_version}, current server version: {model_version})")
-                
-                weights = get_weights(model)
-                send_message(conn, (weights, model_version))
-                
-                logger.info(f"Weights sent to worker {addr}")
-            
-            elif command == "disconnect":
-                logger.info(f"Worker {addr} requested disconnection.")
-                with lock:
-                    workers.pop(addr, None)
-                break
-            
-        except Exception as e:
-            logger.error(f"Error handling worker {addr}: {e}")
+        # Handle connection closed or empty message
+        if message is None:
+            logger.info(f"Worker {addr} closed connection")
             break
 
-    logger.info(f"Worker {addr} disconnected")
+        # Unpack the message tuple
+        command, payload = message
+
+        if command == "parameter_server_reduce":
+            recv_step = payload["step"]
+            rank = payload["rank"]
+            grads = payload["grads"]
+            worker_version = payload["model_version"]
+            
+            logger.info(
+                f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+            )
+            
+            # Store all gradients with rank, step, and version
+            with lock:
+                workers_grads_received[(rank, recv_step, worker_version)] = grads
+                
+            gradients_event.set()
+            
+            logger.info(f"Gradients stored successfully for worker {rank} at step {recv_step}")
+        
+        elif command == 'pull_weights':
+            worker_version = payload  # payload is the worker's current model version
+            logger.info(f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})")
+            
+            weights = get_weights(model)
+            send_message(conn, (weights, model_version))
+            
+            logger.info(f"Weights sent to worker {addr}")
+            
+        elif command == 'disconnect':
+            logger.info(f"Worker {addr} requested disconnection.")
+            break
+        
     conn.close()
     # Remove disconnected worker
     with lock:
@@ -302,60 +268,61 @@ def main():
         config=nn_config,
     )
 
-    if RANK == 0:
-        model_summary = str(
-            torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
-        )
-        logger.info("Model Summary:")
-        logger.info(model_summary)
-        wandb.log({"model_structure": model_summary})
+    model_summary = str(
+        torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
+    )
+    logger.info("Model Summary:")
+    logger.info(model_summary)
+    wandb.log({"model_structure": model_summary})
 
-    # Accept connections and wait for registration
-    registered_workers = {}  # rank -> socket
-    while len(registered_workers) < NUM_WORKERS:
-        client_socket, client_address = sock.accept()
-        logger.info(f"Accepted connection from {client_address}")
+    # Start accepting worker connections in background
+    def accept_workers():
+        while True:
+            try:
+                client_socket, client_address = sock.accept()
+                logger.info(f"Accepted connection from {client_address}")
+                
+                # Wait for registration message
+                message = receive_message(client_socket)
+                if message is None:
+                    logger.warning(f"Connection from {client_address} closed before registration")
+                    client_socket.close()
+                    continue
 
-        # Wait for registration message
-        try:
-            message = receive_message(client_socket)
-            if message is None:
-                logger.warning(
-                    f"Connection from {client_address} closed before registration"
-                )
-                client_socket.close()
-                continue
-
-            command, rank = message
-            if command == "register":
-                logger.info(f"Worker {rank} registered from {client_address}")
-                registered_workers[rank] = client_socket
-                workers[client_address] = client_socket
-                threading.Thread(
-                    target=handle_worker, args=(client_socket, client_address)
-                ).start()
-            else:
-                logger.warning(f"Unexpected message from {client_address}: {command}")
-                client_socket.close()
-        except Exception as e:
-            logger.error(f"Error during registration from {client_address}: {e}")
-            client_socket.close()
-            continue
-
-    logger.info("All workers connected. Starting training...")
-
-    for worker_socket in registered_workers.values():
-        send_message(worker_socket, "start_training")
+                command, rank = message
+                if command == "register":
+                    logger.info(f"Worker {rank} registered from {client_address}")
+                    with lock:
+                        workers[rank] = client_socket
+                    threading.Thread(target=handle_worker, args=(client_socket, client_address), daemon=True).start()
+                else:
+                    logger.warning(f"Unexpected message from {client_address}: {command}")
+                    client_socket.close()
+            except Exception as e:
+                logger.error(f"Error accepting worker: {e}")
+    
+    # Start worker acceptance thread
+    threading.Thread(target=accept_workers, daemon=True).start()
+    logger.info("Worker acceptance thread started")
+    
+    # Give workers a moment to connect
+    time.sleep(2)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
 
     logger.info(f"Starting training for {num_epochs} epochs.")
     
-    train_iter = iter(train_loader)
-
-    total_steps = num_epochs * len(train_loader)
+    # Send start signal to all connected workers
+    with lock:
+        for worker_socket in workers.values():
+            try:
+                send_message(worker_socket, "start_training")
+            except:
+                pass
     
-    total_loss = 0.0  # Initialize total_loss once before the loop
+    train_iter = iter(train_loader)
+    total_steps = num_epochs * len(train_loader)
+    total_loss = 0.0
    
     for step in range(total_steps):
         model.train()
@@ -371,131 +338,51 @@ def main():
         
         epoch = step // len(train_loader)
         
-        epoch = step // len(train_loader)
-        logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
-        
+        # Compute leader gradients
+        leader_grads = compute_leader_gradients(model, data, target, criterion, optimizer)
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
         
-        # Handle fast workers
-        if NUM_FAST_WORKERS > 0:
-            while True:
-                with lock:
-                    curr_workers_len_fast = len(fast_workers_grads_received)
-                  
-                logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
-                )
-                
-                FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
-                
-                if len(fast_workers_grads_received) == 0:
-                    break
-                
-                elif curr_workers_len_fast >= FAST_QUORUM:
-                    logger.info(f"Enough fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}.")
-                    break
-                else:
-                    fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
-                    fast_step_event.clear()
+        # Collect any available worker gradients (non-blocking with small timeout)
+        gradients_event.wait(timeout=0.01)  # Very short wait
+        gradients_event.clear()
         
-            if len(fast_workers_grads_received) != 0:
-                logger.info(f"Received gradients from fast workers for step {step}.")
-                with lock:
-                    
-                    fast_grads_copy = dict(fast_workers_grads_received)
-                    fast_workers_grads_received.clear()
-                    
-                    fast_workers_grads_updated = {k[0]: v for k, v in fast_grads_copy.items() if k[1] == step}
-                
-                leader_grads = compute_leader_gradients(
-                model, data, target, criterion, optimizer
-            )
-                
-                logger.info("Reducing gradients from fast workers and leader.")
-                grads_reduced = parameter_server_reduce(
-                    leader_grads,
-                    fast_workers_grads_updated, len(fast_workers_grads_updated) + 1 
-                )
-                
-                optimizer.zero_grad()
-                set_gradients(grads_reduced, model)
-                optimizer.step()
-                
-                logger.info(f"Updated model with reduced gradients for step {step}")
-                
-                with lock:
-                    model_version += 1
-
-                logger.info(f"Updated to model version {model_version}")
-                
-                
-                del grads_reduced, leader_grads, fast_grads_copy, fast_workers_grads_updated
-                gc.collect()
-
-                logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
+        with lock:
+            grads_copy = dict(workers_grads_received)
+            workers_grads_received.clear()
+        
+        if grads_copy:
+            logger.info(f"Step {step}: Collected {len(grads_copy)} worker gradient(s)")
             
-            else:
-                logger.info("No fast worker gradients available after filtering, using only leader gradients.")
-                leader_grads = compute_leader_gradients(
-                model, data, target, criterion, optimizer
-        )
+            # Apply worker gradients with staleness scaling
+            for (rank, recv_step, worker_version), grads in grads_copy.items():
+                staleness = model_version - worker_version
+                scale = 1.0 / (1.0 + staleness)
+                
+                logger.info(f"Applying worker {rank} grads from step {recv_step} (staleness: {staleness}, scale: {scale:.3f})")
+                
                 optimizer.zero_grad()
-                set_gradients(leader_grads, model)
+                scaled_grads = {k: v * scale for k, v in grads.items()}
+                set_gradients(scaled_grads, model)
                 optimizer.step()
+                
                 with lock:
                     model_version += 1
-                del leader_grads
-                gc.collect()
-                logger.info(f"Updated to model version {model_version} using only leader gradients.")
-           
+                
+            del grads_copy, scaled_grads
+            gc.collect()
         
-        # Handle slow workers
-        if NUM_SLOW_WORKERS > 0 and len(workers) > 0:
-            while True:
-                with lock:
-                    curr_workers_len_slow = len(slow_workers_grads_received)
-                logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} slow participants."
-                )
-                if curr_workers_len_slow < NUM_SLOW_WORKERS:
-                    if not slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT):
-                        logger.warning(
-                            f"Timeout waiting for gradients for step {step} for slow workers. Proceeding with available gradients {len(slow_workers_grads_received)}."
-                        )
-                        break
-                    slow_step_event.clear()
-                else:
-                    break
+        # Apply leader gradients
+        optimizer.zero_grad()
+        set_gradients(leader_grads, model)
+        optimizer.step()
         
-            if len(slow_workers_grads_received) != 0:
-                with lock:
-                    slow_grads_copy = slow_workers_grads_received.copy()
-                    slow_workers_grads_received.clear()
-
-                    
-                logger.info(f"Updating model with {len(slow_grads_copy)} slow worker gradients using elastic SGD")
-                
-                for (rank, worker_version), grads in slow_grads_copy.items():
-                
-                    
-                    staleness = model_version - worker_version
-                    scale = 1.0 / (1.0 + staleness)
-                    
-                    logger.info(f"Applying slow worker rank {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
-                    
-                    # Scale gradients by staleness
-                    optimizer.zero_grad()
-                    scaled_grads = {k: v * scale for k, v in grads.items()}
-                    
-                    set_gradients(scaled_grads, model)
-                    optimizer.step()
-                    
-                    with lock:
-                        model_version += 1
-                    logger.info(f"Updated to model version {model_version} after applying slow worker {rank} gradients")
-                
-                del slow_grads_copy, scaled_grads
-                gc.collect()
+        with lock:
+            model_version += 1
+        
+        del leader_grads
+        gc.collect()
+        
+        logger.info(f"Step {step}: Updated to model version {model_version}")
         
         
         data = data.to(get_device())
@@ -547,21 +434,9 @@ def main():
                 }
             )
 
-    avg_loss = total_loss / len(train_loader)
-
-    wandb.log(
-        {
-            "step": step,
-            "losses/train": avg_loss,
-        }
-    )
-
-    logger.info(
-        f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader)} completed."
-    )
-
+    logger.info(f"Training completed. Total steps: {step + 1}, Final model version: {model_version}")
     wandb.finish()
-    client_socket.close()
+    sock.close()
 
 
 if __name__ == "__main__":

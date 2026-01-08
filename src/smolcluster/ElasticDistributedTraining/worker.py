@@ -40,10 +40,8 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-STALENESS_FACTOR = cluster_config["staleness_factor"]
-STALENESS_HALT_TIME = cluster_config["staleness_halt_time"]
+worker_update_interval = cluster_config.get("worker_update_interval", 5)
 
-slow_worker_update_interval = cluster_config["slow_worker_update_interval"]
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
     WORKER_RANK = sys.argv[1]
@@ -200,12 +198,21 @@ def main():
     
     optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
 
-    while True:
-        recv_command = receive_message(sock)
-
-        if recv_command == "start_training":
-            logger.info("Received start_training command from server.")
-            break
+    # Wait for start signal or timeout and start anyway
+    logger.info("Waiting for start_training signal from server (max 5 seconds)...")
+    start_time = time.time()
+    while time.time() - start_time < 5:
+        sock.settimeout(0.1)
+        try:
+            recv_command = receive_message(sock)
+            if recv_command == "start_training":
+                logger.info("Received start_training command from server.")
+                break
+        except socket.timeout:
+            pass
+    
+    logger.info("Starting training loop...")
+    sock.settimeout(None)  # Reset to blocking
 
     # Initialize iterator for continuous training
     train_iter = iter(train_loader)
@@ -245,7 +252,7 @@ def main():
         ))
         logger.info("Gradients sent to server.")
         
-        if step % slow_worker_update_interval == 0 and step != 0:
+        if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             send_message(sock, ("pull_weights", model_version))
             sock.settimeout(1.0)  # Wait up to 1 second for weights
@@ -263,13 +270,10 @@ def main():
             finally:
                 sock.settimeout(None)  # Restore blocking socket
         
-        if abs(model_version - recv_model_version) >= STALENESS_FACTOR and recv_model_version != -1:
-            logger.warning(
-                        f"Model version mismatch when receiving weights: expected {model_version}, got {recv_model_version}"
-                    )
+        # Update local model version if received new weights
+        if recv_model_version != -1 and recv_model_version != model_version:
             model_version = recv_model_version
             logger.info(f"Updated local model version to {model_version}.")
-            time.sleep(STALENESS_HALT_TIME)
         
         logger.info(
             f"Step {step}/{total_steps} completed."
