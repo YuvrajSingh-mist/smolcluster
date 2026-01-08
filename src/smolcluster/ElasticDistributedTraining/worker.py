@@ -231,9 +231,7 @@ def main():
             }
         ))
 
-        logger.info("Waiting for server response...")
-        
-        if step % slow_worker_update_interval == 0:
+        if step % slow_worker_update_interval == 0 and step != 0:
             
                 logger.info(f"Pulling weights from server at step {step}.")
                 send_message(sock, ("pull_weights", model_version))

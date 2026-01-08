@@ -27,4 +27,5 @@ fast_workers:
   # mini3 : "172.18.3.118"
 slow_workers: 
   # pi5: "172.18.4.24"
+  # macbook: "10.10.0.4"
 
