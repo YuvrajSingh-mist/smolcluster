@@ -29,6 +29,8 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
+STALENESS_FACTOR = cluster_config.get("staleness_factor", 0)
+STALENESS_HALT_TIME = cluster_config.get("staleness_halt_time", 30)
 
 slow_worker_update_interval = cluster_config.get("slow_worker_update_interval", 0.5)
 # Get worker rank and hostname from command-line arguments
@@ -50,7 +52,7 @@ HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
-
+recv_step = -1
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -162,7 +164,7 @@ def connect_to_server(
 
 def main():
     
-    global model_version
+    global model_version, recv_step
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
@@ -235,9 +237,10 @@ def main():
         if step % slow_worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             send_message(sock, ("pull_weights", model_version))
-            sock.settimeout(5.0)  # Wait up to 5 seconds for weights
+            sock.settimeout(2.0)  # Wait up to 2 seconds for weights
             try:
-                weights, new_version = receive_message(sock)
+                weights, new_version, recv_step = receive_message(sock)
+                    
                 set_weights(weights, model)
                 model_version = new_version
                 logger.info(f"Updated to model version {model_version}")
@@ -247,6 +250,12 @@ def main():
                 logger.error(f"non-blocking socket error while pulling weights from server.")
             finally:
                 sock.settimeout(None)  # Restore blocking socket
+        
+        if abs(step - recv_step) > STALENESS_FACTOR and recv_step != -1:
+            logger.warning(
+                        f"Step mismatch when receiving weights: expected {step}, got {recv_step}"
+                    )
+            time.sleep(STALENESS_HALT_TIME)
                 
         total_loss += loss.item()
         

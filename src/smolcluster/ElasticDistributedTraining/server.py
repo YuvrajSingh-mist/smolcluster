@@ -358,8 +358,6 @@ def main():
         
         if RANK == 0:
             total_loss = 0.0
-            
-            
         
         epoch = step // len(train_loader)
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
@@ -373,16 +371,18 @@ def main():
             while True:
                 with lock:
                     curr_workers_len_fast = len(fast_workers_grads_received)
-                    # Debug: log what gradients we have
-                    stored_steps = {k[1] for k in fast_workers_grads_received.keys()} if fast_workers_grads_received else set()
+                    print(f"Current fast workers grads received: {len(fast_workers_grads_received)}")
                     
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants. Stored steps: {sorted(stored_steps)}"
+                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                 )
                 
                 FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
                 
-                if curr_workers_len_fast >= FAST_QUORUM:
+                if len(fast_workers_grads_received) == 0:
+                    break
+                
+                elif curr_workers_len_fast >= FAST_QUORUM:
                     logger.info(f"Enough fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}.")
                     break
                 else:
@@ -396,12 +396,11 @@ def main():
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                     
-                    fast_workers_grads_step = {k:v for k,v in fast_grads_copy.items() if k[1]==step}
-                
+               
                 logger.info("Reducing gradients from fast workers and leader.")
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
-                    fast_workers_grads_step, len(fast_workers_grads_step) + 1  # +1 for leader
+                    fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
                 )
                 
                 optimizer.zero_grad()
@@ -416,7 +415,7 @@ def main():
                 logger.info(f"Updated to model version {model_version}")
                 
                 
-                del grads_reduced, leader_grads, fast_grads_copy, fast_workers_grads_step
+                del grads_reduced, leader_grads, fast_grads_copy
                 gc.collect()
 
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
@@ -431,9 +430,7 @@ def main():
                 del leader_grads
                 gc.collect()
                 logger.info(f"Updated to model version {model_version} using only leader gradients.")
-            # else:
-            #     logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
-        
+           
         
         # Handle slow workers
         if NUM_SLOW_WORKERS > 0 and len(workers) > 0:
