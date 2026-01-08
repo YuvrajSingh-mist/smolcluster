@@ -200,7 +200,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[rank] = grads  # Use recv_step instead of worker_version
+                        fast_workers_grads_received[(rank, worker_version)] = grads  # Use recv_step instead of worker_version
                         
                     fast_step_event.set()
                     
@@ -407,7 +407,7 @@ def main():
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                     
-                    fast_workers_grads_updated = {k: v for k, v in fast_grads_copy.items()}
+                    fast_workers_grads_updated = {k[0]: v for k, v in fast_grads_copy.items() if k[1] == model_version}
                     
                 logger.info("Reducing gradients from fast workers and leader.")
                 grads_reduced = parameter_server_reduce(
@@ -501,31 +501,32 @@ def main():
         
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Loss = {loss.item():.4f}, Running Avg = {total_loss/(step+1):.4f}")
         
-        wandb.log(
-            {
-                "step": step,
-                "losses/step_loss": loss.item(),
-            }
-        )
-        
-        if track_gradients:
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    grad_norm = torch.norm(param.grad.detach(), 2).item()
-                    wandb.log(
-                        {
-                            f"gradients/layer_{name}": grad_norm,
-                            "step": step,
-                        }
-                    )
+        if step % 50 == 0:
+            wandb.log(
+                {
+                    "step": step,
+                    "losses/step_loss": loss.item(),
+                }
+            )
+            
+            if track_gradients:
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log(
+                            {
+                                f"gradients/layer_{name}": grad_norm,
+                                "step": step,
+                            }
+                        )
 
-        wandb.log(
-            {
-                "step": step,
-                "lr": nn_config["learning_rate"],
-                "batch_size": nn_config["batch_size"],
-            }
-        )
+            wandb.log(
+                {
+                    "step": step,
+                    "lr": nn_config["learning_rate"],
+                    "batch_size": nn_config["batch_size"],
+                }
+            )
 
         if step % eval_steps == 0:
             
@@ -551,7 +552,7 @@ def main():
     )
 
     logger.info(
-        f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader) * NUM_WORKERS} completed."
+        f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader)} completed."
     )
 
     wandb.finish()
