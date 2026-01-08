@@ -177,6 +177,8 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 )
                
                 ip_address, _port = addr
+                
+                print(ip_address, all_workers_ips_addr)
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
                         fast_workers_grads_received[(rank, model_version)] = grads
