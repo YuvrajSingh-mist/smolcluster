@@ -161,24 +161,22 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
 
             # Unpack the message tuple
             command, payload = message
-   
-
-            logger.info(
-                f"Received gradients from worker {addr} with ID {rank})"
-            )
 
             if command == "parameter_server_reduce":
                 recv_step = payload["step"]
                 rank = payload["rank"]
                 grads = payload["grads"]
-                _worker_version = payload["model_version"]
+                worker_version = payload["model_version"]
+                
+                logger.info(
+                    f"Received gradients from worker {addr} with ID {rank} for batch {recv_step} (worker version: {worker_version})"
+                )
                 
                 logger.info(
                     f"Storing gradients from worker {rank} for batch {recv_step}"
                 )
                
                 ip_address, _port = addr
-                print(ip_address, all_workers_ips_addr)
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
                         fast_workers_grads_received[(rank, model_version)] = grads
@@ -196,13 +194,12 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             # Add handling for other commands if needed, e.g., 'disconnect'
             
             elif command == "pull_weights":
-                logger.info(f"Worker {addr} requested weights (current version: {model_version})")
-                _worker_version = payload["model_version"]
-            
-                weights = get_weights(model)
-                send_message(conn, (weights, model_version, recv_step))
+                worker_version = payload  # payload is just the model_version integer
+                logger.info(f"Worker {addr} requested weights (worker version: {worker_version}, current server version: {model_version})")
                 
-            
+                weights = get_weights(model)
+                send_message(conn, (weights, model_version))
+                
                 logger.info(f"Weights sent to worker {addr}")
                 
         except Exception as e:

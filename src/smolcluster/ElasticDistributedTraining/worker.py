@@ -230,7 +230,8 @@ def main():
                 "model_version": model_version,
             }
         ))
-
+        logger.info("Gradients sent to server.")
+        
         if step % slow_worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             send_message(sock, ("pull_weights", model_version))
