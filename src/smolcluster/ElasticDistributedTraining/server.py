@@ -201,8 +201,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 weights = get_weights(model)
                 send_message(conn, (weights, model_version, recv_step))
                 
-                slow_step_event.set()
-                fast_step_event.set()
+            
                 logger.info(f"Weights sent to worker {addr}")
                 
         except Exception as e:
@@ -335,34 +334,27 @@ def main():
             leader_grads = compute_leader_gradients(
                 model, data, target, criterion, optimizer
             )
-            # fast_workers_grads_received[step][RANK] = leader_grads
-            # slow_workers_grads_received[step][RANK] = leader_grads
             logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
             
-        
-            while True:
-                
-                with lock:
-                    curr_workers_len_fast = len(fast_workers_grads_received)
-                    # print("current workers len slow:", curr_workers_len_slow)
-                logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
-                )
-                
-                logger.info(f"Waiting for more gradients for step {step}...")
-            
-                FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
-                
-                if curr_workers_len_fast >= FAST_QUORUM:
-                    logger.warning(
-                        f"Enough fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}."
+            # Handle fast workers
+            if NUM_FAST_WORKERS > 0:
+                while True:
+                    with lock:
+                        curr_workers_len_fast = len(fast_workers_grads_received)
+                    logger.info(
+                        f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                     )
-                    break
-                else:
-                    fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
-                    fast_step_event.clear()
+                    
+                    FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
+                    
+                    if curr_workers_len_fast >= FAST_QUORUM:
+                        logger.info(f"Enough fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}.")
+                        break
+                    else:
+                        fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
+                        fast_step_event.clear()
             
-            if len(fast_workers_grads_received) != 0:
+            if NUM_FAST_WORKERS > 0 and len(fast_workers_grads_received) != 0:
                 with lock:
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
@@ -390,38 +382,41 @@ def main():
                 gc.collect()
 
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
-            else:
-                logger.warning(
-                    f"No gradients received for step {step} for fast workers. Skipping grad update."
-                )
-                
-            start_time = time.time()
-
-            while True:
-                
+            elif NUM_FAST_WORKERS == 0:
+                logger.info("No fast workers configured, using only leader gradients.")
+                optimizer.zero_grad()
+                set_gradients(leader_grads, model)
+                optimizer.step()
                 with lock:
-                    curr_workers_len_slow = len(slow_workers_grads_received)
-                    # print("current workers len slow:", curr_workers_len_slow)
-                logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} slow participants."
-                )
-                if curr_workers_len_slow < NUM_SLOW_WORKERS:
-                    logger.info(f"Waiting for more gradients for step {step}...")
-                    curr_time = time.time()
-
-                    if curr_time - start_time >= SLOW_WORKER_TIMEOUT:
-                        logger.warning(
-                            f"Timeout waiting for gradients for step {step} for slow workers. Proceeding with available gradients {len(slow_workers_grads_received)}."
-                        )
-                        break
+                    model_version += 1
+                del leader_grads
+                gc.collect()
+            else:
+                logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
+                
+            # Handle slow workers
+            if NUM_SLOW_WORKERS > 0:
+                start_time = time.time()
+                while True:
+                    with lock:
+                        curr_workers_len_slow = len(slow_workers_grads_received)
+                    logger.info(
+                        f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} slow participants."
+                    )
+                    if curr_workers_len_slow < NUM_SLOW_WORKERS:
+                        curr_time = time.time()
+                        if curr_time - start_time >= SLOW_WORKER_TIMEOUT:
+                            logger.warning(
+                                f"Timeout waiting for gradients for step {step} for slow workers. Proceeding with available gradients {len(slow_workers_grads_received)}."
+                            )
+                            break
+                        else:
+                            slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT)
+                            slow_step_event.clear()
                     else:
-                        slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT)
-                        slow_step_event.clear()
-
-                else:
-                    break
+                        break
             
-            if len(slow_workers_grads_received) != 0:
+            if NUM_SLOW_WORKERS > 0 and len(slow_workers_grads_received) != 0:
                 with lock:
                     slow_grads_copy = dict(slow_workers_grads_received)
                     slow_workers_grads_received.clear()
@@ -451,13 +446,6 @@ def main():
                 
                 del slow_grads_copy
                 gc.collect()
-                
-
-            else:
-                logger.warning(
-                    f"No gradients received for step {step} for fast workers. Skipping grad update."
-                )
-                del leader_grads
             
             
             if RANK == 0:
