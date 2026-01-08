@@ -40,10 +40,10 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-STALENESS_FACTOR = cluster_config.get("staleness_factor", 0)
-STALENESS_HALT_TIME = cluster_config.get("staleness_halt_time", 1)
+STALENESS_FACTOR = cluster_config["staleness_factor"]
+STALENESS_HALT_TIME = cluster_config["staleness_halt_time"]
 
-slow_worker_update_interval = cluster_config.get("slow_worker_update_interval", 5)
+slow_worker_update_interval = cluster_config["slow_worker_update_interval"]
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
     WORKER_RANK = sys.argv[1]

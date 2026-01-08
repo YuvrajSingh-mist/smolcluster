@@ -145,6 +145,7 @@ def evaluate(
             correct += (predicted == target).sum().item()
     avg_loss = total_loss / len(val_loader)
     accuracy = 100 * (correct / total)
+    model.train()
     return avg_loss, accuracy
 
 
@@ -411,7 +412,7 @@ def main():
                 logger.info("Reducing gradients from fast workers and leader.")
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
-                    fast_workers_grads_updated, WORLD_SIZE 
+                    fast_workers_grads_updated, len(fast_workers_grads_updated) + 1 
                 )
                 
                 optimizer.zero_grad()
