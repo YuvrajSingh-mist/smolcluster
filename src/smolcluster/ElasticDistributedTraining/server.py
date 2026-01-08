@@ -64,7 +64,7 @@ SLOW_WORKER_TIMEOUT = cluster_config["slow_worker_timeout"]
 batch_size = nn_config["batch_size"]
 eval_steps = nn_config["eval_steps"]
 num_epochs = nn_config["num_epochs"]
-track_gradients = nn_config.get("track_gradients", False)
+track_gradients = nn_config["track_gradients"]
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -200,7 +200,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[(rank, recv_step)] = grads  # Use recv_step instead of worker_version
+                        fast_workers_grads_received[rank] = grads  # Use recv_step instead of worker_version
                         
                     fast_step_event.set()
                     
@@ -209,7 +209,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 elif ip_address in all_workers_ips_addr["slow_workers"]:
                     with lock:
                         slow_workers_grads_received[(rank, worker_version)] = grads
-                     
+                    
                     slow_step_event.set()
                     logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
                         
@@ -407,7 +407,7 @@ def main():
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                     
-                    fast_workers_grads_updated = {k[0]: v for k, v in fast_grads_copy.items()}
+                    fast_workers_grads_updated = {k: v for k, v in fast_grads_copy.items()}
                     
                 logger.info("Reducing gradients from fast workers and leader.")
                 grads_reduced = parameter_server_reduce(
@@ -521,6 +521,9 @@ def main():
         )
 
         if step % eval_steps == 0:
+            
+            logger.info(f"Evaluating model at step {step}...")
+            
             val_loss, val_acc = evaluate(model, val_loader, criterion)
 
             wandb.log(
