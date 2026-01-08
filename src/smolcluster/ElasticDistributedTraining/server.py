@@ -189,7 +189,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[rank] = grads
+                        fast_workers_grads_received[(rank, recv_step)] = grads
                         
                     fast_step_event.set()
                     
@@ -393,11 +393,13 @@ def main():
               
                 fast_grads_copy = dict(fast_workers_grads_received)
                 fast_workers_grads_received.clear()
+                
+                fast_workers_grads_step = {k:v for k,v in fast_grads_copy.items() if k[1]==step}
             
             logger.info("Reducing gradients from fast workers and leader.")
             grads_reduced = parameter_server_reduce(
                 leader_grads,
-                fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
+                fast_workers_grads_step, len(fast_workers_grads_step) + 1  # +1 for leader
             )
             
             optimizer.zero_grad()
@@ -412,7 +414,7 @@ def main():
             logger.info(f"Updated to model version {model_version}")
             
             
-            del grads_reduced, leader_grads, fast_grads_copy
+            del grads_reduced, leader_grads, fast_grads_copy, fast_workers_grads_step
             gc.collect()
 
             logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
