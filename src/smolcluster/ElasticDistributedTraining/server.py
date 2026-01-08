@@ -115,8 +115,17 @@ def evaluate(
     total_loss = 0.0
     correct = 0
     total = 0
+    val_iter = iter(val_loader)
+    
     with torch.no_grad():
-        for data, target in val_loader:
+        for step in range(len(val_loader)):
+            
+            try:
+                data, target = next(val_iter)
+            except StopIteration:
+                val_iter = iter(val_loader)
+                data, target = next(val_iter)
+            
             data, target = data.to(get_device()), target.to(get_device())
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
@@ -329,178 +338,190 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
 
     logger.info(f"Starting training for {num_epochs} epochs.")
-    for epoch in range(num_epochs):
+    
+    train_iter = iter(train_loader)
+    val_iter = iter(val_loader)
+    total_steps = num_epochs * len(train_loader)
+   
+    for step in range(total_steps):
         model.train()
+        data, target = next(train_iter)
+        
+        data = data.to(get_device())
+        target = target.to(get_device())
+        
         if RANK == 0:
             total_loss = 0.0
+            
+            
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
-        for batch_idx, (data, target) in enumerate(train_loader):
-            step = epoch * len(train_loader) + batch_idx
-            leader_grads = compute_leader_gradients(
-                model, data, target, criterion, optimizer
-            )
-            logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
-            
-            # Handle fast workers
-            if NUM_FAST_WORKERS > 0:
-                while True:
-                    with lock:
-                        curr_workers_len_fast = len(fast_workers_grads_received)
-                        print("curr_workers_len_fast:", curr_workers_len_fast)
-                    logger.info(
-                        f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
-                    )
-                    
-                    FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
-                    
-                    if curr_workers_len_fast >= FAST_QUORUM:
-                        logger.info(f"Enough fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}.")
-                        break
-                    else:
-                        fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
-                        fast_step_event.clear()
-            
-            if NUM_FAST_WORKERS > 0 and len(fast_workers_grads_received) != 0:
+        epoch = step // len(train_loader)
+        leader_grads = compute_leader_gradients(
+            model, data, target, criterion, optimizer
+        )
+        logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
+        
+        # Handle fast workers
+        if NUM_FAST_WORKERS > 0:
+            while True:
                 with lock:
-                    fast_grads_copy = dict(fast_workers_grads_received)
-                    fast_workers_grads_received.clear()
-                
-                grads_reduced = parameter_server_reduce(
-                    leader_grads,
-                    fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
+                    curr_workers_len_fast = len(fast_workers_grads_received)
+                    print("curr_workers_len_fast:", curr_workers_len_fast)
+                logger.info(
+                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                 )
                 
-                optimizer.zero_grad()
-                set_gradients(grads_reduced, model)
-                optimizer.step()
+                FAST_QUORUM = max(1, int(0.7 * NUM_FAST_WORKERS))
                 
-                logger.info(f"Updated model with reduced gradients for step {step}")
-                
-                with lock:
-                    model_version += 1
+                if curr_workers_len_fast >= FAST_QUORUM:
+                    logger.info(f"Enough fast workers. Proceeding with available gradients {len(fast_workers_grads_received)}.")
+                    break
+                else:
+                    fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
+                    fast_step_event.clear()
+        
+        if NUM_FAST_WORKERS > 0 and len(fast_workers_grads_received) != 0:
+            with lock:
+                fast_grads_copy = dict(fast_workers_grads_received)
+                fast_workers_grads_received.clear()
+            
+            grads_reduced = parameter_server_reduce(
+                leader_grads,
+                fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
+            )
+            
+            optimizer.zero_grad()
+            set_gradients(grads_reduced, model)
+            optimizer.step()
+            
+            logger.info(f"Updated model with reduced gradients for step {step}")
+            
+            with lock:
+                model_version += 1
 
-                logger.info(f"Updated to model version {model_version}")
-                
-              
-                del grads_reduced, leader_grads, fast_grads_copy
-                gc.collect()
+            logger.info(f"Updated to model version {model_version}")
+            
+            
+            del grads_reduced, leader_grads, fast_grads_copy
+            gc.collect()
 
-                logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
-            elif NUM_FAST_WORKERS == 0:
-                logger.info("No fast workers configured, using only leader gradients.")
-                optimizer.zero_grad()
-                set_gradients(leader_grads, model)
-                optimizer.step()
+            logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
+        elif NUM_FAST_WORKERS == 0:
+            logger.info("No fast workers configured, using only leader gradients.")
+            optimizer.zero_grad()
+            set_gradients(leader_grads, model)
+            optimizer.step()
+            with lock:
+                model_version += 1
+            del leader_grads
+            gc.collect()
+        else:
+            logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
+            
+        # Handle slow workers
+        if NUM_SLOW_WORKERS > 0:
+            while True:
                 with lock:
-                    model_version += 1
-                del leader_grads
-                gc.collect()
-            else:
-                logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
-                
-            # Handle slow workers
-            if NUM_SLOW_WORKERS > 0:
-                while True:
-                    with lock:
-                        curr_workers_len_slow = len(slow_workers_grads_received)
-                    logger.info(
-                        f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} slow participants."
-                    )
-                    if curr_workers_len_slow < NUM_SLOW_WORKERS:
-                        if not slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT):
-                            logger.warning(
-                                f"Timeout waiting for gradients for step {step} for slow workers. Proceeding with available gradients {len(slow_workers_grads_received)}."
-                            )
-                            break
-                        slow_step_event.clear()
-                    else:
+                    curr_workers_len_slow = len(slow_workers_grads_received)
+                logger.info(
+                    f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} slow participants."
+                )
+                if curr_workers_len_slow < NUM_SLOW_WORKERS:
+                    if not slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT):
+                        logger.warning(
+                            f"Timeout waiting for gradients for step {step} for slow workers. Proceeding with available gradients {len(slow_workers_grads_received)}."
+                        )
                         break
+                    slow_step_event.clear()
+                else:
+                    break
+        
+        if NUM_SLOW_WORKERS > 0 and len(slow_workers_grads_received) != 0:
+            with lock:
+                slow_grads_copy = slow_workers_grads_received.copy()
+                slow_workers_grads_received.clear()
+
+                
+            logger.info(f"Updating model with {len(slow_grads_copy)} slow worker gradients using elastic SGD")
             
-            if NUM_SLOW_WORKERS > 0 and len(slow_workers_grads_received) != 0:
+            for (rank, worker_version), grads in slow_grads_copy.items():
+            
+                
+                staleness = model_version - worker_version
+                scale = 1.0 / (1.0 + staleness)
+                
+                logger.info(f"Applying slow worker rank {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
+                
+                # Scale gradients by staleness
+                optimizer.zero_grad()
+                scaled_grads = {k: v * scale for k, v in grads.items()}
+                
+                set_gradients(scaled_grads, model)
+                optimizer.step()
+                
                 with lock:
-                    slow_grads_copy = slow_workers_grads_received.copy()
-                    slow_workers_grads_received.clear()
-
-                    
-                logger.info(f"Updating model with {len(slow_grads_copy)} slow worker gradients using elastic SGD")
+                    model_version += 1
                 
-                for (rank, worker_version), grads in slow_grads_copy.items():
-              
-                    
-                    staleness = model_version - worker_version
-                    scale = 1.0 / (1.0 + staleness)
-                    
-                    logger.info(f"Applying slow worker rank {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
-                    
-                    # Scale gradients by staleness
-                    optimizer.zero_grad()
-                    scaled_grads = {k: v * scale for k, v in grads.items()}
-                    
-                    set_gradients(scaled_grads, model)
-                    optimizer.step()
-                    
-                    with lock:
-                        model_version += 1
-                    
-                    
                 
-                del slow_grads_copy, scaled_grads
-                gc.collect()
             
-            
-            if RANK == 0:
-                data = data.to(get_device())
-                target = target.to(get_device())
-                output = model(data.view(data.size(0), -1))
-                loss = criterion(output, target)
-                total_loss += loss.item()
+            del slow_grads_copy, scaled_grads
+            gc.collect()
+        
+        
+        if RANK == 0:
+            data = data.to(get_device())
+            target = target.to(get_device())
+            output = model(data.view(data.size(0), -1))
+            loss = criterion(output, target)
+            total_loss += loss.item()
 
-                if track_gradients:
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            grad_norm = torch.norm(param.grad.detach(), 2).item()
-                            wandb.log(
-                                {
-                                    f"gradients/layer_{name}": grad_norm,
-                                    "step": step,
-                                }
-                            )
+            if track_gradients:
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log(
+                            {
+                                f"gradients/layer_{name}": grad_norm,
+                                "step": step,
+                            }
+                        )
+
+            wandb.log(
+                {
+                    "step": step,
+                    "lr": nn_config["learning_rate"],
+                    "batch_size": nn_config["batch_size"],
+                }
+            )
+
+            if step % eval_steps == 0:
+                val_loss, val_acc = evaluate(model, val_loader, criterion)
 
                 wandb.log(
                     {
                         "step": step,
-                        "lr": nn_config["learning_rate"],
-                        "batch_size": nn_config["batch_size"],
+                        "losses/val": val_loss,
+                        "accuracy/val": val_acc,
                     }
                 )
 
-                if step % eval_steps == 0:
-                    val_loss, val_acc = evaluate(model, val_loader, criterion)
+    avg_loss = total_loss / len(train_loader)
 
-                    wandb.log(
-                        {
-                            "step": step,
-                            "losses/val": val_loss,
-                            "accuracy/val": val_acc,
-                        }
-                    )
+    wandb.log(
+        {
+            "step": step,
+            "losses/train": avg_loss,
+        }
+    )
 
-        avg_loss = total_loss / len(train_loader)
-
-        wandb.log(
-            {
-                "step": step,
-                "losses/train": avg_loss,
-            }
-        )
-
-        logger.info(
-            f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader)} completed."
-        )
+    logger.info(
+        f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader)} completed."
+    )
 
     wandb.finish()
     client_socket.close()
 
 
 if __name__ == "__main__":
+    
     main()
