@@ -232,22 +232,20 @@ def main():
         ))
 
         if step % slow_worker_update_interval == 0 and step != 0:
-            
-                logger.info(f"Pulling weights from server at step {step}.")
-                send_message(sock, ("pull_weights", model_version))
-                sock.settimeout(0.0)  # Non-blocking socket read
-                try:
-                    weights, new_version = receive_message(sock)
-                    set_weights(weights, model)
-                    model_version = new_version
-                    logger.info(f"Updated to model version {model_version}")
-                except socket.timeout:
-                    logger.warning("Timeout while pulling weights from server.")
-                    pass
-                except BlockingIOError:
-                    logger.warning("Non-blocking socket read had no data while pulling weights.")
-                    pass
-                sock.settimeout(None)  # Restore blocking socket read
+            logger.info(f"Pulling weights from server at step {step}.")
+            send_message(sock, ("pull_weights", model_version))
+            sock.settimeout(5.0)  # Wait up to 5 seconds for weights
+            try:
+                weights, new_version = receive_message(sock)
+                set_weights(weights, model)
+                model_version = new_version
+                logger.info(f"Updated to model version {model_version}")
+            except socket.timeout:
+                logger.warning("Timeout while pulling weights from server.")
+            except BlockingIOError:
+                logger.error(f"non-blocking socket error while pulling weights from server.")
+            finally:
+                sock.settimeout(None)  # Restore blocking socket
                 
         total_loss += loss.item()
         

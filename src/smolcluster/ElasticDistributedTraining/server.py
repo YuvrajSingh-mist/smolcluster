@@ -178,6 +178,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 )
                
                 ip_address, _port = addr
+                print(ip_address, all_workers_ips_addr)
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
                         fast_workers_grads_received[(rank, model_version)] = grads
@@ -396,7 +397,6 @@ def main():
                 
             # Handle slow workers
             if NUM_SLOW_WORKERS > 0:
-                start_time = time.time()
                 while True:
                     with lock:
                         curr_workers_len_slow = len(slow_workers_grads_received)
@@ -404,15 +404,12 @@ def main():
                         f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_slow}/{NUM_SLOW_WORKERS} slow participants."
                     )
                     if curr_workers_len_slow < NUM_SLOW_WORKERS:
-                        curr_time = time.time()
-                        if curr_time - start_time >= SLOW_WORKER_TIMEOUT:
+                        if not slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT):
                             logger.warning(
                                 f"Timeout waiting for gradients for step {step} for slow workers. Proceeding with available gradients {len(slow_workers_grads_received)}."
                             )
                             break
-                        else:
-                            slow_step_event.wait(timeout=SLOW_WORKER_TIMEOUT)
-                            slow_step_event.clear()
+                        slow_step_event.clear()
                     else:
                         break
             
