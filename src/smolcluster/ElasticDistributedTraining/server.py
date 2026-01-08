@@ -355,8 +355,9 @@ def main():
             total_loss = 0.0
             
             
-        logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
+        
         epoch = step // len(train_loader)
+        logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
         leader_grads = compute_leader_gradients(
             model, data, target, criterion, optimizer
         )
