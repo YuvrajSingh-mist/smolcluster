@@ -187,7 +187,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 elif ip_address in all_workers_ips_addr["slow_workers"]:
                     with lock:
-                        slow_workers_grads_received[rank] = grads
+                        slow_workers_grads_received[(rank, model_version)] = grads
                      
                     slow_step_event.set()
                     logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
@@ -346,6 +346,7 @@ def main():
                 while True:
                     with lock:
                         curr_workers_len_fast = len(fast_workers_grads_received)
+                        print("curr_workers_len_fast:", curr_workers_len_fast)
                     logger.info(
                         f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                     )
@@ -417,19 +418,19 @@ def main():
             
             if NUM_SLOW_WORKERS > 0 and len(slow_workers_grads_received) != 0:
                 with lock:
-                    slow_grads_copy = dict(slow_workers_grads_received)
+                    slow_grads_copy = slow_workers_grads_received.copy()
                     slow_workers_grads_received.clear()
-                
+
+                    
                 logger.info(f"Updating model with {len(slow_grads_copy)} slow worker gradients using elastic SGD")
                 
-                for rank, payload in slow_grads_copy.items():
-                    grads = payload["grads"]
-                    worker_version = payload["model_version"]
+                for (rank, worker_version), grads in slow_grads_copy.items():
+              
                     
                     staleness = model_version - worker_version
                     scale = 1.0 / (1.0 + staleness)
                     
-                    logger.info(f"Applying slow worker {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
+                    logger.info(f"Applying slow worker rank {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
                     
                     # Scale gradients by staleness
                     optimizer.zero_grad()
@@ -443,7 +444,7 @@ def main():
                     
                     
                 
-                del slow_grads_copy
+                del slow_grads_copy, scaled_grads
                 gc.collect()
             
             
