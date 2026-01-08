@@ -189,7 +189,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[(rank, recv_step)] = grads
+                        fast_workers_grads_received[(rank, worker_version)] = grads
                         
                     fast_step_event.set()
                     
@@ -197,7 +197,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 elif ip_address in all_workers_ips_addr["slow_workers"]:
                     with lock:
-                        slow_workers_grads_received[(rank, model_version)] = grads
+                        slow_workers_grads_received[(rank, worker_version)] = grads
                      
                     slow_step_event.set()
                     logger.info(f"Gradients stored successfully for slow worker {rank} at step {recv_step}") 
@@ -371,8 +371,7 @@ def main():
             while True:
                 with lock:
                     curr_workers_len_fast = len(fast_workers_grads_received)
-                    print(f"Current fast workers grads received: {len(fast_workers_grads_received)}")
-                    
+                  
                 logger.info(
                     f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                 )
@@ -396,11 +395,12 @@ def main():
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                     
-               
+                    fast_workers_grads_updated = {k[0]: v for k, v in fast_grads_copy.items()}
+                    
                 logger.info("Reducing gradients from fast workers and leader.")
                 grads_reduced = parameter_server_reduce(
                     leader_grads,
-                    fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
+                    fast_workers_grads_updated, WORLD_SIZE 
                 )
                 
                 optimizer.zero_grad()
@@ -415,7 +415,7 @@ def main():
                 logger.info(f"Updated to model version {model_version}")
                 
                 
-                del grads_reduced, leader_grads, fast_grads_copy
+                del grads_reduced, leader_grads, fast_grads_copy, fast_workers_grads_updated
                 gc.collect()
 
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
@@ -482,6 +482,7 @@ def main():
         
             
         if RANK == 0:
+            
             data = data.to(get_device())
             target = target.to(get_device())
             output = model(data.view(data.size(0), -1))
