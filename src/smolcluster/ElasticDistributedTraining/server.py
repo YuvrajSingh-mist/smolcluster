@@ -40,9 +40,9 @@ with open("../configs/cluster_config_edp.yaml") as f:
 # Extract values with defaults
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
 PORT = cluster_config["port"]
-NUM_WORKERS = cluster_config["num_workers"]
 NUM_SLOW_WORKERS = len(cluster_config.get("slow_workers") or [])
 NUM_FAST_WORKERS = len(cluster_config.get("fast_workers") or [])
+NUM_WORKERS = NUM_SLOW_WORKERS + NUM_FAST_WORKERS
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 FAST_WORKERS_IPS = cluster_config.get("fast_workers") or {}
