@@ -342,7 +342,7 @@ def main():
     
     train_iter = iter(train_loader)
 
-    total_steps = num_epochs * len(train_loader) * WORLD_SIZE
+    total_steps = num_epochs * len(train_loader)
    
     for step in range(total_steps):
         model.train()
