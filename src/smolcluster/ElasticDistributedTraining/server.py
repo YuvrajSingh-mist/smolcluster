@@ -369,7 +369,7 @@ def main():
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
         
         # Handle fast workers
-        if NUM_FAST_WORKERS > 0 and len(workers) > 0:
+        if NUM_FAST_WORKERS > 0:
             while True:
                 with lock:
                     curr_workers_len_fast = len(fast_workers_grads_received)
@@ -419,8 +419,8 @@ def main():
 
                 logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
             
-            elif NUM_FAST_WORKERS == 0 or len(workers) == 0:
-                logger.info("No fast workers configured, using only leader gradients.")
+            else:
+                logger.info("No fast workers configured or workers exhausted, using only leader gradients.")
                 optimizer.zero_grad()
                 set_gradients(leader_grads, model)
                 optimizer.step()
@@ -429,8 +429,8 @@ def main():
                 del leader_grads
                 gc.collect()
                 logger.info(f"Updated to model version {model_version} using only leader gradients.")
-            else:
-                logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
+            # else:
+            #     logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
         
         
         # Handle slow workers
