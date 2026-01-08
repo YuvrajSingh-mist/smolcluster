@@ -492,46 +492,44 @@ def main():
                 del slow_grads_copy, scaled_grads
                 gc.collect()
         
-            
-        if RANK == 0:
-            
-            data = data.to(get_device())
-            target = target.to(get_device())
-            output = model(data.view(data.size(0), -1))
-            loss = criterion(output, target)
-            total_loss += loss.item()
-            
-            logger.info(f"Epoch {epoch + 1}, Step: {step}: Loss = {loss.item():.4f}, Running Avg = {total_loss/(step+1):.4f}")
-            
-            if track_gradients:
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_norm = torch.norm(param.grad.detach(), 2).item()
-                        wandb.log(
-                            {
-                                f"gradients/layer_{name}": grad_norm,
-                                "step": step,
-                            }
-                        )
+        
+        data = data.to(get_device())
+        target = target.to(get_device())
+        output = model(data.view(data.size(0), -1))
+        loss = criterion(output, target)
+        total_loss += loss.item()
+        
+        logger.info(f"Epoch {epoch + 1}, Step: {step}: Loss = {loss.item():.4f}, Running Avg = {total_loss/(step+1):.4f}")
+        
+        if track_gradients:
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    grad_norm = torch.norm(param.grad.detach(), 2).item()
+                    wandb.log(
+                        {
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                        }
+                    )
+
+        wandb.log(
+            {
+                "step": step,
+                "lr": nn_config["learning_rate"],
+                "batch_size": nn_config["batch_size"],
+            }
+        )
+
+        if step % eval_steps == 0:
+            val_loss, val_acc = evaluate(model, val_loader, criterion)
 
             wandb.log(
                 {
                     "step": step,
-                    "lr": nn_config["learning_rate"],
-                    "batch_size": nn_config["batch_size"],
+                    "losses/val": val_loss,
+                    "accuracy/val": val_acc,
                 }
             )
-
-            if step % eval_steps == 0:
-                val_loss, val_acc = evaluate(model, val_loader, criterion)
-
-                wandb.log(
-                    {
-                        "step": step,
-                        "losses/val": val_loss,
-                        "accuracy/val": val_acc,
-                    }
-                )
 
     avg_loss = total_loss / len(train_loader)
 
