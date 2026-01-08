@@ -200,7 +200,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[(rank, worker_version)] = grads  # Use recv_step instead of worker_version
+                        fast_workers_grads_received[(rank, recv_step)] = grads  # Use recv_step instead of worker_version
                         
                     fast_step_event.set()
                     
@@ -407,7 +407,7 @@ def main():
                     fast_grads_copy = dict(fast_workers_grads_received)
                     fast_workers_grads_received.clear()
                     
-                    fast_workers_grads_updated = {k[0]: v for k, v in fast_grads_copy.items() if k[1] == model_version}
+                    fast_workers_grads_updated = {k[0]: v for k, v in fast_grads_copy.items() if k[1] == step}
                     
                 logger.info("Reducing gradients from fast workers and leader.")
                 grads_reduced = parameter_server_reduce(
