@@ -342,11 +342,16 @@ def main():
     
     train_iter = iter(train_loader)
 
-    total_steps = num_epochs * len(train_loader) * NUM_WORKERS
+    total_steps = num_epochs * len(train_loader) * WORLD_SIZE
    
     for step in range(total_steps):
         model.train()
-        data, target = next(train_iter)
+        
+        try:
+            data, target = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            data, target = next(train_iter)
         
         data = data.to(get_device())
         target = target.to(get_device())
