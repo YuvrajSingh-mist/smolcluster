@@ -369,7 +369,7 @@ def main():
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
         
         # Handle fast workers
-        if NUM_FAST_WORKERS > 0:
+        if NUM_FAST_WORKERS > 0 and len(workers) > 0:
             while True:
                 with lock:
                     curr_workers_len_fast = len(fast_workers_grads_received)
@@ -387,51 +387,54 @@ def main():
                     fast_step_event.wait(timeout=FAST_WORKER_TIMEOUT)
                     fast_step_event.clear()
         
-        if NUM_FAST_WORKERS > 0 and len(fast_workers_grads_received) != 0:
-            with lock:
+            if len(fast_workers_grads_received) != 0:
+                with lock:
+                    
                 
-              
-                fast_grads_copy = dict(fast_workers_grads_received)
-                fast_workers_grads_received.clear()
+                    fast_grads_copy = dict(fast_workers_grads_received)
+                    fast_workers_grads_received.clear()
+                    
+                    fast_workers_grads_step = {k:v for k,v in fast_grads_copy.items() if k[1]==step}
                 
-                fast_workers_grads_step = {k:v for k,v in fast_grads_copy.items() if k[1]==step}
-            
-            logger.info("Reducing gradients from fast workers and leader.")
-            grads_reduced = parameter_server_reduce(
-                leader_grads,
-                fast_workers_grads_step, len(fast_workers_grads_step) + 1  # +1 for leader
-            )
-            
-            optimizer.zero_grad()
-            set_gradients(grads_reduced, model)
-            optimizer.step()
-            
-            logger.info(f"Updated model with reduced gradients for step {step}")
-            
-            with lock:
-                model_version += 1
+                logger.info("Reducing gradients from fast workers and leader.")
+                grads_reduced = parameter_server_reduce(
+                    leader_grads,
+                    fast_workers_grads_step, len(fast_workers_grads_step) + 1  # +1 for leader
+                )
+                
+                optimizer.zero_grad()
+                set_gradients(grads_reduced, model)
+                optimizer.step()
+                
+                logger.info(f"Updated model with reduced gradients for step {step}")
+                
+                with lock:
+                    model_version += 1
 
-            logger.info(f"Updated to model version {model_version}")
-            
-            
-            del grads_reduced, leader_grads, fast_grads_copy, fast_workers_grads_step
-            gc.collect()
+                logger.info(f"Updated to model version {model_version}")
+                
+                
+                del grads_reduced, leader_grads, fast_grads_copy, fast_workers_grads_step
+                gc.collect()
 
-            logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
-        elif NUM_FAST_WORKERS == 0:
-            logger.info("No fast workers configured, using only leader gradients.")
-            optimizer.zero_grad()
-            set_gradients(leader_grads, model)
-            optimizer.step()
-            with lock:
-                model_version += 1
-            del leader_grads
-            gc.collect()
-        else:
-            logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
+                logger.info("Latest weights pull signal sent to the workers. Waiting for slow workers gradients...")
             
+            elif NUM_FAST_WORKERS == 0 or len(workers) == 0:
+                logger.info("No fast workers configured, using only leader gradients.")
+                optimizer.zero_grad()
+                set_gradients(leader_grads, model)
+                optimizer.step()
+                with lock:
+                    model_version += 1
+                del leader_grads
+                gc.collect()
+                logger.info(f"Updated to model version {model_version} using only leader gradients.")
+            else:
+                logger.warning(f"No gradients received for step {step} for fast workers. Skipping grad update.")
+        
+        
         # Handle slow workers
-        if NUM_SLOW_WORKERS > 0:
+        if NUM_SLOW_WORKERS > 0 and len(workers) > 0:
             while True:
                 with lock:
                     curr_workers_len_slow = len(slow_workers_grads_received)
@@ -448,38 +451,37 @@ def main():
                 else:
                     break
         
-        if NUM_SLOW_WORKERS > 0 and len(slow_workers_grads_received) != 0:
-            with lock:
-                slow_grads_copy = slow_workers_grads_received.copy()
-                slow_workers_grads_received.clear()
-
-                
-            logger.info(f"Updating model with {len(slow_grads_copy)} slow worker gradients using elastic SGD")
-            
-            for (rank, worker_version), grads in slow_grads_copy.items():
-            
-                
-                staleness = model_version - worker_version
-                scale = 1.0 / (1.0 + staleness)
-                
-                logger.info(f"Applying slow worker rank {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
-                
-                # Scale gradients by staleness
-                optimizer.zero_grad()
-                scaled_grads = {k: v * scale for k, v in grads.items()}
-                
-                set_gradients(scaled_grads, model)
-                optimizer.step()
-                
+            if len(slow_workers_grads_received) != 0:
                 with lock:
-                    model_version += 1
+                    slow_grads_copy = slow_workers_grads_received.copy()
+                    slow_workers_grads_received.clear()
+
+                    
+                logger.info(f"Updating model with {len(slow_grads_copy)} slow worker gradients using elastic SGD")
                 
+                for (rank, worker_version), grads in slow_grads_copy.items():
                 
+                    
+                    staleness = model_version - worker_version
+                    scale = 1.0 / (1.0 + staleness)
+                    
+                    logger.info(f"Applying slow worker rank {rank} grads (staleness: {staleness}, scale: {scale:.3f})")
+                    
+                    # Scale gradients by staleness
+                    optimizer.zero_grad()
+                    scaled_grads = {k: v * scale for k, v in grads.items()}
+                    
+                    set_gradients(scaled_grads, model)
+                    optimizer.step()
+                    
+                    with lock:
+                        model_version += 1
+                    logger.info(f"Updated to model version {model_version} after applying slow worker {rank} gradients")
+                
+                del slow_grads_copy, scaled_grads
+                gc.collect()
+        
             
-            del slow_grads_copy, scaled_grads
-            gc.collect()
-        
-        
         if RANK == 0:
             data = data.to(get_device())
             target = target.to(get_device())
