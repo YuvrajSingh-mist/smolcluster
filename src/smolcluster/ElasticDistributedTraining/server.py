@@ -501,6 +501,13 @@ def main():
         
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Loss = {loss.item():.4f}, Running Avg = {total_loss/(step+1):.4f}")
         
+        wandb.log(
+            {
+                "step": step,
+                "losses/step_loss": loss.item(),
+            }
+        )
+        
         if track_gradients:
             for name, param in model.named_parameters():
                 if param.grad is not None:
