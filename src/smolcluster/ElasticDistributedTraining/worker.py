@@ -52,7 +52,7 @@ HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
-recv_step = -1
+recv_model_version = -1
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -164,7 +164,7 @@ def connect_to_server(
 
 def main():
     
-    global model_version, recv_step
+    global model_version, recv_model_version
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
@@ -243,6 +243,7 @@ def main():
                     
                 set_weights(weights, model)
                 model_version = new_version
+                recv_model_version = new_version
                 logger.info(f"Updated to model version {model_version}")
             except socket.timeout:
                 logger.warning("Timeout while pulling weights from server.")
@@ -251,9 +252,9 @@ def main():
             finally:
                 sock.settimeout(None)  # Restore blocking socket
         
-        if abs(step - recv_step) > STALENESS_FACTOR and recv_step != -1:
+        if abs(model_version - recv_model_version) > STALENESS_FACTOR and recv_model_version != -1:
             logger.warning(
-                        f"Step mismatch when receiving weights: expected {step}, got {recv_step}"
+                        f"Step mismatch when receiving weights: expected {model_version}, got {recv_model_version}"
                     )
             time.sleep(STALENESS_HALT_TIME)
                 
