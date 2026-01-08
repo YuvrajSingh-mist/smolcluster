@@ -192,7 +192,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                         fast_workers_grads_received[rank] = grads
                         
                     fast_step_event.set()
-                    print(len(fast_workers_grads_received))
+                    
                     logger.info(f"Gradients stored successfully for fast worker {rank} at step {recv_step}")
                 
                 elif ip_address in all_workers_ips_addr["slow_workers"]:
@@ -367,7 +367,7 @@ def main():
             while True:
                 with lock:
                     curr_workers_len_fast = len(fast_workers_grads_received)
-                    print("curr_workers_len_fast:", curr_workers_len_fast)
+                    
                 logger.info(
                     f"Epoch {epoch + 1}, Step: {step}: Received gradients from {curr_workers_len_fast}/{NUM_FAST_WORKERS} fast participants."
                 )
@@ -386,6 +386,7 @@ def main():
                 fast_grads_copy = dict(fast_workers_grads_received)
                 fast_workers_grads_received.clear()
             
+            logger.info("Reducing gradients from fast workers and leader.")
             grads_reduced = parameter_server_reduce(
                 leader_grads,
                 fast_grads_copy, len(fast_grads_copy) + 1  # +1 for leader
