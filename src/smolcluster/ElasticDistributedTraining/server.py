@@ -383,6 +383,8 @@ def main():
         
         if NUM_FAST_WORKERS > 0 and len(fast_workers_grads_received) != 0:
             with lock:
+                
+                print(fast_workers_grads_received)
                 fast_grads_copy = dict(fast_workers_grads_received)
                 fast_workers_grads_received.clear()
             
