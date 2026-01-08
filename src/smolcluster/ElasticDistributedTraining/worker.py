@@ -41,7 +41,7 @@ NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 STALENESS_FACTOR = cluster_config.get("staleness_factor", 0)
-STALENESS_HALT_TIME = cluster_config.get("staleness_halt_time", 5)
+STALENESS_HALT_TIME = cluster_config.get("staleness_halt_time", 1)
 
 slow_worker_update_interval = cluster_config.get("slow_worker_update_interval", 5)
 # Get worker rank and hostname from command-line arguments
@@ -213,7 +213,7 @@ def main():
     for step in range(total_steps):
         model.train()
 
-        total_loss = 0.0
+        
         
         # Fetch next batch, cycling through dataset
         try:
@@ -270,8 +270,6 @@ def main():
             model_version = recv_model_version
             logger.info(f"Updated local model version to {model_version}.")
             time.sleep(STALENESS_HALT_TIME)
-                
-        total_loss += loss.item()
         
         logger.info(
             f"Step {step}/{total_steps} completed."

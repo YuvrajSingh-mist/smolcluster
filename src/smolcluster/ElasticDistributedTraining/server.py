@@ -199,7 +199,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 
                 if ip_address in all_workers_ips_addr["fast_workers"]:
                     with lock:
-                        fast_workers_grads_received[(rank, worker_version)] = grads
+                        fast_workers_grads_received[(rank, recv_step)] = grads  # Use recv_step instead of worker_version
                         
                     fast_step_event.set()
                     
@@ -353,6 +353,8 @@ def main():
     train_iter = iter(train_loader)
 
     total_steps = num_epochs * len(train_loader)
+    
+    total_loss = 0.0  # Initialize total_loss once before the loop
    
     for step in range(total_steps):
         model.train()
@@ -366,8 +368,7 @@ def main():
         data = data.to(get_device())
         target = target.to(get_device())
         
-        if RANK == 0:
-            total_loss = 0.0
+        epoch = step // len(train_loader)
         
         epoch = step // len(train_loader)
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
@@ -498,7 +499,9 @@ def main():
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_loss += loss.item()
-            print(total_loss)
+            
+            logger.info(f"Epoch {epoch + 1}, Step: {step}: Loss = {loss.item():.4f}, Running Avg = {total_loss/(step+1):.4f}")
+            
             if track_gradients:
                 for name, param in model.named_parameters():
                     if param.grad is not None:
