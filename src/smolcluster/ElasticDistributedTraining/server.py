@@ -498,7 +498,7 @@ def main():
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_loss += loss.item()
-
+            print(total_loss)
             if track_gradients:
                 for name, param in model.named_parameters():
                     if param.grad is not None:
