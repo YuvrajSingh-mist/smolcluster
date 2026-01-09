@@ -494,6 +494,75 @@ def main():
 
     logger.info(f"Training completed. Total steps: {step + 1}, Final model version: {model_version}")
     
+    logger.info("Checking for any remaining worker updates before shutdown...")
+    # Collect any available worker data (non-blocking with small timeout)
+    gradients_event.wait(timeout=0.01)  # Very short wait
+    gradients_event.clear()
+    
+    with lock:
+        workers_copy = dict(workers_grads_received)
+        workers_grads_received.clear()
+    
+    
+    if workers_copy:
+        logger.info(f"Step {step}: Collected {len(workers_copy)} worker update(s)")
+        
+        # NEW APPROACH: Polyak averaging with model weights
+        current_weights = get_weights(model)
+        
+        for (rank, recv_step, worker_version), worker_data in workers_copy.items():
+            staleness = abs(model_version - worker_version)
+            
+            if worker_data["type"] == "weights":
+                # Polyak averaging: blend worker model with current model
+                worker_weights = worker_data["data"]
+                blended_weights, staleness_factor = polyak_average_weights(
+                    current_weights, worker_weights, staleness
+                )
+                
+                logger.info(
+                    f"Applying worker {rank} model via Polyak averaging "
+                    f"(staleness: {staleness}, alpha: {staleness_factor:.3f})"
+                )
+                
+                # Update model with blended weights
+                model.load_state_dict(blended_weights)
+                current_weights = blended_weights  # Update for next worker
+                
+                with lock:
+                    model_version += 1
+                    
+            else:
+                # OLD APPROACH: Gradient scaling (kept for backward compatibility)
+                # This code path is commented out but functional if workers send gradients
+                grads = worker_data["data"]
+                scale = 1.0 / (1e-8 + staleness)
+                
+                logger.info(
+                    f"[DEPRECATED] Applying worker {rank} grads via scaling "
+                    f"(staleness: {staleness}, scale: {scale:.3f})"
+                )
+                
+                optimizer.zero_grad()
+                scaled_grads = {k: v * scale for k, v in grads.items()}
+                set_gradients(scaled_grads, model)
+                optimizer.step()
+                
+                with lock:
+                    model_version += 1
+            
+        del workers_copy
+        gc.collect()
+    
+    # Apply leader gradients
+    optimizer.zero_grad()
+    optimizer.step()
+    
+    with lock:
+        model_version += 1
+    
+    gc.collect()
+        
     # Signal shutdown and close socket
     shutdown_flag.set()
     sock.close()
