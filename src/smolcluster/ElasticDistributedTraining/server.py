@@ -399,6 +399,7 @@ def main():
                 if worker_data["type"] == "weights":
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
+                    worker_weights = worker_weights.to(get_device())
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
@@ -439,7 +440,7 @@ def main():
         
         # Apply leader gradients
         optimizer.zero_grad()
-        set_gradients(leader_grads, model)
+        # set_gradients(leader_grads, model)
         optimizer.step()
         
         with lock:
@@ -531,6 +532,7 @@ def main():
                 if worker_data["type"] == "weights":
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
+                    worker_weights = worker_weights.to(get_device())
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
