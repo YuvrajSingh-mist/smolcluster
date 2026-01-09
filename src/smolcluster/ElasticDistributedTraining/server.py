@@ -347,7 +347,7 @@ def main():
     # Give workers a moment to connect
     time.sleep(2)
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     logger.info(f"Starting training for {num_epochs} epochs.")
     

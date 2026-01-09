@@ -197,7 +197,7 @@ def main():
     
     total_steps = num_epochs * len(train_loader)
     
-    optimizer = torch.optim.SGD(model.parameters(), lr=nn_config["learning_rate"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     # Wait for start signal or timeout and start anyway
     logger.info("Waiting for start_training signal from server (max 5 seconds)...")
