@@ -245,28 +245,6 @@ def polyak_average_weights(
     
     return blended, staleness_factor
 
-def parameter_server_reduce(
-    leader_grads: dict[str, torch.Tensor],
-    grads_dict: dict[int, dict[str, torch.Tensor]], num_workers_connected: int
-) -> dict[str, torch.Tensor]:
-    # worker_reduced = {}
-    grads_reduced = {}
-    # leader_reduced = {}
-    for worker_id in list(grads_dict):
-        # if worker_id == RANK:
-        #     continue
-
-        for name, worker_grads in grads_dict[worker_id].items():
-            grads_reduced[name] = grads_reduced.get(name, 0.0) + (
-                worker_grads / num_workers_connected
-            )
-
-    if leader_grads is not None:
-        for name, leader_grad in leader_grads.items():
-            if name in grads_reduced:
-                grads_reduced[name] = grads_reduced[name] + (leader_grad / num_workers_connected)
-                
-    return grads_reduced
 
 
 model = SimpleMNISTModel(
@@ -299,6 +277,7 @@ logger.info(f"Server listening on {HOST_IP}:{PORT}")
 
 def main():
     global model_version
+    shutdown_flag = threading.Event()
     
     # Initialize W&B
     wandb.init(
@@ -316,7 +295,7 @@ def main():
 
     # Start accepting worker connections in background
     def accept_workers():
-        while True:
+        while not shutdown_flag.is_set():
             try:
                 client_socket, client_address = sock.accept()
                 logger.info(f"Accepted connection from {client_address}")
@@ -337,8 +316,16 @@ def main():
                 else:
                     logger.warning(f"Unexpected message from {client_address}: {command}")
                     client_socket.close()
+            except OSError:
+                # Socket closed, exit gracefully
+                if shutdown_flag.is_set():
+                    logger.info("Worker acceptance thread shutting down")
+                    break
+                else:
+                    logger.error("Socket error occurred")
             except Exception as e:
-                logger.error(f"Error accepting worker: {e}")
+                if not shutdown_flag.is_set():
+                    logger.error(f"Error accepting worker: {e}")
     
     # Start worker acceptance thread
     threading.Thread(target=accept_workers, daemon=True).start()
@@ -472,9 +459,8 @@ def main():
             # if track_gradients:
             logger.info("Tracking gradients in wandb...")
             for name, param in model.named_parameters():
-                
-                logger.info(f"Logging gradients for layer: {name}")
                 if param.grad is not None:
+                    logger.info(f"Logging gradients for layer: {name}")
                     grad_norm = torch.norm(param.grad.detach(), 2).item()
                     wandb.log(
                         {
@@ -507,8 +493,13 @@ def main():
             )
 
     logger.info(f"Training completed. Total steps: {step + 1}, Final model version: {model_version}")
-    wandb.finish()
+    
+    # Signal shutdown and close socket
+    shutdown_flag.set()
     sock.close()
+    logger.info("Server shutdown complete")
+    
+    wandb.finish()
 
 
 if __name__ == "__main__":
