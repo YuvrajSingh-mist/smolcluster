@@ -495,9 +495,7 @@ def main():
     logger.info(f"Training completed. Total steps: {step + 1}, Final model version: {model_version}")
     
     logger.info("Checking for any remaining worker updates before shutdown...")
-    # Collect any available worker data (non-blocking with small timeout)
-    gradients_event.wait(timeout=0.01)  # Very short wait
-    gradients_event.clear()
+    
     
     while True:
         with lock:
@@ -562,7 +560,61 @@ def main():
             with lock:
                 model_version += 1
                 
+            step += 1
             gc.collect()
+            
+            data = data.to(get_device())
+            target = target.to(get_device())
+            output = model(data.view(data.size(0), -1))
+            loss = criterion(output, target)
+            total_loss += loss.item()
+            
+            logger.info(f"Epoch {epoch + 1}, Step: {step}: Step loss = {loss.item():.4f}")
+            
+            if step % 50 == 0:
+                wandb.log(
+                    {
+                        "step": step,
+                        "losses/step_loss": loss.item(),
+                    }
+                )
+                
+                # if track_gradients:
+                logger.info("Tracking gradients in wandb...")
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        logger.info(f"Logging gradients for layer: {name}")
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log(
+                            {
+                                f"gradients/layer_{name}": grad_norm,
+                                "step": step,
+                            }
+                        )
+                logger.info("Gradient tracking complete.")
+                
+                wandb.log(
+                    {
+                        "step": step,
+                        "lr": nn_config["learning_rate"],
+                        "batch_size": nn_config["batch_size"],
+                    }
+                )
+
+            if step % eval_steps == 0:
+                
+                logger.info(f"Evaluating model at step {step}...")
+                
+                val_loss, val_acc = evaluate(model, val_loader, criterion)
+
+                wandb.log(
+                    {
+                        "step": step,
+                        "losses/val": val_loss,
+                        "accuracy/val": val_acc,
+                    }
+                )
+
         else:
             break
         
