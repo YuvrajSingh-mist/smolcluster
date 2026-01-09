@@ -400,6 +400,8 @@ def main():
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
                     
+                    print(worker_weights['model.fc1.weight'].device)
+                    print(current_weights['model.fc1.weight'].device)
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
