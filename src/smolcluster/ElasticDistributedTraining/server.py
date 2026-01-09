@@ -496,7 +496,7 @@ def main():
     
     logger.info("Checking for any remaining worker updates before shutdown...")
     
-    
+    print('LENGTH OF WORKERS:', len(workers))
     while len(workers) > 0:
         with lock:
             workers_copy = dict(workers_grads_received)
@@ -614,10 +614,6 @@ def main():
                         "accuracy/val": val_acc,
                     }
                 )
-
-        else:
-            break
-        
         
     # Signal shutdown and close socket
     shutdown_flag.set()
