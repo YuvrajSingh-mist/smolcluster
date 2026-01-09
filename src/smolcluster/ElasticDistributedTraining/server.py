@@ -497,7 +497,7 @@ def main():
     logger.info("Checking for any remaining worker updates before shutdown...")
     
     
-    while True:
+    while len(workers) > 0:
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
