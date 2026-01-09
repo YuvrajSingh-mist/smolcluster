@@ -496,10 +496,12 @@ def main():
     
     logger.info("Checking for any remaining worker updates before shutdown...")
     
- 
+    
+    gradients_event.wait(timeout=0.01)  # Wait up to 2 seconds
+    gradients_event.clear()
     while len(workers) > 0:
         
-        gradients_event.wait(timeout=0.1)  # Wait up to 2 seconds
+        gradients_event.wait(timeout=0.01)  # Wait up to 2 seconds
         gradients_event.clear()
     
         with lock:
