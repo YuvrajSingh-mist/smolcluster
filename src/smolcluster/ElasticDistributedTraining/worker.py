@@ -15,7 +15,8 @@ from smolcluster.utils.common_utils import (
     get_gradients,
     receive_message,
     send_message,
-    set_weights)
+    set_weights,
+    get_weights)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
@@ -237,20 +238,34 @@ def main():
         loss = criterion(output, target)
 
         loss.backward()
-        grads = get_gradients(model)
-
-        logger.info("local forward and backward pass done. Sending gradients to server.")
-        # Send gradients to server with version
+        optimizer.step()
+        
+        # NEW APPROACH: Send full model weights for Polyak averaging
+        weights = get_weights(model)
+        
+        logger.info("Local forward and backward pass done. Sending model weights to server.")
         send_message(sock, (
             "parameter_server_reduce",
             {
                 "step": step,
                 "rank": local_rank,
-                "grads": grads,
+                "weights": weights,  # Send weights instead of gradients
                 "model_version": model_version,
             }
         ))
-        logger.info("Gradients sent to server.")
+        logger.info("Model weights sent to server.")
+        
+        # OLD APPROACH: Send gradients for scaling (commented out)
+        # grads = get_gradients(model)
+        # send_message(sock, (
+        #     "parameter_server_reduce",
+        #     {
+        #         "step": step,
+        #         "rank": local_rank,
+        #         "grads": grads,
+        #         "model_version": model_version,
+        #     }
+        # ))
         
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")

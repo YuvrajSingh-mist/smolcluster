@@ -173,20 +173,28 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
         if command == "parameter_server_reduce":
             recv_step = payload["step"]
             rank = payload["rank"]
-            grads = payload["grads"]
             worker_version = payload["model_version"]
             
-            logger.info(
-                f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-            )
-            
-            # Store all gradients with rank, step, and version
-            with lock:
-                workers_grads_received[(rank, recv_step, worker_version)] = grads
+            # Check if worker sent gradients or weights
+            if "weights" in payload:
+                # New approach: Polyak averaging with model weights
+                weights = payload["weights"]
+                logger.info(
+                    f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                )
+                with lock:
+                    workers_grads_received[(rank, recv_step, worker_version)] = {"type": "weights", "data": weights}
+            else:
+                # Old approach: Gradient scaling (kept for reference)
+                grads = payload["grads"]
+                logger.info(
+                    f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                )
+                with lock:
+                    workers_grads_received[(rank, recv_step, worker_version)] = {"type": "grads", "data": grads}
                 
             gradients_event.set()
-            
-            logger.info(f"Gradients stored successfully for worker {rank} at step {recv_step}")
+            logger.info(f"Data stored successfully for worker {rank} at step {recv_step}")
         
         elif command == 'pull_weights':
             worker_version = payload  # payload is the worker's current model version
@@ -205,6 +213,36 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
     # Remove disconnected worker
     with lock:
         workers.pop(addr, None)
+
+def polyak_average_weights(
+    current_weights: dict[str, torch.Tensor],
+    worker_weights: dict[str, torch.Tensor],
+    staleness: int,
+    alpha_base: float = 1.0
+) -> dict[str, torch.Tensor]:
+    """
+    Blend current model with worker's model using staleness-aware Polyak averaging.
+    
+    Args:
+        current_weights: Current server model weights
+        worker_weights: Worker's trained model weights
+        staleness: |current_version - worker_version|
+        alpha_base: Base weight for worker model (default: 1.0)
+    
+    Returns:
+        Blended model weights
+    """
+    # Worker weight decreases with staleness
+    alpha = alpha_base / (1.0 + staleness)
+    
+    blended = {}
+    for name in current_weights.keys():
+        blended[name] = (
+            alpha * worker_weights[name] + 
+            (1.0 - alpha) * current_weights[name]
+        )
+    
+    return blended, alpha
 
 def parameter_server_reduce(
     leader_grads: dict[str, torch.Tensor],
@@ -342,33 +380,62 @@ def main():
         leader_grads = compute_leader_gradients(model, data, target, criterion, optimizer)
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
         
-        # Collect any available worker gradients (non-blocking with small timeout)
+        # Collect any available worker data (non-blocking with small timeout)
         gradients_event.wait(timeout=0.01)  # Very short wait
         gradients_event.clear()
         
         with lock:
-            grads_copy = dict(workers_grads_received)
+            workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
         
-        if grads_copy:
-            logger.info(f"Step {step}: Collected {len(grads_copy)} worker gradient(s)")
+        if workers_copy:
+            logger.info(f"Step {step}: Collected {len(workers_copy)} worker update(s)")
             
-            # Apply worker gradients with staleness scaling
-            for (rank, recv_step, worker_version), grads in grads_copy.items():
+            # NEW APPROACH: Polyak averaging with model weights
+            current_weights = get_weights(model)
+            
+            for (rank, recv_step, worker_version), worker_data in workers_copy.items():
                 staleness = abs(model_version - worker_version)
-                scale = 1.0 / (1e-8 + staleness)
                 
-                logger.info(f"Applying worker {rank} grads from step {recv_step} (staleness: {staleness}, scale: {scale:.3f})")
+                if worker_data["type"] == "weights":
+                    # Polyak averaging: blend worker model with current model
+                    worker_weights = worker_data["data"]
+                    blended_weights, alpha = polyak_average_weights(
+                        current_weights, worker_weights, staleness, alpha_base=1.0
+                    )
+                    
+                    logger.info(
+                        f"Applying worker {rank} model via Polyak averaging "
+                        f"(staleness: {staleness}, alpha: {alpha:.3f})"
+                    )
+                    
+                    # Update model with blended weights
+                    model.load_state_dict(blended_weights)
+                    current_weights = blended_weights  # Update for next worker
+                    
+                    with lock:
+                        model_version += 1
+                        
+                else:
+                    # OLD APPROACH: Gradient scaling (kept for backward compatibility)
+                    # This code path is commented out but functional if workers send gradients
+                    grads = worker_data["data"]
+                    scale = 1.0 / (1e-8 + staleness)
+                    
+                    logger.info(
+                        f"[DEPRECATED] Applying worker {rank} grads via scaling "
+                        f"(staleness: {staleness}, scale: {scale:.3f})"
+                    )
+                    
+                    optimizer.zero_grad()
+                    scaled_grads = {k: v * scale for k, v in grads.items()}
+                    set_gradients(scaled_grads, model)
+                    optimizer.step()
+                    
+                    with lock:
+                        model_version += 1
                 
-                optimizer.zero_grad()
-                scaled_grads = {k: v * scale for k, v in grads.items()}
-                set_gradients(scaled_grads, model)
-                optimizer.step()
-                
-                with lock:
-                    model_version += 1
-                
-            del grads_copy, scaled_grads
+            del workers_copy
             gc.collect()
         
         # Apply leader gradients
@@ -401,16 +468,16 @@ def main():
                 }
             )
             
-            if track_gradients:
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_norm = torch.norm(param.grad.detach(), 2).item()
-                        wandb.log(
-                            {
-                                f"gradients/layer_{name}": grad_norm,
-                                "step": step,
-                            }
-                        )
+            # if track_gradients:
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    grad_norm = torch.norm(param.grad.detach(), 2).item()
+                    wandb.log(
+                        {
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                        }
+                    )
 
             wandb.log(
                 {
