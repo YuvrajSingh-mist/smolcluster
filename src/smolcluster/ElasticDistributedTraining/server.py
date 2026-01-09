@@ -355,8 +355,8 @@ def main():
             
             # Apply worker gradients with staleness scaling
             for (rank, recv_step, worker_version), grads in grads_copy.items():
-                staleness = model_version - worker_version
-                scale = 1.0 / (1.0 + staleness)
+                staleness = abs(model_version - worker_version)
+                scale = 1.0 / (1e-8 + staleness)
                 
                 logger.info(f"Applying worker {rank} grads from step {recv_step} (staleness: {staleness}, scale: {scale:.3f})")
                 
@@ -382,7 +382,7 @@ def main():
         del leader_grads
         gc.collect()
         
-        logger.info(f"Step {step}: Updated to model version {model_version}")
+        logger.info(f"Applied leader gradients. Step {step}: Updated to model version {model_version}")
         
         
         data = data.to(get_device())
@@ -391,7 +391,7 @@ def main():
         loss = criterion(output, target)
         total_loss += loss.item()
         
-        logger.info(f"Epoch {epoch + 1}, Step: {step}: Loss = {loss.item():.4f}, Running Avg = {total_loss/(step+1):.4f}")
+        logger.info(f"Epoch {epoch + 1}, Step: {step}: Step loss = {loss.item():.4f}")
         
         if step % 50 == 0:
             wandb.log(
