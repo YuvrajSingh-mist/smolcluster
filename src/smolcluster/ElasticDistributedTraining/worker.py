@@ -220,8 +220,7 @@ def main():
  
     for step in range(total_steps):
         model.train()
-
-        
+        epoch = step // len(train_loader)
         
         # Fetch next batch, cycling through dataset
         try:
@@ -291,7 +290,7 @@ def main():
             logger.info(f"Updated local model version to {model_version}.")
         
         logger.info(
-            f"Step {step}/{total_steps} completed."
+            f"Epoch: {epoch} , Step {step}/{total_steps} completed."
         )
     send_message(sock, ("disconnect", None))
     sock.close()
