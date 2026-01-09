@@ -25,6 +25,7 @@ from smolcluster.utils.common_utils import (
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
+from smolcluster.utils.quantization import dequantize_model_weights
 
 # Login to wandb using API key from environment variable
 if "WANDB_API_KEY" in os.environ:
@@ -176,9 +177,19 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             rank = payload["rank"]
             worker_version = payload["model_version"]
             
-            # Check if worker sent gradients or weights
-            if "weights" in payload:
-                # New approach: Polyak averaging with model weights
+            # Check if worker sent quantized weights, weights, or gradients
+            if "quantized_weights" in payload:
+                # New approach: Dequantize and use Polyak averaging
+                quantized_weights = payload["quantized_weights"]
+                logger.info(
+                    f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                )
+                # Dequantize weights back to float32 on the server's device
+                weights = dequantize_model_weights(quantized_weights, device=str(get_device()))
+                with lock:
+                    workers_grads_received[(rank, recv_step, worker_version)] = {"type": "weights", "data": weights}
+            elif "weights" in payload:
+                # Legacy: Full float32 weights (no compression)
                 weights = payload["weights"]
                 logger.info(
                     f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
