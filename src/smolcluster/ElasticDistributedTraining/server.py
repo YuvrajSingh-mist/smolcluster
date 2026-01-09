@@ -221,12 +221,13 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             
         elif command == 'disconnect':
             logger.info(f"Worker {addr} requested disconnection.")
+            #  Remove disconnected worker
+            with lock:
+                workers.pop(addr, None)
             break
         
     conn.close()
-    # Remove disconnected worker
-    with lock:
-        workers.pop(addr, None)
+    #
 
 def polyak_average_weights(
     current_weights: dict[str, torch.Tensor],
