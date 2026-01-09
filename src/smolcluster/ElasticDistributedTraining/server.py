@@ -498,12 +498,12 @@ def main():
     
     print('LENGTH OF WORKERS:', len(workers))
     
-    # gradients_event.wait(timeout=2.0)  # Wait up to 2 seconds
-    # gradients_event.clear()
+    gradients_event.wait(timeout=1.0)  # Wait up to 2 seconds
+    gradients_event.clear()
     
     while len(workers) > 0:
         
-        gradients_event.wait(timeout=2.0)  # Wait up to 2 seconds
+        gradients_event.wait(timeout=0.1)  # Wait up to 2 seconds
         gradients_event.clear()
     
         with lock:
