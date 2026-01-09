@@ -498,10 +498,14 @@ def main():
     
     print('LENGTH OF WORKERS:', len(workers))
     
-    gradients_event.wait(timeout=2.0)  # Wait up to 2 seconds
-    gradients_event.clear()
+    # gradients_event.wait(timeout=2.0)  # Wait up to 2 seconds
+    # gradients_event.clear()
     
     while len(workers) > 0:
+        
+        gradients_event.wait(timeout=2.0)  # Wait up to 2 seconds
+        gradients_event.clear()
+    
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
@@ -563,8 +567,9 @@ def main():
             
             with lock:
                 model_version += 1
-                
+            
             step += 1
+            
             gc.collect()
             
             data = data.to(get_device())
@@ -573,7 +578,7 @@ def main():
             loss = criterion(output, target)
             total_loss += loss.item()
             
-            logger.info(f"Epoch {epoch + 1}, Step: {step}: Step loss = {loss.item():.4f}")
+            logger.info(f"Step: {step}: Step loss = {loss.item():.4f}")
             
             if step % 50 == 0:
                 wandb.log(
