@@ -369,7 +369,7 @@ def main():
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
         
         # Collect any available worker data (non-blocking with small timeout)
-        gradients_event.wait(timeout=0.01)  # Very short wait
+        gradients_event.wait(timeout=1.0)  # Very short wait
         gradients_event.clear()
         
         with lock:
