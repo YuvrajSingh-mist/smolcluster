@@ -184,7 +184,7 @@ def dequantize_model_weights(quantized_dict, device='cpu'):
         if dequantized.shape != original_shape:
             dequantized = dequantized.view(original_shape)
         
-        weights_dict[name] = dequantized
+        weights_dict[name] = dequantized.to(device)
     
     return weights_dict
 

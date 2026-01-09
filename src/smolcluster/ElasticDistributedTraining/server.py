@@ -399,7 +399,7 @@ def main():
                 if worker_data["type"] == "weights":
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
-                    worker_weights = worker_weights.to(get_device())
+                    
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
@@ -532,7 +532,7 @@ def main():
                 if worker_data["type"] == "weights":
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
-                    worker_weights = worker_weights.to(get_device())
+                   
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
