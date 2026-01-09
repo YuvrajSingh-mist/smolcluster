@@ -3,6 +3,7 @@ Quantization utilities for model weight compression in distributed training.
 Uses W8A16 (8-bit weights, 16-bit activations) quantization for efficient network transfer.
 """
 
+from typing import Dict
 import torch
 
 
@@ -158,7 +159,7 @@ def quantize_model_weights(weights_dict):
     return quantized_dict
 
 
-def dequantize_model_weights(quantized_dict, device='cpu'):
+def dequantize_model_weights(quantized_dict: Dict[str, torch.Tensor], device: torch.device):
     """
     Dequantize a full model state dict.
     

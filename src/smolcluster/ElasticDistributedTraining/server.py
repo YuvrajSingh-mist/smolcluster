@@ -185,7 +185,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                     f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
                 )
                 # Dequantize weights back to float32 on the server's device
-                weights = dequantize_model_weights(quantized_weights, device=str(get_device()))
+                weights = dequantize_model_weights(quantized_weights, device=get_device())
                 with lock:
                     workers_grads_received[(rank, recv_step, worker_version)] = {"type": "weights", "data": weights}
             elif "weights" in payload:
@@ -390,7 +390,7 @@ def main():
         if workers_copy:
             logger.info(f"Step {step}: Collected {len(workers_copy)} worker update(s)")
             
-            # NEW APPROACH: Polyak averaging with model weights
+            # Polyak averaging with model weights
             current_weights = get_weights(model)
             
             for (rank, recv_step, worker_version), worker_data in workers_copy.items():
@@ -400,8 +400,7 @@ def main():
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
                     
-                    print(worker_weights['model.fc1.weight'].device)
-                    print(current_weights['model.fc1.weight'].device)
+                
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
