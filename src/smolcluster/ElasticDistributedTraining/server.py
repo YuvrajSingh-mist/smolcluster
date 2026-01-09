@@ -25,7 +25,7 @@ from smolcluster.utils.common_utils import (
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
-from smolcluster.utils.quantization import dequantize_model_weights
+from smolcluster.utils.quantization import dequantize_model_weights, quantize_model_weights
 
 # Login to wandb using API key from environment variable
 if "WANDB_API_KEY" in os.environ:
@@ -185,7 +185,8 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                     f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
                 )
                 # Dequantize weights back to float32 on the server's device
-                weights = dequantize_model_weights(quantized_weights, device=get_device())
+                device_str = str(get_device())
+                weights = dequantize_model_weights(quantized_weights, device=device_str)
                 with lock:
                     workers_grads_received[(rank, recv_step, worker_version)] = {"type": "weights", "data": weights}
             elif "weights" in payload:
@@ -213,7 +214,8 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             logger.info(f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})")
             
             weights = get_weights(model)
-            send_message(conn, (weights, model_version))
+            quantized_weights = quantize_model_weights(weights)
+            send_message(conn, (quantized_weights, model_version))
             
             logger.info(f"Weights sent to worker {addr}")
             

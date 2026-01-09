@@ -19,7 +19,7 @@ from smolcluster.utils.common_utils import (
     get_weights)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
-from smolcluster.utils.quantization import quantize_model_weights, calculate_compression_ratio
+from smolcluster.utils.quantization import dequantize_model_weights, quantize_model_weights, calculate_compression_ratio
 
 # Login to wandb using API key from environment variable
 if "WANDB_API_KEY" in os.environ:
@@ -279,8 +279,9 @@ def main():
             sock.settimeout(1.0)  # Wait up to 1 second for weights
             try:
                 weights, new_version = receive_message(sock)
-                    
-                set_weights(weights, model)
+                
+                dequant_weights = dequantize_model_weights(weights, device=get_device())
+                set_weights(dequant_weights, model)
                 
                 recv_model_version = new_version
                 logger.info(f"Updated to model version {recv_model_version} from server.")
