@@ -5,6 +5,7 @@ import socket
 import sys
 import threading
 import time
+from typing import Tuple
 
 import torch
 import torchinfo
@@ -218,8 +219,8 @@ def polyak_average_weights(
     current_weights: dict[str, torch.Tensor],
     worker_weights: dict[str, torch.Tensor],
     staleness: int,
-    alpha_base: float = 1.0
-) -> dict[str, torch.Tensor]:
+    # alpha_base: float = 1.0
+) -> Tuple[dict[str, torch.Tensor], float]:
     """
     Blend current model with worker's model using staleness-aware Polyak averaging.
     
@@ -233,16 +234,16 @@ def polyak_average_weights(
         Blended model weights
     """
     # Worker weight decreases with staleness
-    alpha = alpha_base / (1.0 + staleness)
+    staleness_factor = 1 / (1e-8 + staleness)
     
     blended = {}
     for name in current_weights.keys():
         blended[name] = (
-            alpha * worker_weights[name] + 
-            (1.0 - alpha) * current_weights[name]
+            staleness_factor * worker_weights[name] + 
+            (1.0 - staleness_factor) * current_weights[name]
         )
     
-    return blended, alpha
+    return blended, staleness_factor
 
 def parameter_server_reduce(
     leader_grads: dict[str, torch.Tensor],
@@ -400,13 +401,13 @@ def main():
                 if worker_data["type"] == "weights":
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
-                    blended_weights, alpha = polyak_average_weights(
-                        current_weights, worker_weights, staleness, alpha_base=1.0
+                    blended_weights, staleness_factor = polyak_average_weights(
+                        current_weights, worker_weights, staleness
                     )
                     
                     logger.info(
                         f"Applying worker {rank} model via Polyak averaging "
-                        f"(staleness: {staleness}, alpha: {alpha:.3f})"
+                        f"(staleness: {staleness}, alpha: {staleness_factor:.3f})"
                     )
                     
                     # Update model with blended weights
@@ -469,7 +470,10 @@ def main():
             )
             
             # if track_gradients:
+            logger.info("Tracking gradients in wandb...")
             for name, param in model.named_parameters():
+                
+                logger.info("logging gradients for layer: ", name)
                 if param.grad is not None:
                     grad_norm = torch.norm(param.grad.detach(), 2).item()
                     wandb.log(
@@ -478,7 +482,8 @@ def main():
                             "step": step,
                         }
                     )
-
+            logger.info("Gradient tracking complete.")
+            
             wandb.log(
                 {
                     "step": step,
