@@ -50,7 +50,7 @@ with open("../configs/cluster_config_edp.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-HOST_IP = cluster_config["host_ip"][HOSTNAME]
+HOST_IP = "0.0.0.0"  # Listen on all network interfaces (Thunderbolt, eth0, WiFi, etc.)
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
