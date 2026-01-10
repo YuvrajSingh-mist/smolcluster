@@ -10,6 +10,9 @@ port: 65432
 # Worker update settings
 worker_update_interval: 50  # How often workers pull latest weights (in steps)
 
+# Quantization settings
+use_quantization: true  # Enable/disable weight quantization for communication
+
 # Randomness seed
 seed: 42
 

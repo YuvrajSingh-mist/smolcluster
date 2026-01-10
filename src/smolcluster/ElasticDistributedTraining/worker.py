@@ -45,6 +45,7 @@ WORLD_SIZE = NUM_WORKERS + 1
 
 track_gradients = nn_config["track_gradients"]
 worker_update_interval = cluster_config["worker_update_interval"]
+use_quantization = cluster_config.get("use_quantization", True)
 
 
 # Get worker rank and hostname from command-line arguments
@@ -256,26 +257,40 @@ def main():
         loss.backward()
         optimizer.step()
         
-        # NEW APPROACH: Send quantized model weights for Polyak averaging (75% compression)
+        # NEW APPROACH: Send model weights for Polyak averaging (optionally quantized)
         weights = get_weights(model)
-        quantized_weights = quantize_model_weights(weights)
         
-        # Log compression ratio on first step
-        if step == 0:
-            comp_info = calculate_compression_ratio(weights, quantized_weights)
-            logger.info(f"Quantization: {comp_info['original_mb']:.2f}MB → {comp_info['compressed_mb']:.2f}MB (ratio: {comp_info['ratio']:.2f}x)")
-        
-        logger.info("Local forward and backward pass done. Sending quantized model weights to server.")
-        send_message(sock, (
-            "parameter_server_reduce",
-            {
-                "step": step,
-                "rank": local_rank,
-                "quantized_weights": quantized_weights,  # Send quantized weights
-                "model_version": model_version,
-            }
-        ))
-        logger.info("Quantized model weights sent to server.")
+        if use_quantization:
+            quantized_weights = quantize_model_weights(weights)
+            
+            # Log compression ratio on first step
+            if step == 0:
+                comp_info = calculate_compression_ratio(weights, quantized_weights)
+                logger.info(f"Quantization: {comp_info['original_mb']:.2f}MB → {comp_info['compressed_mb']:.2f}MB (ratio: {comp_info['ratio']:.2f}x)")
+            
+            logger.info("Local forward and backward pass done. Sending quantized model weights to server.")
+            send_message(sock, (
+                "parameter_server_reduce",
+                {
+                    "step": step,
+                    "rank": local_rank,
+                    "quantized_weights": quantized_weights,
+                    "model_version": model_version,
+                }
+            ))
+            logger.info("Quantized model weights sent to server.")
+        else:
+            logger.info("Local forward and backward pass done. Sending model weights to server.")
+            send_message(sock, (
+                "parameter_server_reduce",
+                {
+                    "step": step,
+                    "rank": local_rank,
+                    "weights": weights,
+                    "model_version": model_version,
+                }
+            ))
+            logger.info("Model weights sent to server.")
         
         # OLD APPROACH: Send gradients for scaling (commented out)
         # grads = get_gradients(model)
@@ -296,8 +311,11 @@ def main():
             try:
                 weights, new_version = receive_message(sock)
                 
-                dequant_weights = dequantize_model_weights(weights, device=get_device())
-                model.load_state_dict(dequant_weights)
+                if use_quantization:
+                    dequant_weights = dequantize_model_weights(weights, device=get_device())
+                    model.load_state_dict(dequant_weights)
+                else:
+                    model.load_state_dict(weights)
                 
                 recv_model_version = new_version
                 logger.info(f"Updated to model version {recv_model_version} from server.")
@@ -318,6 +336,7 @@ def main():
                             {
                                 f"weights/layer_{name}": grad_norm,
                                 "step": step,
+                                "epoch": epoch,
                             }
                         )
                 logger.info("Gradient tracking complete.")

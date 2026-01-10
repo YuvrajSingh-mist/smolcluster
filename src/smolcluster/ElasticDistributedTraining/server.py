@@ -62,6 +62,7 @@ batch_size = nn_config["batch_size"]
 eval_steps = nn_config["eval_steps"]
 num_epochs = nn_config["num_epochs"]
 track_gradients = nn_config.get("track_gradients", False)
+use_quantization = cluster_config.get("use_quantization", True)
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -215,10 +216,13 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             logger.info(f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})")
             
             weights = get_weights(model)
-            quantized_weights = quantize_model_weights(weights)
-            send_message(conn, (quantized_weights, model_version))
-            
-            logger.info(f"Weights sent to worker {addr}")
+            if use_quantization:
+                quantized_weights = quantize_model_weights(weights)
+                send_message(conn, (quantized_weights, model_version))
+                logger.info(f"Quantized weights sent to worker {addr}")
+            else:
+                send_message(conn, (weights, model_version))
+                logger.info(f"Weights sent to worker {addr}")
             
         elif command == 'disconnect':
             logger.info(f"Worker {addr} requested disconnection.")
@@ -471,6 +475,7 @@ def main():
             wandb.log(
                 {
                     "step": step,
+                    "epoch": epoch,
                     "losses/step_loss": loss.item(),
                 }
             )
@@ -492,6 +497,7 @@ def main():
             wandb.log(
                 {
                     "step": step,
+                    "epoch": epoch,
                     "lr": nn_config["learning_rate"],
                     "batch_size": nn_config["batch_size"],
                 }
@@ -506,6 +512,7 @@ def main():
             wandb.log(
                 {
                     "step": step,
+                    "epoch": epoch,
                     "losses/val": val_loss,
                     "accuracy/val": val_acc,
                 }
@@ -605,6 +612,7 @@ def main():
                 wandb.log(
                     {
                         "step": step,
+                        "epoch": epoch,
                         "losses/step_loss": loss.item(),
                     }
                 )
@@ -614,6 +622,7 @@ def main():
                 wandb.log(
                     {
                         "step": step,
+                        "epoch": epoch,
                         "lr": nn_config["learning_rate"],
                         "batch_size": nn_config["batch_size"],
                     }
@@ -628,6 +637,7 @@ def main():
                 wandb.log(
                     {
                         "step": step,
+                        "epoch": epoch,
                         "losses/val": val_loss,
                         "accuracy/val": val_acc,
                     }
