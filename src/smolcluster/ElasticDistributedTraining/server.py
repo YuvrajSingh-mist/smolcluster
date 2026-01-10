@@ -224,10 +224,10 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             #  Remove disconnected worker
             with lock:
                 workers.pop(addr, None)
-            break
+            
         
     conn.close()
-    #
+    
 
 def polyak_average_weights(
     current_weights: dict[str, torch.Tensor],
