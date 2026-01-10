@@ -315,6 +315,7 @@ def main():
                     dequant_weights = dequantize_model_weights(weights, device=get_device())
                     model.load_state_dict(dequant_weights)
                 else:
+                    print(weights)
                     model.load_state_dict(weights)
                 
                 recv_model_version = new_version
