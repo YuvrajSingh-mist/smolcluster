@@ -2,18 +2,18 @@ host_ip:
   mini1: "10.10.0.1"
   # mini2: "10.10.0.1"
   # mini3: "10.10.0.1"
-  # macbook: "172.18.3.80"
+  macbook: "172.18.3.80"
   pi5: "192.168.50.1"
 
 port: 65432
 
 # Worker update settings
-worker_update_interval: 50  # How often workers pull latest weights (in steps)
+worker_update_interval: 20  # How often workers pull latest weights (in steps)
 
 # Randomness seed
 seed: 42
 
 # Cluster configuration
-num_workers: 1
-workers: [pi5]  # Worker hostnames
+num_workers: 2
+workers: [macbook, pi5]  # Worker hostnames
 server: mini1  # Server hostname
