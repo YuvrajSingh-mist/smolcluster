@@ -42,7 +42,10 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-worker_update_interval = cluster_config.get("worker_update_interval", 5)
+
+trace_gradients = cluster_config["track_gradients"]
+worker_update_interval = cluster_config["worker_update_interval"]
+
 
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
@@ -305,19 +308,19 @@ def main():
             finally:
                 sock.settimeout(None)  # Restore blocking socket
 
-            # if track_gradients:
-            logger.info("Tracking gradients in wandb...")
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    logger.info(f"Logging gradients for layer: {name}")
-                    grad_norm = torch.norm(param.grad.detach(), 2).item()
-                    wandb.log(
-                        {
-                            f"weights/layer_{name}": grad_norm,
-                            "step": step,
-                        }
-                    )
-            logger.info("Gradient tracking complete.")
+            if track_gradients:
+                logger.info("Tracking gradients in wandb...")
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        logger.info(f"Logging gradients for layer: {name}")
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log(
+                            {
+                                f"weights/layer_{name}": grad_norm,
+                                "step": step,
+                            }
+                        )
+                logger.info("Gradient tracking complete.")
                 
         # Update local model version if received new weights
         if recv_model_version != -1 and recv_model_version != model_version:
