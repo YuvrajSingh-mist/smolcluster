@@ -281,7 +281,7 @@ def main():
                 weights, new_version = receive_message(sock)
                 
                 dequant_weights = dequantize_model_weights(weights, device=get_device())
-                set_weights(dequant_weights, model)
+                model.load_state_dict(dequant_weights)
                 
                 recv_model_version = new_version
                 logger.info(f"Updated to model version {recv_model_version} from server.")

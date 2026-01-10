@@ -21,6 +21,7 @@ from smolcluster.utils.common_utils import (
     send_message,
     set_gradients,
     get_weights,
+    set_weights,
     
 )
 from smolcluster.utils.data import get_data_indices
@@ -416,6 +417,7 @@ def main():
                     
                     # Update model with blended weights
                     model.load_state_dict(blended_weights)
+                    
                     current_weights = blended_weights  # Update for next worker
                     
                     with lock:
@@ -515,7 +517,7 @@ def main():
     gradients_event.wait(timeout=0.01) 
     gradients_event.clear()
     
-    while len(workers) > 0:
+    while True:
         
         gradients_event.wait(timeout=0.01)  
         gradients_event.clear()
@@ -643,7 +645,8 @@ def main():
                     }
                 )
         
-
+        else:
+            break
 
     shutdown_flag.set()
     sock.close()
