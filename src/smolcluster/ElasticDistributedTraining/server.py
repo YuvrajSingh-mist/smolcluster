@@ -517,7 +517,7 @@ def main():
     gradients_event.wait(timeout=0.01) 
     gradients_event.clear()
     
-    while True:
+    while len(workers) > 0:
         
         gradients_event.wait(timeout=0.01)  
         gradients_event.clear()
@@ -645,9 +645,8 @@ def main():
                     }
                 )
         
-        else:
-            break
-
+        
+        
     shutdown_flag.set()
     sock.close()
     logger.info("Server shutdown complete")
