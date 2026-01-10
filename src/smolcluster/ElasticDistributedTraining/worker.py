@@ -43,7 +43,7 @@ NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 
-trace_gradients = nn_config["track_gradients"]
+track_gradients = nn_config["track_gradients"]
 worker_update_interval = cluster_config["worker_update_interval"]
 
 
