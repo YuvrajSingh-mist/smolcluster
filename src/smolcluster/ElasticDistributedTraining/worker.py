@@ -313,7 +313,7 @@ def main():
                     grad_norm = torch.norm(param.grad.detach(), 2).item()
                     wandb.log(
                         {
-                            f"gradients/layer_{name}": grad_norm,
+                            f"weights/layer_{name}": grad_norm,
                             "step": step,
                         }
                     )
