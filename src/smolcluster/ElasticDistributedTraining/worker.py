@@ -176,6 +176,19 @@ def connect_to_server(
 def main():
     
     global model_version, recv_model_version
+    
+    # Initialize W&B for worker
+    wandb.init(
+        project="smolcluster",
+        name=f"worker-{local_rank}_lr_{nn_config['learning_rate']}_bsz_{nn_config['batch_size']}",
+        config={
+            **nn_config,
+            "worker_rank": local_rank,
+            "worker_update_interval": cluster_config.get("worker_update_interval", 5),
+        },
+    )
+    logger.info(f"Worker {local_rank} wandb initialized")
+    
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
@@ -314,9 +327,14 @@ def main():
         logger.info(
             f"Epoch: {epoch} , Step {step}/{total_steps} completed."
         )
+    
     send_message(sock, ("disconnect", local_rank))
     sock.close()
     logger.info(f"Training complete. Worker {local_rank} disconnected.")
+    
+    # Finish wandb tracking
+    wandb.finish()
+    logger.info(f"Worker {local_rank} wandb tracking finished.")
 
 if __name__ == "__main__":
     main()
