@@ -332,6 +332,7 @@ def main():
                 if track_gradients:
                     for name, param in model.named_parameters():
                         if param.grad is not None:
+                            logger.info(f"Logging gradient norm for layer {name}")
                             grad_norm = torch.norm(param.grad.detach(), 2).item()
                             wandb.log(
                                 {

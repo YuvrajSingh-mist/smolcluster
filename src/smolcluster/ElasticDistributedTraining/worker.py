@@ -291,7 +291,21 @@ def main():
                 logger.error(f"non-blocking socket error while pulling weights from server.")
             finally:
                 sock.settimeout(None)  # Restore blocking socket
-        
+
+            # if track_gradients:
+            logger.info("Tracking gradients in wandb...")
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    logger.info(f"Logging gradients for layer: {name}")
+                    grad_norm = torch.norm(param.grad.detach(), 2).item()
+                    wandb.log(
+                        {
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                        }
+                    )
+            logger.info("Gradient tracking complete.")
+                
         # Update local model version if received new weights
         if recv_model_version != -1 and recv_model_version != model_version:
             model_version = recv_model_version
