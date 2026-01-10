@@ -61,6 +61,6 @@ def set_weights(weights: dict[str, torch.Tensor], model: torch.nn.Module, grad_s
 def get_weights(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     weights = {}
     for name, param in model.named_parameters():
-        weights[name] = param.data.detach().cpu().clone()
+        weights[name] = torch.Tensor(param.data.detach().cpu().clone())
     return weights
 
