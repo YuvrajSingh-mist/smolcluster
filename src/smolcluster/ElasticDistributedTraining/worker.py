@@ -184,10 +184,12 @@ def main():
     # Initialize W&B for worker
     wandb.init(
         project="smolcluster",
-        name=f"worker-{local_rank}_lr_{nn_config['learning_rate']}_bsz_{nn_config['batch_size']}",
+        name=f"worker-{HOSTNAME}_rank{local_rank}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}",
         config={
             **nn_config,
             "worker_rank": local_rank,
+            "worker_hostname": HOSTNAME,
+            "server_hostname": cluster_config['server'],
             "worker_update_interval": cluster_config.get("worker_update_interval", 5),
         },
     )

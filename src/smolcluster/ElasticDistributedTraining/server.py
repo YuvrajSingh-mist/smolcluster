@@ -301,8 +301,13 @@ def main():
     # Initialize W&B
     wandb.init(
         project="smolcluster",
-        name=f"MNIST-training_lr_{nn_config['learning_rate']}_bsz_{nn_config['batch_size']}",
-        config=nn_config,
+        name=f"server-{HOSTNAME}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}_workers{len(cluster_config['workers'])}",
+        config={
+            **nn_config,
+            "server_hostname": HOSTNAME,
+            "worker_hostnames": cluster_config['workers'],
+            "num_workers": len(cluster_config['workers']),
+        },
     )
 
     model_summary = str(
