@@ -18,6 +18,6 @@ use_quantization: false  # Enable/disable weight quantization for communication
 seed: 42
 
 # Cluster configuration
-num_workers: 2
-workers: [pi4, pi5]  # Worker hostnames
+num_workers: 3
+workers: [pi4, pi5, macbook]  # Worker hostnames
 server: mini1  # Server hostname
