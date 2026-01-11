@@ -217,7 +217,7 @@ def main():
     
     total_steps = num_epochs * len(train_loader)
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+    # optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     # Wait for start signal or timeout and start anyway
     logger.info("Waiting for start_training signal from server (max 5 seconds)...")
@@ -250,16 +250,18 @@ def main():
             data, target = next(train_iter)
         
         logger.info("Performing local forward and backward pass.")
-        optimizer.zero_grad()
+        # optimizer.zero_grad()
         data, target = data.to(get_device()), target.to(get_device())
 
         output = model(data.view(data.size(0), -1))
         loss = criterion(output, target)
 
         loss.backward()
-        optimizer.step()
         
-        # NEW APPROACH: Send model weights for Polyak averaging (optionally quantized)
+        # Workers do NOT call optimizer.step() in parameter server architecture
+        # Server handles weight updates after aggregation
+        
+        # Send model weights (post-gradient, pre-optimizer) for server aggregation
         weights = get_weights(model)
         
         if use_quantization:

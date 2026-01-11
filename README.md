@@ -1,19 +1,38 @@
 # SmolCluster
 
-A simple distributed training framework for MNIST classification using PyTorch and socket-based communication. This project demonstrates federated learning concepts with a central server coordinating gradient averaging across multiple worker nodes.
+A distributed training framework for MNIST classification using PyTorch and socket-based communication. This project demonstrates elastic distributed training concepts with a central server coordinating gradient averaging across heterogeneous worker nodes (Mac minis, Raspberry Pis, MacBook).
 
 ## Features
 
-- **Distributed Training**: Coordinate training across multiple workers using gradient averaging
-- **Socket Communication**: Simple TCP socket-based communication between server and workers
-- **W&B Integration**: Automatic logging of training metrics and model performance
+- **Elastic Distributed Training**: Coordinate training across multiple workers with different compute capabilities
+- **Hybrid Network Topology**: Thunderbolt fabric for inter-Mac communication + Ethernet for Pi edge nodes
+- **Socket Communication**: TCP socket-based communication with retry logic and connection resilience
+- **W&B Integration**: Automatic logging of training metrics with detailed run naming (hostname, LR, batch size)
 - **Configurable**: YAML-based configuration for easy experimentation
 - **MNIST Dataset**: Built-in support for MNIST handwritten digit recognition
 - **Gradient Tracking**: Optional gradient norm logging for analysis
+- **Quantization Support**: Optional gradient quantization for bandwidth-limited links
+
+## Network Architecture
+
+**Thunderbolt Fabric** (High-speed inter-Mac communication):
+```
+Mac mini 1 (SERVER) — 10.10.0.1  ─┐
+Mac mini 2 (WORKER) — 10.10.0.2  ─┼─ Thunderbolt Bridge
+Mac mini 3 (WORKER) — 10.10.0.3  ─┘
+```
+
+**Ethernet Edge Links** (Pi connectivity):
+```
+Pi 5 (192.168.50.2) ──── Mac mini 1 (192.168.50.1)  [Server path]
+Pi 4 (192.168.51.4) ──── Mac mini 3 (192.168.51.2)  [Worker gateway]
+```
+
+**Key Design Principle**: One subnet per physical link. Pis route to Thunderbolt network via their connected Mac.
 
 ## Prerequisites
 
-- Python 3.9.6 (recommended - tested with socket communication in tmux environments)
+- Python 3.9.6+ (tested with socket communication in tmux environments)
 - uv package manager (install from [astral.sh/uv](https://astral.sh/uv))
 
 ```bash
@@ -37,21 +56,36 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Configuration
 
-The project uses two configuration files located in `src/smolcluster/configs/`:
+The project uses two main configuration files located in `src/smolcluster/configs/`:
 
-### cluster_config_ddp.yaml
+### cluster_config_edp.yaml (Elastic Distributed Training)
 ```yaml
-host_ip: "10.10.0.1"        # IP address to bind the server (interface)
-port: 65432                  # TCP port for communication
-num_workers: 2               # Number of worker nodes to expect
-timeout: 0.1                 # Timeout for gradient collection (seconds)
+host_ip:
+  mini1: "10.10.0.1"      # Server on Thunderbolt network
+  mini2: "10.10.0.2"      # Worker on Thunderbolt network  
+  mini3: "10.10.0.3"      # Worker on Thunderbolt network
+  pi4: "192.168.51.4"     # Worker via Ethernet (routes through mini3)
+  pi5: "192.168.50.2"     # Worker via Ethernet (routes through mini1)
+  macbook: "172.18.3.80"  # Worker on WiFi
+
+port: 65432
+num_workers: 3              # Number of worker nodes
+workers: [pi4, pi5, macbook]  # Worker hostnames
+server: mini1                 # Server hostname
+worker_update_interval: 50    # Steps between weight pulls
+use_quantization: false       # Enable gradient quantization
+seed: 42
 ```
 
 **Configuration Details:**
-- `host_ip`: IP address to bind the server (interface). Set this to the server's network IP (e.g., WiFi network IP like 10.10.0.1).
-- `port`: TCP port for socket communication. Ensure this port is open and not blocked by firewalls.
-- `num_workers`: Number of worker processes/nodes. Must match the number of workers you plan to launch.
-- `timeout`: How long the server waits for gradients from all workers before proceeding. Lower values = faster training but may skip slow workers.
+- `host_ip`: Maps hostnames to their network addresses. Server uses Thunderbolt IP (10.10.0.1).
+- `port`: TCP port for socket communication (65432 by default).
+- `num_workers`: Number of worker nodes expected.
+- `workers`: List of worker hostnames (must match keys in `host_ip`).
+- `server`: Server hostname (must match key in `host_ip`).
+- `worker_update_interval`: How often workers pull latest weights from server (in training steps).
+- `use_quantization`: Enable 8-bit quantization for gradient communication (reduces bandwidth).
+- `seed`: Random seed for reproducible data partitioning.
 
 ### nn_config.yaml
 ```yaml
