@@ -16,6 +16,10 @@ A simple distributed training framework for MNIST classification using PyTorch a
 - Python 3.9.6 (recommended - tested with socket communication in tmux environments)
 - uv package manager (install from [astral.sh/uv](https://astral.sh/uv))
 
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 ## Installation
 
 1. **Clone the repository:**
