@@ -217,7 +217,7 @@ def main():
     
     total_steps = num_epochs * len(train_loader)
     
-    # optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     # Wait for start signal or timeout and start anyway
     logger.info("Waiting for start_training signal from server (max 5 seconds)...")
@@ -257,11 +257,9 @@ def main():
         loss = criterion(output, target)
 
         loss.backward()
+        optimizer.step()  # Local SGD: workers apply updates independently
         
-        # Workers do NOT call optimizer.step() in parameter server architecture
-        # Server handles weight updates after aggregation
-        
-        # Send model weights (post-gradient, pre-optimizer) for server aggregation
+        # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
         
         if use_quantization:
@@ -274,7 +272,7 @@ def main():
             
             logger.info("Local forward and backward pass done. Sending quantized model weights to server.")
             send_message(sock, (
-                "parameter_server_reduce",
+                "polyark_averaging",
                 {
                     "step": step,
                     "rank": local_rank,
@@ -286,7 +284,7 @@ def main():
         else:
             logger.info("Local forward and backward pass done. Sending model weights to server.")
             send_message(sock, (
-                "parameter_server_reduce",
+                "polyark_averaging",
                 {
                     "step": step,
                     "rank": local_rank,

@@ -174,7 +174,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
         # Unpack the message tuple
         command, payload = message
 
-        if command == "parameter_server_reduce":
+        if command == "polyark_averaging":
             recv_step = payload["step"]
             rank = payload["rank"]
             worker_version = payload["model_version"]
@@ -253,7 +253,7 @@ def polyak_average_weights(
         Blended model weights
     """
     # Worker weight decreases with staleness
-    staleness_factor = 1 / (1e-8 + staleness)
+    staleness_factor = 1 / (1 + staleness)
     
     blended = {}
     for name in current_weights.keys():
@@ -456,7 +456,7 @@ def main():
         
         # Apply leader gradients
         optimizer.zero_grad()
-        # set_gradients(leader_grads, model)
+        set_gradients(leader_grads, model)
         optimizer.step()
         
         with lock:
@@ -594,9 +594,9 @@ def main():
             del workers_copy
             gc.collect()
         
-            # Apply worker's gradients
-            optimizer.zero_grad()
-            optimizer.step()
+            # # Apply worker's gradients
+            # optimizer.zero_grad()
+            # optimizer.step()
             
             with lock:
                 model_version += 1
