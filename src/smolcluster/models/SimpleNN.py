@@ -15,7 +15,7 @@ class SimpleMNISTModel(nn.Module):
         self.fc3 = nn.Linear(4 * hidden, out)
 
     def forward(self, x):
-        x = self.norm(self.relu1(self.fc1(x)))
-        x = self.norm2(self.relu2(self.fc2(x)))
+        x = self.relu1(self.norm((self.fc1(x))))
+        x = self.relu2(self.norm2(self.fc2(x)))
         x = self.fc3(x)
         return x

@@ -12,21 +12,24 @@ def send_message(sock: socket.SocketType, message: Any) -> None:
 
 
 def receive_message(sock: socket.SocketType) -> dict:
+    # Read the 4-byte message length header
     raw_msglen = sock.recv(4)
     if not raw_msglen:
         return None
 
     msglen = struct.unpack(">I", raw_msglen)[0]
+    
+    # Read the message data in chunks
     data = b""
-    while True:
-        print(msglen)
-        chunk = sock.recv(msglen)
-
+    remaining = msglen
+    while remaining > 0:
+        chunk_size = min(1048576, remaining)  # Read in 1MB chunks for speed
+        chunk = sock.recv(chunk_size)
+        if not chunk:
+            raise ConnectionError("Socket connection broken while receiving message")
         data += chunk
-        if msglen > 0:
-            msglen -= len(chunk)
-        else:
-            break
+        remaining -= len(chunk)
+    
     return pickle.loads(data)
 
 

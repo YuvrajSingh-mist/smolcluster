@@ -257,7 +257,7 @@ def main():
         loss = criterion(output, target)
 
         loss.backward()
-        optimizer.step()  # Local SGD: workers apply updates independently
+        optimizer.step()  # Local optim: workers apply updates independently
         
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
