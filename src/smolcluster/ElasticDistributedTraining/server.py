@@ -344,7 +344,7 @@ def main():
                 # Socket closed, exit gracefully
                 if shutdown_flag.is_set():
                     logger.info("Worker acceptance thread shutting down")
-                    shutdown_flag.set()
+                    shutdown_flag.clear()
                     break
                 else:
                     logger.error("Socket error occurred")
