@@ -469,6 +469,12 @@ def main():
                     optimizer.zero_grad()
                     scaled_grads = {k: v * scale for k, v in grads.items()}
                     set_gradients(scaled_grads, model)
+                    
+                    # Gradient clipping
+                    if nn_config.get("gradient_clipping", {}).get("enabled", False):
+                        max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+                    
                     optimizer.step()
                     
                     with lock:
@@ -597,6 +603,12 @@ def main():
                     optimizer.zero_grad()
                     scaled_grads = {k: v * scale for k, v in grads.items()}
                     set_gradients(scaled_grads, model)
+                    
+                    # Gradient clipping
+                    if nn_config.get("gradient_clipping", {}).get("enabled", False):
+                        max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+                    
                     optimizer.step()
                     
                     with lock:
