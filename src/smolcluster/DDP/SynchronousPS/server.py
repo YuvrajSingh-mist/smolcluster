@@ -335,7 +335,7 @@ def main():
                     )
 
                 set_weights(grads_reduced, model)
-
+                optimizer.zero_grad()
                 optimizer.step()
                 grads_received.pop(step, None)
                 del grads_reduced, leader_grads

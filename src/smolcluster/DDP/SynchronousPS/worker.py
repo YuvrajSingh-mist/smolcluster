@@ -249,6 +249,7 @@ def main():
             if command == "averaged_gradients":
                 set_gradients(updated_grads, model)
 
+            optimizer.zero_grad()
             optimizer.step()
             
             # Log gradient norms if tracking enabled
