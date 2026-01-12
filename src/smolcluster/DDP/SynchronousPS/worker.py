@@ -289,7 +289,7 @@ def main():
 
             if step % worker_update_interval == 0 and step != 0:
                 
-                send_message(sock, ("pull_weights", local_rank))
+                send_message(sock, ("pull_weights", step, local_rank, grads))
                 data_recv = receive_message(sock)
                 command, weights = data_recv
                 if command == "model_weights":
