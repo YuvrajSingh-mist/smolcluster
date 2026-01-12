@@ -2,7 +2,7 @@ host_ip:
   mini1: "10.10.0.1"
   # mini2: "10.10.0.1"
   # mini3: "10.10.0.1"
-  pi4: "10.10.0.1"
+  # pi4: "10.10.0.1"
   # macbook: "172.18.3.80"
   pi5: "192.168.50.1"
   win: "192.168.52.2"
@@ -19,6 +19,6 @@ use_quantization: false  # Enable/disable weight quantization for communication
 seed: 42
 
 # Cluster configuration
-num_workers: 3
-workers: [win, pi4, pi5]  # Worker hostnames
+num_workers: 2
+workers: [win, pi5]  # Worker hostnames
 server: mini1  # Server hostname
