@@ -41,7 +41,7 @@ else:
     HOSTNAME = input("Enter server hostname: ")
 
 # Load configs
-CONFIG_DIR = Path(__file__).parent.parent / "configs"
+CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
 with open(CONFIG_DIR / "nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 

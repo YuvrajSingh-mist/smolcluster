@@ -155,7 +155,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching server on $SERVER..."
-SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd src/smolcluster/DDP/SynchronousPS && ../../../../.venv/bin/python server.py $SERVER"
+SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd src/smolcluster/algorithms/SynchronousPS && ../../../../.venv/bin/python server.py $SERVER"
 launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -167,7 +167,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd src/smolcluster/DDP/SynchronousPS && ../../../../.venv/bin/python worker.py $i $node"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd src/smolcluster/algorithms/SynchronousPS && ../../../../.venv/bin/python worker.py $i $node"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done

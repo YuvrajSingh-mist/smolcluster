@@ -32,7 +32,7 @@ else:
     logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
 
 # Load configs
-CONFIG_DIR = Path(__file__).parent.parent / "configs"
+CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
 with open(CONFIG_DIR / "nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
