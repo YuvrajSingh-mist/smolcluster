@@ -44,10 +44,11 @@ else:
     HOSTNAME = input("Enter server hostname: ")
 
 # Load configs
-with open("../configs/nn_config.yaml") as f:
+CONFIG_DIR = Path(__file__).parent.parent / "configs"
+with open(CONFIG_DIR / "nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../configs/cluster_config_edp.yaml") as f:
+with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
@@ -93,7 +94,7 @@ def load_data(
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("../data", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST("../../../data", download=True, transform=transforms)
     lendata = len(data)
     torch.manual_seed(SEED)
     trainset, testset = torch.utils.data.random_split(

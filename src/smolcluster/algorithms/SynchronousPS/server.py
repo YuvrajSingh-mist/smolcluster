@@ -5,6 +5,7 @@ import socket
 import sys
 import threading
 from collections import defaultdict
+from pathlib import Path
 from typing import Tuple
 import torch
 import torchinfo
@@ -40,10 +41,11 @@ else:
     HOSTNAME = input("Enter server hostname: ")
 
 # Load configs
-with open("../../configs/nn_config.yaml") as f:
+CONFIG_DIR = Path(__file__).parent.parent / "configs"
+with open(CONFIG_DIR / "nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../../configs/cluster_config_syncps.yaml") as f:
+with open(CONFIG_DIR / "cluster_config_syncps.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
@@ -86,7 +88,8 @@ def load_data(
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("../../data", download=True, transform=transforms)
+    DATA_DIR = Path(__file__).parent.parent.parent / "data"
+    data = torchvision.datasets.MNIST(str(DATA_DIR), download=True, transform=transforms)
     lendata = len(data)
     
     torch.manual_seed(SEED)
@@ -165,7 +168,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             command, recv_step, rank, grads = message
 
             logger.info(
-                f"Received gradients from worker {addr} with ID {rank} for batch {recv_step}"
+                f"Received message '{command}' from worker {addr} (rank {rank}) for step {recv_step}"
             )
 
             if command == "parameter_server_reduce":
@@ -178,10 +181,9 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 step_event.set()
                 
             elif command == "pull_weights":
-                logger.info(f"Worker {addr} requested model weights")
+                logger.info(f"Worker {rank} requested model weights at step {recv_step}")
                 weights = get_weights(model)
                 send_message(conn, ("model_weights", weights))
-                
                 step_event.set()
                 
             # Add handling for other commands if needed, e.g., 'disconnect'

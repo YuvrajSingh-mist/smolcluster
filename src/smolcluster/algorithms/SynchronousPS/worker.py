@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import torch
 import torchvision
@@ -15,11 +16,11 @@ from smolcluster.utils.common_utils import (
     get_gradients,
     receive_message,
     send_message,
+    set_gradients,
     set_weights,
-    get_weights)
+)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
-from smolcluster.utils.quantization import dequantize_model_weights, quantize_model_weights, calculate_compression_ratio
 
 # Login to wandb using API key from environment variable
 if "WANDB_API_KEY" in os.environ:
@@ -31,10 +32,11 @@ else:
     logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
 
 # Load configs
-with open("../configs/nn_config.yaml") as f:
+CONFIG_DIR = Path(__file__).parent.parent / "configs"
+with open(CONFIG_DIR / "nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../configs/cluster_config_edp.yaml") as f:
+with open(CONFIG_DIR / "cluster_config_syncps.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
@@ -42,11 +44,6 @@ PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
-
-track_gradients = nn_config["track_gradients"]
-worker_update_interval = cluster_config["worker_update_interval"]
-use_quantization = cluster_config.get("use_quantization", True)
-
 
 # Get worker rank and hostname from command-line arguments
 if len(sys.argv) > 1:
@@ -67,12 +64,9 @@ HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
-recv_model_version = -1
+worker_update_interval = cluster_config["worker_update_interval"]
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
-
-# Track model version for elastic training
-model_version = 0
 
 # Setup logging
 logging.basicConfig(
@@ -91,9 +85,12 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("../../data", download=True, transform=transforms)
+    DATA_DIR = Path(__file__).parent.parent.parent / "data"
+    data = torchvision.datasets.MNIST(str(DATA_DIR), download=True, transform=transforms)
     lendata = len(data)
+    
     torch.manual_seed(SEED)
+     
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )
@@ -179,18 +176,15 @@ def connect_to_server(
 
 def main():
     
-    global model_version, recv_model_version
-    
     # Initialize W&B for worker
     wandb.init(
         project="smolcluster",
-        name=f"worker-{HOSTNAME}_rank{local_rank}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}",
+        name=f"SyncPS-worker-{HOSTNAME}_rank{local_rank}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}",
         config={
             **nn_config,
             "worker_rank": local_rank,
             "worker_hostname": HOSTNAME,
-            "server_hostname": cluster_config['server'],
-            "worker_update_interval": cluster_config.get("worker_update_interval", 5),
+            "mode": "synchronous_ps",
         },
     )
     logger.info(f"Worker {local_rank} wandb initialized")
@@ -215,177 +209,113 @@ def main():
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
     
-    total_steps = num_epochs * len(train_loader)
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
-    # Wait for start signal or timeout and start anyway
-    logger.info("Waiting for start_training signal from server (max 5 seconds)...")
-    start_time = time.time()
-    while time.time() - start_time < 5:
-        sock.settimeout(0.1)
-        try:
-            recv_command = receive_message(sock)
-            if recv_command == "start_training":
-                logger.info("Received start_training command from server.")
-                break
-        except socket.timeout:
-            pass
-    
-    logger.info("Starting training loop...")
-    sock.settimeout(None)  # Reset to blocking
+    # optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
-    # Initialize iterator for continuous training
-    train_iter = iter(train_loader)
- 
-    for step in range(total_steps):
+    while True:
+        recv_command = receive_message(sock)
+
+        if recv_command == "start_training":
+            logger.info("Received start_training command from server.")
+            break
+
+    for epoch in range(num_epochs):
         model.train()
-        epoch = step // len(train_loader)
-        
-        # Fetch next batch, cycling through dataset
-        try:
-            data, target = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            data, target = next(train_iter)
-        
-        logger.info("Performing local forward and backward pass.")
-        # optimizer.zero_grad()
-        data, target = data.to(get_device()), target.to(get_device())
+        total_loss = 0.0
 
-        output = model(data.view(data.size(0), -1))
-        loss = criterion(output, target)
+        for batch_idx, (data, target) in enumerate(train_loader):
+            step = epoch * len(train_loader) + batch_idx
+            # optimizer.zero_grad()
+            data, target = data.to(get_device()), target.to(get_device())
 
-        loss.backward()
-        
-        # Gradient clipping to prevent exploding gradients
-        if nn_config.get("gradient_clipping", {}).get("enabled", False):
-            max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        
-        optimizer.step()  # Local SGD: workers apply updates independently
-        
-        # Send locally-updated weights for Polyak averaging on server
-        weights = get_weights(model)
-        
-        if use_quantization:
-            quantized_weights = quantize_model_weights(weights)
+            output = model(data.view(data.size(0), -1))
+            loss = criterion(output, target)
+            total_loss += loss.item()
+            model.zero_grad()
+            loss.backward()
             
-            # Log compression ratio on first step
-            if step == 0:
-                comp_info = calculate_compression_ratio(weights, quantized_weights)
-                logger.info(f"Quantization: {comp_info['original_mb']:.2f}MB → {comp_info['compressed_mb']:.2f}MB (ratio: {comp_info['ratio']:.2f}x)")
+            # Gradient clipping
+            if nn_config.get("gradient_clipping", {}).get("enabled", False):
+                max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
             
-            logger.info("Local forward and backward pass done. Sending quantized model weights to server.")
-            send_message(sock, (
-                "polyark_averaging",
-                {
-                    "step": step,
-                    "rank": local_rank,
-                    "quantized_weights": quantized_weights,
-                    "model_version": model_version,
-                }
-            ))
-            logger.info("Quantized model weights sent to server.")
-        else:
-            logger.info("Local forward and backward pass done. Sending model weights to server.")
-            send_message(sock, (
-                "polyark_averaging",
-                {
-                    "step": step,
-                    "rank": local_rank,
-                    "weights": weights,
-                    "model_version": model_version,
-                }
-            ))
-            logger.info("Model weights sent to server.")
-        
-        # OLD APPROACH: Send gradients for scaling (commented out)
-        # grads = get_gradients(model)
-        # send_message(sock, (
-        #     "parameter_server_reduce",
-        #     {
-        #         "step": step,
-        #         "rank": local_rank,
-        #         "grads": grads,
-        #         "model_version": model_version,
-        #     }
-        # ))
-        
-        if step % worker_update_interval == 0 and step != 0:
-            logger.info(f"Pulling weights from server at step {step}.")
-            send_message(sock, ("pull_weights", model_version))
-            sock.settimeout(1.0)  # Wait up to 1 second for weights
-            try:
-                weights, new_version = receive_message(sock)
-                
-                if use_quantization:
-                    dequant_weights = dequantize_model_weights(weights, device=get_device())
-                    model.load_state_dict(dequant_weights)
-                else:
-                    # print(weights)
-                    model.load_state_dict(weights)
-                
-                recv_model_version = new_version
-                logger.info(f"Updated to model version {recv_model_version} from server.")
-            except socket.timeout:
-                logger.warning("Timeout while pulling weights from server.")
-            except BlockingIOError:
-                logger.error(f"non-blocking socket error while pulling weights from server.")
-            finally:
-                sock.settimeout(None)  # Restore blocking socket
+            grads = get_gradients(model)
 
-            if track_gradients:
-                logger.info("Tracking gradients in wandb...")
+            # Send gradients to server and receive updated weights
+            send_message(sock, ("parameter_server_reduce", step, local_rank, grads))
+
+            data_recv = receive_message(sock)
+
+            command, recv_step, updated_grads = data_recv
+
+            assert recv_step == step, "Step mismatch in communication with server."
+                
+
+            if command == "averaged_gradients":
+                set_gradients(updated_grads, model)
+
+            
+            # optimizer.step()
+            
+            # Log gradient norms if tracking enabled
+            if nn_config.get("track_gradients", False):
                 for name, param in model.named_parameters():
                     if param.grad is not None:
-                        logger.info(f"Logging gradients for layer: {name}")
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
                         wandb.log(
                             {
                                 f"gradients/layer_{name}": grad_norm,
                                 "step": step,
-                                "epoch": epoch,
+                                "epoch": epoch + 1,
                             }
                         )
-                logger.info("Gradient tracking complete.")
-                
-        # Update local model version if received new weights
-        if recv_model_version != -1 and recv_model_version != model_version:
-            model_version = recv_model_version
-            logger.info(f"Updated local model version to {model_version}.")
-        
-        # Run evaluation every eval_steps
-        if step % eval_steps == 0:
-            val_loss, val_accuracy = evaluate(model, val_loader, criterion)
+            
+            # Run evaluation every eval_steps
+            if step % eval_steps == 0:
+                val_loss, val_accuracy = evaluate(model, val_loader, criterion)
+                wandb.log({
+                    "step": step,
+                    "epoch": epoch + 1,
+                    "losses/val": val_loss,
+                    "accuracy/val": val_accuracy,
+                })
+                logger.info(f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%")
+                model.train()  # Switch back to training mode
+            
+            # Log to wandb
             wandb.log({
                 "step": step,
-                "epoch": epoch,
-                "losses/val": val_loss,
-                "accuracy/val": val_accuracy,
+                "epoch": epoch + 1,
                 "losses/train_batch": loss.item(),
             })
-            logger.info(f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%")
-        else:
-            # Log training loss only
-            wandb.log({
-                "step": step,
-                "epoch": epoch,
-                "losses/train_batch": loss.item(),
-            })
-        
+            logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
+
+            if step % worker_update_interval == 0 and step != 0:
+                logger.info(f"Pulling weights from server at step {step}")
+                send_message(sock, ("pull_weights", step, local_rank, None))
+                data_recv = receive_message(sock)
+                print(data_recv)
+                command, weights = data_recv
+                if command == "model_weights":
+                    set_weights(weights, model)
+                    logger.info(f"Updated model weights at step {step}")
+                    
+        avg_loss = total_loss / len(train_loader)
+        wandb.log({
+            "epoch": epoch + 1,
+            "losses/train_epoch": avg_loss,
+        })
         logger.info(
-            f"Epoch: {epoch} , Step {step}/{total_steps} completed."
+            f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
         )
     
-    # Finish wandb tracking
     wandb.finish()
-    logger.info(f"Worker {local_rank} wandb tracking finished.")
-
-    send_message(sock, ("disconnect", local_rank))
     sock.close()
-    logger.info(f"Training complete. Worker {local_rank} disconnected.")
+    logger.info("Worker training completed and connection closed.")
+
+            
+            
     
-    
+
 if __name__ == "__main__":
     main()
