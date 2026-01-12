@@ -62,7 +62,7 @@ HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
-worker_update_interval = nn_config["worker_update_interval"]
+worker_update_interval = cluster_config["worker_update_interval"]
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 

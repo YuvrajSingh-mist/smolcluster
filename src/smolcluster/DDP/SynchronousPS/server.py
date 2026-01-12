@@ -58,7 +58,7 @@ RANK = 0
 batch_size = nn_config["batch_size"]
 eval_steps = nn_config["eval_steps"]
 num_epochs = nn_config["num_epochs"]
-track_gradients = nn_config.get("track_gradients", False)
+track_gradients = nn_config["track_gradients"]
 criterion = torch.nn.CrossEntropyLoss()
 
 
