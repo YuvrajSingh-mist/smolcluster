@@ -315,7 +315,7 @@ def main():
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/leader_step": leader_loss.item(),
-                    "losses/leader_loss": leader_loss.item() / step,
+                    "losses/leader_loss": leader_loss.item() / (step+1),
                 }
             )
            
