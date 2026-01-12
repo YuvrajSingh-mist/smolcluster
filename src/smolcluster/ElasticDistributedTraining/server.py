@@ -593,8 +593,7 @@ def main():
                         model_version += 1
                 
             del workers_copy
-            gc.collect()
-        
+            
             # # Apply worker's gradients
             # optimizer.zero_grad()
             # optimizer.step()

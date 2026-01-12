@@ -4,13 +4,13 @@ host_ip:
   # mini3: "10.10.0.1"
   # pi4: "10.10.0.1"
   macbook: "172.18.3.80"
-  # pi5: "192.168.50.1"
-  win: "10.10.0.1"
+  pi5: "192.168.50.1"
+  # win: "10.10.0.1"
 
 port: 65432
 
 # Worker update settings
-worker_update_interval: 10  # How often workers pull latest weights (in steps)
+worker_update_interval: 50  # How often workers pull latest weights (in steps)
 
 # Quantization settings
 use_quantization: false  # Enable/disable weight quantization for communication
@@ -20,5 +20,5 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-workers: [win, macbook]  # Worker hostnames
+workers: [pi5, macbook]  # Worker hostnames
 server: mini1  # Server hostname

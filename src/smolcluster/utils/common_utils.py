@@ -19,6 +19,7 @@ def receive_message(sock: socket.SocketType) -> dict:
     msglen = struct.unpack(">I", raw_msglen)[0]
     data = b""
     while True:
+        print(msglen)
         chunk = sock.recv(msglen)
 
         data += chunk
