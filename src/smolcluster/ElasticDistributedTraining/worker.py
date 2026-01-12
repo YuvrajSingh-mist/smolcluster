@@ -353,13 +353,14 @@ def main():
             f"Epoch: {epoch} , Step {step}/{total_steps} completed."
         )
     
-    send_message(sock, ("disconnect", local_rank))
-    sock.close()
-    logger.info(f"Training complete. Worker {local_rank} disconnected.")
-    
     # Finish wandb tracking
     wandb.finish()
     logger.info(f"Worker {local_rank} wandb tracking finished.")
 
+    send_message(sock, ("disconnect", local_rank))
+    sock.close()
+    logger.info(f"Training complete. Worker {local_rank} disconnected.")
+    
+    
 if __name__ == "__main__":
     main()
