@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.common_utils import (
     get_gradients,
+    get_weights,
     receive_message,
     send_message,
     set_weights,
@@ -175,6 +176,14 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                     curr_step = recv_step
                     grads_received[curr_step][rank] = grads
                 step_event.set()
+                
+            elif command == "pull_weights":
+                logger.info(f"Worker {addr} requested model weights")
+                weights = get_weights(model)
+                send_message(conn, ("model_weights", weights))
+                
+                step_event.set()
+                
             # Add handling for other commands if needed, e.g., 'disconnect'
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
@@ -299,12 +308,14 @@ def main():
                 model, data, target, criterion, optimizer
             )
             grads_received[step][RANK] = leader_grads
-
+            total_loss += leader_loss.item()
+            
             wandb.log(
                 {
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/leader_step": leader_loss.item(),
+                    "losses/leader_loss": leader_loss.item() / step,
                 }
             )
            
@@ -335,7 +346,7 @@ def main():
                     )
 
                 set_weights(grads_reduced, model)
-                optimizer.zero_grad()
+        
                 optimizer.step()
                 grads_received.pop(step, None)
                 del grads_reduced, leader_grads
@@ -347,12 +358,7 @@ def main():
                 )
                 del leader_grads
                 
-            data = data.to(get_device())
-            target = target.to(get_device())
-            output = model(data.view(data.size(0), -1))
-            loss = criterion(output, target)
-            total_loss += loss.item()
-
+            
             # Log gradient norms if tracking enabled
             if track_gradients:
                 for name, param in model.named_parameters():
@@ -371,7 +377,7 @@ def main():
                 {
                     "step": step,
                     "epoch": epoch + 1,
-                    "losses/train_step": loss.item(),
+                    # "losses/train_step": loss.item(),
                     "lr": nn_config["learning_rate"],
                     "batch_size": nn_config["batch_size"],
                 }

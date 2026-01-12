@@ -9,6 +9,10 @@ host_ip:
 
 port: 65432
 
+
+# Worker update settings
+worker_update_interval: 10  # How often workers pull latest weights (in steps)
+
 # Timeout for gradient collection
 timeout: 0.1  # How long server waits for gradients (seconds)
 

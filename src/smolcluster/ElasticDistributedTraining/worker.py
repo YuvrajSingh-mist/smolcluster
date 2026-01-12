@@ -355,6 +355,25 @@ def main():
             model_version = recv_model_version
             logger.info(f"Updated local model version to {model_version}.")
         
+        # Run evaluation every eval_steps
+        if step % eval_steps == 0:
+            val_loss, val_accuracy = evaluate(model, val_loader, criterion)
+            wandb.log({
+                "step": step,
+                "epoch": epoch,
+                "losses/val": val_loss,
+                "accuracy/val": val_accuracy,
+                "losses/train_batch": loss.item(),
+            })
+            logger.info(f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%")
+        else:
+            # Log training loss only
+            wandb.log({
+                "step": step,
+                "epoch": epoch,
+                "losses/train_batch": loss.item(),
+            })
+        
         logger.info(
             f"Epoch: {epoch} , Step {step}/{total_steps} completed."
         )

@@ -16,6 +16,7 @@ from smolcluster.utils.common_utils import (
     receive_message,
     send_message,
     set_gradients,
+    set_weights,
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
@@ -61,7 +62,7 @@ HOST_IP = cluster_config["host_ip"][HOSTNAME]
 batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
-
+worker_update_interval = nn_config["worker_update_interval"]
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -206,7 +207,7 @@ def main():
     )
     
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+    # optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     while True:
         recv_command = receive_message(sock)
@@ -221,12 +222,13 @@ def main():
 
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            optimizer.zero_grad()
+            # optimizer.zero_grad()
             data, target = data.to(get_device()), target.to(get_device())
 
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_loss += loss.item()
+            model.zero_grad()
             loss.backward()
             
             # Gradient clipping
@@ -249,11 +251,11 @@ def main():
             if command == "averaged_gradients":
                 set_gradients(updated_grads, model)
 
-            optimizer.zero_grad()
-            optimizer.step()
+            
+            # optimizer.step()
             
             # Log gradient norms if tracking enabled
-            if nn_config.get("track_gradients", False) and step % eval_steps == 0:
+            if nn_config.get("track_gradients", False):
                 for name, param in model.named_parameters():
                     if param.grad is not None:
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
@@ -265,15 +267,34 @@ def main():
                             }
                         )
             
-            # Log to wandb
+            # Run evaluation every eval_steps
             if step % eval_steps == 0:
+                val_loss, val_accuracy = evaluate(model, val_loader, criterion)
                 wandb.log({
                     "step": step,
                     "epoch": epoch + 1,
-                    "losses/train_batch": loss.item(),
+                    "losses/val": val_loss,
+                    "accuracy/val": val_accuracy,
                 })
-                logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
-        
+                logger.info(f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%")
+                model.train()  # Switch back to training mode
+            
+            # Log to wandb
+            wandb.log({
+                "step": step,
+                "epoch": epoch + 1,
+                "losses/train_batch": loss.item(),
+            })
+            logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
+
+            if step % worker_update_interval == 0 and step != 0:
+                
+                send_message(sock, ("pull_weights", local_rank))
+                data_recv = receive_message(sock)
+                command, weights = data_recv
+                if command == "model_weights":
+                    set_weights(weights, model)
+                    
         avg_loss = total_loss / len(train_loader)
         wandb.log({
             "epoch": epoch + 1,
