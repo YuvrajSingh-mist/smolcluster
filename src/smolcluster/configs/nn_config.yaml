@@ -3,6 +3,9 @@ learning_rate: 0.0002
 num_epochs: 10
 eval_steps: 50
 track_gradients: true
+gradient_clipping:
+  enabled: true
+  max_norm: 1.0  # Maximum gradient norm
 model:
   type: SimpleNN
   input_dim: 784

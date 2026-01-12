@@ -257,7 +257,13 @@ def main():
         loss = criterion(output, target)
 
         loss.backward()
-        optimizer.step()  # Local optim: workers apply updates independently
+        
+        # Gradient clipping to prevent exploding gradients
+        if nn_config.get("gradient_clipping", {}).get("enabled", False):
+            max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        
+        optimizer.step()  # Local SGD: workers apply updates independently
         
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)

@@ -154,6 +154,12 @@ def compute_leader_gradients(
     loss = criterion(output, target)
     optimizer.zero_grad()
     loss.backward()
+    
+    # Gradient clipping
+    if nn_config.get("gradient_clipping", {}).get("enabled", False):
+        max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    
     grads = get_gradients(model)
     return loss, grads
 
@@ -474,6 +480,12 @@ def main():
         # Apply leader gradients
         optimizer.zero_grad()
         set_gradients(leader_grads, model)
+        
+        # Gradient clipping
+        if nn_config.get("gradient_clipping", {}).get("enabled", False):
+            max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        
         optimizer.step()
         
         with lock:
