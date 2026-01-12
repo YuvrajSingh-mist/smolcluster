@@ -114,7 +114,7 @@ def evaluate(
     model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module
 ) -> tuple[float, float]:
     model.eval()
-    total_loss = 0.0
+    total_val_loss = 0.0
     correct = 0
     total = 0
     val_iter = iter(val_loader)
@@ -131,11 +131,11 @@ def evaluate(
             data, target = data.to(get_device()), target.to(get_device())
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
-            total_loss += loss.item()
+            total_val_loss += loss.item()
             _, predicted = torch.max(output.data, 1)
             total += target.size(0)
             correct += (predicted == target).sum().item()
-    avg_loss = total_loss / len(val_loader)
+    avg_loss = total_val_loss / len(val_loader)
     accuracy = 100 * (correct / total)
     model.train()
     return avg_loss, accuracy
@@ -147,7 +147,7 @@ def compute_leader_gradients(
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-) -> dict[str, torch.Tensor]:
+) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
     model.train()
     data, target = data.to(get_device()), target.to(get_device())
     output = model(data.view(data.size(0), -1))
@@ -155,7 +155,7 @@ def compute_leader_gradients(
     optimizer.zero_grad()
     loss.backward()
     grads = get_gradients(model)
-    return grads
+    return loss, grads
 
 
 def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
@@ -390,9 +390,25 @@ def main():
         epoch = step // len(train_loader)
         
         # Compute leader gradients
-        leader_grads = compute_leader_gradients(model, data, target, criterion, optimizer)
+        leader_loss, leader_grads = compute_leader_gradients(model, data, target, criterion, optimizer)
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
         
+        total_loss += leader_loss.item()
+        
+        if track_gradients:
+            logger.info("Tracking gradients in wandb...")
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    logger.info(f"Logging gradients for layer: {name}")
+                    grad_norm = torch.norm(param.grad.detach(), 2).item()
+                    wandb.log(
+                        {
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                        }
+                    )
+            logger.info("Gradient tracking complete.")
+            
         # Collect any available worker data (non-blocking with small timeout)
         gradients_event.wait(timeout=0.01)  # Very short wait
         gradients_event.clear()
@@ -467,38 +483,20 @@ def main():
         gc.collect()
         
         logger.info(f"Applied leader gradients. Step {step}: Updated to model version {model_version}")
-        
-        
-        data = data.to(get_device())
-        target = target.to(get_device())
-        output = model(data.view(data.size(0), -1))
-        loss = criterion(output, target)
-        total_loss += loss.item()
-        
-        logger.info(f"Epoch {epoch + 1}, Step: {step}: Step loss = {loss.item():.4f}")
+       
+        logger.info(f"Epoch {epoch + 1}, Step: {step}: Step loss = {leader_loss.item():.4f}")
         
         if step % 50 == 0:
             wandb.log(
                 {
                     "step": step,
                     "epoch": epoch,
-                    "losses/step_loss": loss.item(),
+                    "losses/leader_step_loss": leader_loss.item(),
+                    "losses/avg_loss": total_loss / (step + 1),
                 }
             )
             
-            # if track_gradients:
-            logger.info("Tracking gradients in wandb...")
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    logger.info(f"Logging gradients for layer: {name}")
-                    grad_norm = torch.norm(param.grad.detach(), 2).item()
-                    wandb.log(
-                        {
-                            f"gradients/layer_{name}": grad_norm,
-                            "step": step,
-                        }
-                    )
-            logger.info("Gradient tracking complete.")
+           
             
             wandb.log(
                 {
@@ -619,6 +617,7 @@ def main():
                         "step": step,
                         "epoch": epoch,
                         "losses/step_loss": loss.item(),
+                        "losses/avg_loss": total_loss / (step + 1),
                     }
                 )
                 
