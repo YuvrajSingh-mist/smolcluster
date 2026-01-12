@@ -1,11 +1,11 @@
 import gc
 import logging
+import os
 import socket
 import sys
 import threading
-import time
 from collections import defaultdict
-
+from typing import Tuple
 import torch
 import torchinfo
 import torchvision
@@ -23,6 +23,15 @@ from smolcluster.utils.common_utils import (
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
+# Login to wandb using API key from environment variable
+if "WANDB_API_KEY" in os.environ:
+    wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+    logger_temp = logging.getLogger("[SERVER-INIT]")
+    logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
+else:
+    logger_temp = logging.getLogger("[SERVER-INIT]")
+    logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+
 # Get hostname from command-line argument
 if len(sys.argv) > 1:
     HOSTNAME = sys.argv[1]
@@ -33,18 +42,18 @@ else:
 with open("../../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../../configs/cluster_config_ddp.yaml") as f:
+with open("../../configs/cluster_config_syncps.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-HOST_IP = cluster_config["host_ip"][HOSTNAME]
+HOST_IP = "0.0.0.0"
 PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 TIMEOUT = cluster_config["timeout"]
 
-local_rank = 0
+RANK = 0
 batch_size = nn_config["batch_size"]
 eval_steps = nn_config["eval_steps"]
 num_epochs = nn_config["num_epochs"]
@@ -122,15 +131,21 @@ def compute_leader_gradients(
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-) -> dict[str, torch.Tensor]:
+) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
     model.train()
     data, target = data.to(get_device()), target.to(get_device())
     output = model(data.view(data.size(0), -1))
     loss = criterion(output, target)
     optimizer.zero_grad()
     loss.backward()
+    
+    # Gradient clipping
+    if nn_config.get("gradient_clipping", {}).get("enabled", False):
+        max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    
     grads = get_gradients(model)
-    return grads
+    return loss, grads
 
 
 def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
@@ -196,7 +211,7 @@ model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
 
 
-train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, rank=local_rank)
+train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, rank=RANK)
 
 
 logger.info(
@@ -218,17 +233,21 @@ def main():
     # Initialize W&B
     wandb.init(
         project="smolcluster",
-        name=f"MNIST-training_lr_{nn_config['learning_rate']}_bsz_{nn_config['batch_size']}",
-        config=nn_config,
+        name=f"SyncPS-server-{HOSTNAME}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}_workers{NUM_WORKERS}",
+        config={
+            **nn_config,
+            "server_hostname": HOSTNAME,
+            "num_workers": NUM_WORKERS,
+            "mode": "synchronous_ps",
+        },
     )
 
-    if local_rank == 0:
-        model_summary = str(
-            torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
-        )
-        logger.info("Model Summary:")
-        logger.info(model_summary)
-        wandb.log({"model_structure": model_summary})
+    model_summary = str(
+        torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
+    )
+    logger.info("Model Summary:")
+    logger.info(model_summary)
+    wandb.log({"model_structure": model_summary})
 
     # Accept connections and wait for registration
     registered_workers = {}  # rank -> socket
@@ -272,16 +291,22 @@ def main():
     logger.info(f"Starting training for {num_epochs} epochs.")
     for epoch in range(num_epochs):
         model.train()
-        if local_rank == 0:
-            total_loss = 0.0
+        total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            leader_grads = compute_leader_gradients(
+            leader_loss, leader_grads = compute_leader_gradients(
                 model, data, target, criterion, optimizer
             )
-            grads_received[step][local_rank] = leader_grads
+            grads_received[step][RANK] = leader_grads
 
+            wandb.log(
+                {
+                    "step": step,
+                    "epoch": epoch + 1,
+                    "losses/leader_step": leader_loss.item(),
+                }
+            )
            
             while True:
                 with lock:
@@ -322,59 +347,65 @@ def main():
                 )
                 del leader_grads
                 
-            if local_rank == 0:
-                data = data.to(get_device())
-                target = target.to(get_device())
-                output = model(data.view(data.size(0), -1))
-                loss = criterion(output, target)
-                total_loss += loss.item()
+            data = data.to(get_device())
+            target = target.to(get_device())
+            output = model(data.view(data.size(0), -1))
+            loss = criterion(output, target)
+            total_loss += loss.item()
 
-                if track_gradients:
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            logger.info(f"Logging gradient norm for layer {name}")
-                            grad_norm = torch.norm(param.grad.detach(), 2).item()
-                            wandb.log(
-                                {
-                                    f"gradients/layer_{name}": grad_norm,
-                                    "step": step,
-                                }
-                            )
+            # Log gradient norms if tracking enabled
+            if track_gradients:
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log(
+                            {
+                                f"gradients/layer_{name}": grad_norm,
+                                "step": step,
+                                "epoch": epoch + 1,
+                            }
+                        )
+
+            # Log training metrics
+            wandb.log(
+                {
+                    "step": step,
+                    "epoch": epoch + 1,
+                    "losses/train_step": loss.item(),
+                    "lr": nn_config["learning_rate"],
+                    "batch_size": nn_config["batch_size"],
+                }
+            )
+
+            if step % eval_steps == 0:
+                val_loss, val_acc = evaluate(model, val_loader, criterion)
 
                 wandb.log(
                     {
                         "step": step,
-                        "lr": nn_config["learning_rate"],
-                        "batch_size": nn_config["batch_size"],
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                        "accuracy/val": val_acc,
                     }
                 )
-
-                if step % eval_steps == 0:
-                    val_loss, val_acc = evaluate(model, val_loader, criterion)
-
-                    wandb.log(
-                        {
-                            "step": step,
-                            "losses/val": val_loss,
-                            "accuracy/val": val_acc,
-                        }
-                    )
+                logger.info(f"Step {step}: Val Loss={val_loss:.4f}, Val Acc={val_acc:.2f}%")
 
         avg_loss = total_loss / len(train_loader)
 
         wandb.log(
             {
-                "step": step,
-                "losses/train": avg_loss,
+                "epoch": epoch + 1,
+                "losses/train_epoch": avg_loss,
             }
         )
 
         logger.info(
-            f"Epoch {epoch + 1}/{num_epochs}, Step: {step}/{num_epochs * len(train_loader)} completed."
+            f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
         )
-
+    
+    logger.info("Training completed successfully!")
     wandb.finish()
-    client_socket.close()
+    sock.close()
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ set -e  # Exit on any error
 
 # Configuration
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_ddp.yaml"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_syncps.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
@@ -32,6 +32,37 @@ fi
 echo "🚀 SmolCluster Launch Script"
 echo "📁 Project dir: $PROJECT_DIR"
 echo "⚙️  Config file: $CONFIG_FILE"
+
+# Enforce wandb login
+echo ""
+echo "🔐 Weights & Biases (wandb) Authentication"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [[ -z "$WANDB_API_KEY" ]]; then
+    echo "⚠️  WANDB_API_KEY not set. Please provide your API key."
+    echo "Get your API key from: https://wandb.ai/authorize"
+    echo ""
+    read -p "Enter WANDB_API_KEY: " WANDB_API_KEY
+    if [[ -z "$WANDB_API_KEY" ]]; then
+        echo "❌ No API key provided. Exiting."
+        exit 1
+    fi
+fi
+
+# Verify the API key works by setting it as env var and testing
+export WANDB_API_KEY
+if WANDB_API_KEY="$WANDB_API_KEY" wandb login --relogin <<< "$WANDB_API_KEY" 2>&1 | grep -qE "(Successfully logged in|Logged in)"; then
+    echo "✅ wandb authentication successful"
+else
+    # Try alternative: just verify the key is valid format (40 hex chars typically)
+    if [[ ${#WANDB_API_KEY} -ge 32 ]]; then
+        echo "✅ API key accepted (will be set as WANDB_API_KEY on all nodes)"
+    else
+        echo "❌ Invalid API key format. Please check your API key."
+        exit 1
+    fi
+fi
+
+echo "📤 This API key will be used on all remote nodes"
 
 
 # Check SSH connectivity and remote requirements
@@ -124,7 +155,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching server on $SERVER..."
-SERVER_CMD="cd src/smolcluster/DDP/SimpleAllReduce && ../../../../.venv/bin/python server.py $SERVER"
+SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd src/smolcluster/DDP/SynchronousPS && ../../../../.venv/bin/python server.py $SERVER"
 launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -136,7 +167,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="cd src/smolcluster/DDP/SimpleAllReduce && ../../../../.venv/bin/python worker.py $i $node"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd src/smolcluster/DDP/SynchronousPS && ../../../../.venv/bin/python worker.py $i $node"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done
@@ -148,4 +179,5 @@ echo "📊 Check status:"
 echo "   ssh $SERVER 'tmux ls'"
 echo "   ssh $SERVER 'tmux attach -t server'"
 echo ""
+echo "📈 Monitor training at: https://wandb.ai"
 echo "📈 Monitor training at: https://wandb.ai"

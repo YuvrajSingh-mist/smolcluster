@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -6,6 +7,7 @@ import time
 
 import torch
 import torchvision
+import wandb
 import yaml
 
 from smolcluster.models.SimpleNN import SimpleMNISTModel
@@ -18,11 +20,20 @@ from smolcluster.utils.common_utils import (
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
+# Login to wandb using API key from environment variable
+if "WANDB_API_KEY" in os.environ:
+    wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+    logger_temp = logging.getLogger("[WORKER-INIT]")
+    logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
+else:
+    logger_temp = logging.getLogger("[WORKER-INIT]")
+    logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+
 # Load configs
 with open("../../configs/nn_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open("../../configs/cluster_config_ddp.yaml") as f:
+with open("../../configs/cluster_config_syncps.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
@@ -161,6 +172,18 @@ def connect_to_server(
 
 def main():
     
+    # Initialize W&B for worker
+    wandb.init(
+        project="smolcluster",
+        name=f"SyncPS-worker-{HOSTNAME}_rank{local_rank}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}",
+        config={
+            **nn_config,
+            "worker_rank": local_rank,
+            "worker_hostname": HOSTNAME,
+            "mode": "synchronous_ps",
+        },
+    )
+    logger.info(f"Worker {local_rank} wandb initialized")
     
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
@@ -205,6 +228,12 @@ def main():
             loss = criterion(output, target)
             total_loss += loss.item()
             loss.backward()
+            
+            # Gradient clipping
+            if nn_config.get("gradient_clipping", {}).get("enabled", False):
+                max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            
             grads = get_gradients(model)
 
             # Send gradients to server and receive updated weights
@@ -221,9 +250,41 @@ def main():
                 set_gradients(updated_grads, model)
 
             optimizer.step()
+            
+            # Log gradient norms if tracking enabled
+            if nn_config.get("track_gradients", False) and step % eval_steps == 0:
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log(
+                            {
+                                f"gradients/layer_{name}": grad_norm,
+                                "step": step,
+                                "epoch": epoch + 1,
+                            }
+                        )
+            
+            # Log to wandb
+            if step % eval_steps == 0:
+                wandb.log({
+                    "step": step,
+                    "epoch": epoch + 1,
+                    "losses/train_batch": loss.item(),
+                })
+                logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
+        
+        avg_loss = total_loss / len(train_loader)
+        wandb.log({
+            "epoch": epoch + 1,
+            "losses/train_epoch": avg_loss,
+        })
         logger.info(
-            f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(train_loader)} completed."
+            f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
         )
+    
+    wandb.finish()
+    sock.close()
+    logger.info("Worker training completed and connection closed.")
 
             
             
