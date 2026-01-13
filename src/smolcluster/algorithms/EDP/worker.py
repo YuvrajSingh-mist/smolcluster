@@ -265,7 +265,7 @@ def run_edp_worker(
                     "polyark_averaging",
                     {
                         "step": step,
-                        "rank": local_rank,
+                        "rank": worker_rank,
                         "quantized_weights": quantized_weights,
                         "model_version": model_version,
                     },
@@ -282,7 +282,7 @@ def run_edp_worker(
                     "polyark_averaging",
                     {
                         "step": step,
-                        "rank": local_rank,
+                        "rank": worker_rank,
                         "weights": weights,
                         "model_version": model_version,
                     },
@@ -369,11 +369,11 @@ def run_edp_worker(
 
     # Finish wandb tracking
     wandb.finish()
-    logger.info(f"Worker {local_rank} wandb tracking finished.")
+    logger.info(f"Worker {worker_rank} wandb tracking finished.")
 
-    send_message(sock, ("disconnect", local_rank))
+    send_message(sock, ("disconnect", worker_rank))
     sock.close()
-    logger.info(f"Training complete. Worker {local_rank} disconnected.")
+    logger.info(f"Training complete. Worker {worker_rank} disconnected.")
 
 
 def main():
