@@ -182,16 +182,16 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                     logger.info(f"[Step {recv_step}] Now have {len(grads_received[curr_step])} gradient sets")
                 step_event.set()
                 
-            elif command == "pull_weights":
+            # elif command == "pull_weights":
                 
-                with lock:
-                    curr_step = recv_step
+            #     with lock:
+            #         curr_step = recv_step
                 
-                logger.info(f"[Step {recv_step}] Worker {rank} requested model weights")
-                weights = get_weights(model)
-                send_message(conn, ("model_weights", curr_step, weights))
-                logger.info(f"[Step {recv_step}] Sent model weights to worker {rank}")
-                step_event.set()
+            #     logger.info(f"[Step {recv_step}] Worker {rank} requested model weights")
+            #     weights = get_weights(model)
+            #     send_message(conn, ("model_weights", curr_step, weights))
+            #     logger.info(f"[Step {recv_step}] Sent model weights to worker {rank}")
+            #     step_event.set()
                 
             # Add handling for other commands if needed, e.g., 'disconnect'
         except Exception as e:
@@ -355,9 +355,11 @@ def main():
 
                 # Send ACKs and server step to workers
                 for _worker_addr, worker_socket in workers.items():
-                    send_message(
-                        worker_socket, ("ACK_step", step)
-                    )
+                    logger.info(f"[Step {step}] Worker {rank} requested model weights")
+                    weights = get_weights(model)
+                    send_message(worker_socket, ("model_weights", step, weights))
+                 
+                    
 
                 logger.info(f"[Step {step}] Applying averaged gradients to server model")
                 set_gradients(grads_reduced, model)

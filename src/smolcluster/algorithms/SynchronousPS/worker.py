@@ -66,6 +66,7 @@ num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
 worker_update_interval = cluster_config["worker_update_interval"]
 polyak_alpha = nn_config["polyak_alpha"]
+track_gradients = nn_config["track_gradients"]
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -278,12 +279,22 @@ def main():
             logger.info(f"[Step {step}] Waiting for ACK and step from server")
             data_recv = receive_message(sock)
 
-            command, recv_step = data_recv
+            command, recv_step, weights = data_recv
             logger.info(f"[Step {step}] Received '{command}' from server for step {recv_step}")
 
             assert recv_step == step, "Step mismatch in communication with server."
                 
-            
+            if command == "model_weights":
+                    # Apply Polyak averaging to blend server weights with local model
+                    current_weights = get_weights(model)
+                    alpha = polyak_alpha  # Use the loaded polyak_alpha value
+                    blended_weights = polyak_blend_weights(current_weights, weights, alpha)
+                    set_weights(blended_weights, model)
+                    logger.info(f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={alpha})")
+            else:
+                    logger.warning(f"[Step {step}] Expected 'model_weights' but got '{command}'")
+                    
+                    
             # if command == "averaged_gradients":
                 # set_gradients(updated_grads, model)
                 # logger.info(f"[Step {step}] Applied averaged gradients to model")
@@ -292,7 +303,7 @@ def main():
             # optimizer.step()
             
             # Log gradient norms if tracking enabled
-            if nn_config.get("track_gradients", False):
+            if track_gradients:
                 for name, param in model.named_parameters():
                     if param.grad is not None:
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
@@ -324,22 +335,22 @@ def main():
             })
             logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
 
-            if step % worker_update_interval == 0:
-                logger.info(f"[Step {step}] Requesting full model weights from server")
-                send_message(sock, ("pull_weights", step, local_rank, None))
-                data_recv = receive_message(sock)
-                command, recv_step, weights = data_recv
-                # assert recv_step == step, "Step mismatch when pulling weights from server."
+            # if step % worker_update_interval == 0:
+            #     logger.info(f"[Step {step}] Requesting full model weights from server")
+            #     send_message(sock, ("pull_weights", step, local_rank, None))
+            #     data_recv = receive_message(sock)
+            #     command, recv_step, weights = data_recv
+            #     # assert recv_step == step, "Step mismatch when pulling weights from server."
                 
-                if command == "model_weights":
-                    # Apply Polyak averaging to blend server weights with local model
-                    current_weights = get_weights(model)
-                    alpha = polyak_alpha  # Use the loaded polyak_alpha value
-                    blended_weights = polyak_blend_weights(current_weights, weights, alpha)
-                    set_weights(blended_weights, model)
-                    logger.info(f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={alpha})")
-                else:
-                    logger.warning(f"[Step {step}] Expected 'model_weights' but got '{command}'")
+            #     if command == "model_weights":
+            #         # Apply Polyak averaging to blend server weights with local model
+            #         current_weights = get_weights(model)
+            #         alpha = polyak_alpha  # Use the loaded polyak_alpha value
+            #         blended_weights = polyak_blend_weights(current_weights, weights, alpha)
+            #         set_weights(blended_weights, model)
+            #         logger.info(f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={alpha})")
+            #     else:
+            #         logger.warning(f"[Step {step}] Expected 'model_weights' but got '{command}'")
                     
         avg_loss = total_loss / len(train_loader)
         wandb.log({
