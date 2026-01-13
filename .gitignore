@@ -10,9 +10,7 @@ wheels/
 .venv
 
 # Data and logs
-data/
 wandb/
-*/data/MNIST
 */wandb/
 .ruff_cache/
 
