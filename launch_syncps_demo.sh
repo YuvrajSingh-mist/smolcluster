@@ -86,11 +86,14 @@ if [[ "$DRY_RUN" != "true" ]]; then
             exit 1
         fi
         
-        # Check that venv exists (don't run uv sync as it resets Python version)
+        # Check that venv exists and sync dependencies
         echo "📦 Checking venv on $node..."
         if ! ssh "$node" "test -f $REMOTE_PROJECT_DIR/.venv/bin/python"; then
             echo "⚠️  Venv not found on $node. Creating with Python 3.9..."
             ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv venv --python 3.9.6 .venv && source .venv/bin/activate && uv pip install -e ."
+        else
+            echo "✅ Venv exists on $node. Running uv sync..."
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"
         fi
         
         echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
