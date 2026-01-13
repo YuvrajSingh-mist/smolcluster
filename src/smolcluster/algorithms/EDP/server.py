@@ -29,52 +29,11 @@ from smolcluster.utils.quantization import (
     quantize_model_weights,
 )
 
-# Login to wandb using API key from environment variable
-if "WANDB_API_KEY" in os.environ:
-    wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
-    logger_temp = logging.getLogger("[SERVER-INIT]")
-    logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
-else:
-    logger_temp = logging.getLogger("[SERVER-INIT]")
-    logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
-
-# Get hostname from command-line argument
-if len(sys.argv) > 1:
-    HOSTNAME = sys.argv[1]
-else:
-    HOSTNAME = input("Enter server hostname: ")
-
-# Load configs
-CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
-with open(CONFIG_DIR / "nn_config.yaml") as f:
-    nn_config = yaml.safe_load(f)
-
-with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
-    cluster_config = yaml.safe_load(f)
-
-# Extract values with defaults
-HOST_IP = "0.0.0.0"  # Listen on all network interfaces (Thunderbolt, eth0, WiFi, etc.)
-PORT = cluster_config["port"]
-NUM_WORKERS = cluster_config["num_workers"]
-SEED = cluster_config.get("seed", 42)
-WORLD_SIZE = NUM_WORKERS + 1
-RANK = 0
-
-batch_size = nn_config["batch_size"]
-eval_steps = nn_config["eval_steps"]
-num_epochs = nn_config["num_epochs"]
-track_gradients = nn_config.get("track_gradients", False)
-use_quantization = cluster_config.get("use_quantization", True)
-
-criterion = torch.nn.CrossEntropyLoss()
-
-
 # Setup logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("[SERVER]")
-logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
 
 gradients_event = threading.Event()
 lock = threading.Lock()
@@ -150,108 +109,23 @@ def compute_leader_gradients(
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    config: dict,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     model.train()
-    data, target = data.to(get_device()), target.to(get_device())
+    device = next(model.parameters()).device
+    data, target = data.to(device), target.to(device)
     output = model(data.view(data.size(0), -1))
     loss = criterion(output, target)
     optimizer.zero_grad()
     loss.backward()
 
     # Gradient clipping
-    if nn_config.get("gradient_clipping", {}).get("enabled", False):
-        max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+    if config.get("gradient_clipping", {}).get("enabled", False):
+        max_norm = config["gradient_clipping"].get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
     grads = get_gradients(model)
     return loss, grads
-
-
-def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
-    global model_version
-    logger.info(f"Handling worker at {addr}")
-
-    while True:
-        message = receive_message(conn)
-
-        # Handle connection closed or empty message
-        if message is None:
-            logger.info(f"Worker {addr} closed connection")
-            break
-
-        # Unpack the message tuple
-        command, payload = message
-
-        if command == "polyark_averaging":
-            recv_step = payload["step"]
-            rank = payload["rank"]
-            worker_version = payload["model_version"]
-
-            # Check if worker sent quantized weights, weights, or gradients
-            if "quantized_weights" in payload:
-                # New approach: Dequantize and use Polyak averaging
-                quantized_weights = payload["quantized_weights"]
-                logger.info(
-                    f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                )
-                # Dequantize weights back to float32 on the server's device
-                device_str = str(get_device())
-                weights = dequantize_model_weights(quantized_weights, device=device_str)
-                with lock:
-                    workers_grads_received[(rank, recv_step, worker_version)] = {
-                        "type": "weights",
-                        "data": weights,
-                    }
-            elif "weights" in payload:
-                # Legacy: Full float32 weights (no compression)
-                weights = payload["weights"]
-                logger.info(
-                    f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                )
-                with lock:
-                    workers_grads_received[(rank, recv_step, worker_version)] = {
-                        "type": "weights",
-                        "data": weights,
-                    }
-            else:
-                # Old approach: Gradient scaling (kept for reference)
-                grads = payload["grads"]
-                logger.info(
-                    f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                )
-                with lock:
-                    workers_grads_received[(rank, recv_step, worker_version)] = {
-                        "type": "grads",
-                        "data": grads,
-                    }
-
-            gradients_event.set()
-            logger.info(
-                f"Data stored successfully for worker {rank} at step {recv_step}"
-            )
-
-        elif command == "pull_weights":
-            worker_version = payload  # payload is the worker's current model version
-            logger.info(
-                f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
-            )
-
-            weights = get_weights(model)
-            if use_quantization:
-                quantized_weights = quantize_model_weights(weights)
-                send_message(conn, (quantized_weights, model_version))
-                logger.info(f"Quantized weights sent to worker {addr}")
-            else:
-                send_message(conn, (weights, model_version))
-                logger.info(f"Weights sent to worker {addr}")
-
-        elif command == "disconnect":
-            logger.info(f"Worker {addr} requested disconnection.")
-            #  Remove disconnected worker
-            with lock:
-                workers.pop(addr, None)
-
-    conn.close()
 
 
 def polyak_average_weights(
@@ -273,7 +147,7 @@ def polyak_average_weights(
         Blended model weights
     """
     # Worker weight decreases with staleness
-    staleness_factor = 1 / (1 + staleness)
+    staleness_factor = 1 / (1.0 + staleness)
 
     blended = {}
     for name in current_weights.keys():
@@ -285,51 +159,151 @@ def polyak_average_weights(
     return blended, staleness_factor
 
 
-model = SimpleMNISTModel(
-    input_dim=nn_config["model"]["input_dim"],
-    hidden=nn_config["model"]["hidden"],
-    out=nn_config["model"]["out"],
-)
-model = model.to(get_device())
-logger.info(f"Model initialized on device: {get_device()}")
-
-
-train_loader, val_loader = load_data(batch_size, NUM_WORKERS, SEED, RANK)
-
-
-logger.info(
-    f"Data ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
-)
-
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-# Bind the socket to the host and port
-sock.bind((HOST_IP, PORT))
-
-# Listen for incoming connections
-sock.listen(5)
-logger.info(f"Server listening on {HOST_IP}:{PORT}")
-
-
-def main():
+def run_edp_server(
+    model,
+    optimizer,
+    train_loader,
+    val_loader,
+    config,
+    cluster_config,
+    hostname,
+    device,
+    criterion,
+):
+    """
+    Run EDP parameter server training.
+    
+    Args:
+        model: PyTorch model to train
+        optimizer: Optimizer instance
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        config: Training configuration dict (nn_config)
+        cluster_config: Cluster configuration dict
+        hostname: Server hostname
+        device: Device to run on
+        criterion: Loss criterion
+    """
     global model_version
     shutdown_flag = threading.Event()
+
+    batch_size = config["batch_size"]
+    num_epochs = config["num_epochs"]
+    eval_steps = config["eval_steps"]
+    track_gradients = config.get("track_gradients", False)
+    learning_rate = config["learning_rate"]
+    use_quantization = cluster_config.get("use_quantization", True)
+    
+    # Create and bind socket
+    HOST_IP = "0.0.0.0"
+    PORT = cluster_config["port"]
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind((HOST_IP, PORT))
+    sock.listen(5)
+    logger.info(f"Server listening on {HOST_IP}:{PORT}")
+    
+    # Define handle_worker as nested function with access to model and use_quantization
+    def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
+        global model_version
+        logger.info(f"Handling worker at {addr}")
+
+        while True:
+            message = receive_message(conn)
+
+            # Handle connection closed or empty message
+            if message is None:
+                logger.info(f"Worker {addr} closed connection")
+                break
+
+            # Unpack the message tuple
+            command, payload = message
+
+            if command == "polyark_averaging":
+                recv_step = payload["step"]
+                rank = payload["rank"]
+                worker_version = payload["model_version"]
+
+                # Check if worker sent quantized weights, weights, or gradients
+                if "quantized_weights" in payload:
+                    # New approach: Dequantize and use Polyak averaging
+                    quantized_weights = payload["quantized_weights"]
+                    logger.info(
+                        f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    # Dequantize weights back to float32 on the server's device
+                    device_str = str(device)
+                    weights = dequantize_model_weights(quantized_weights, device=device_str)
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                elif "weights" in payload:
+                    # Legacy: Full float32 weights (no compression)
+                    weights = payload["weights"]
+                    logger.info(
+                        f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                else:
+                    # Old approach: Gradient scaling (kept for reference)
+                    grads = payload["grads"]
+                    logger.info(
+                        f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "grads",
+                            "data": grads,
+                        }
+
+                gradients_event.set()
+                logger.info(
+                    f"Data stored successfully for worker {rank} at step {recv_step}"
+                )
+
+            elif command == "pull_weights":
+                worker_version = payload  # payload is the worker's current model version
+                logger.info(
+                    f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
+                )
+
+                weights = get_weights(model)
+                if use_quantization:
+                    quantized_weights = quantize_model_weights(weights)
+                    send_message(conn, (quantized_weights, model_version))
+                    logger.info(f"Quantized weights sent to worker {addr}")
+                else:
+                    send_message(conn, (weights, model_version))
+                    logger.info(f"Weights sent to worker {addr}")
+
+            elif command == "disconnect":
+                logger.info(f"Worker {addr} requested disconnection.")
+                #  Remove disconnected worker
+                with lock:
+                    workers.pop(addr, None)
+
+        conn.close()
 
     # Initialize W&B
     wandb.init(
         project="smolcluster",
-        name=f"server-{HOSTNAME}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}_workers{len(cluster_config['workers'])}",
+        name=f"server-{hostname}_lr{learning_rate}_bs{batch_size}_workers{len(cluster_config['workers'])}",
         config={
-            **nn_config,
-            "server_hostname": HOSTNAME,
+            **config,
+            "server_hostname": hostname,
             "worker_hostnames": cluster_config["workers"],
             "num_workers": len(cluster_config["workers"]),
         },
     )
 
     model_summary = str(
-        torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
+        torchinfo.summary(model, input_size=(batch_size, 784), device=device)
     )
     logger.info("Model Summary:")
     logger.info(model_summary)
@@ -385,7 +359,6 @@ def main():
     # Give workers a moment to connect
     time.sleep(2)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     logger.info(f"Starting training for {num_epochs} epochs.")
 
@@ -417,7 +390,7 @@ def main():
 
         # Compute leader gradients
         leader_loss, leader_grads = compute_leader_gradients(
-            model, data, target, criterion, optimizer
+            model, data, target, criterion, optimizer, config
         )
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
 
@@ -514,8 +487,8 @@ def main():
         set_gradients(leader_grads, model)
 
         # Gradient clipping
-        if nn_config.get("gradient_clipping", {}).get("enabled", False):
-            max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+        if config.get("gradient_clipping", {}).get("enabled", False):
+            max_norm = config["gradient_clipping"].get("max_norm", 1.0)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
         optimizer.step()
@@ -548,8 +521,8 @@ def main():
                 {
                     "step": step,
                     "epoch": epoch,
-                    "lr": nn_config["learning_rate"],
-                    "batch_size": nn_config["batch_size"],
+                    "lr": learning_rate,
+                    "batch_size": batch_size,
                 }
             )
 
@@ -635,8 +608,8 @@ def main():
                     set_gradients(scaled_grads, model)
 
                     # Gradient clipping
-                    if nn_config.get("gradient_clipping", {}).get("enabled", False):
-                        max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+                    if config.get("gradient_clipping", {}).get("enabled", False):
+                        max_norm = config["gradient_clipping"].get("max_norm", 1.0)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
                     optimizer.step()
@@ -655,8 +628,8 @@ def main():
 
             gc.collect()
 
-            data = data.to(get_device())
-            target = target.to(get_device())
+            data = data.to(device)
+            target = target.to(device)
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_loss += loss.item()
@@ -677,8 +650,8 @@ def main():
                     {
                         "step": step,
                         "epoch": epoch,
-                        "lr": nn_config["learning_rate"],
-                        "batch_size": nn_config["batch_size"],
+                        "lr": learning_rate,
+                        "batch_size": batch_size,
                     }
                 )
 
@@ -701,6 +674,66 @@ def main():
     logger.info("Server shutdown complete")
 
     wandb.finish()
+
+
+def main():
+    """Legacy main function for backward compatibility."""
+    global model_version
+    
+    # Login to wandb using API key from environment variable
+    if "WANDB_API_KEY" in os.environ:
+        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+        logger_temp = logging.getLogger("[SERVER-INIT]")
+        logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
+    else:
+        logger_temp = logging.getLogger("[SERVER-INIT]")
+        logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+
+    # Get hostname from command-line argument
+    if len(sys.argv) > 1:
+        HOSTNAME = sys.argv[1]
+    else:
+        HOSTNAME = input("Enter server hostname: ")
+
+    # Load configs
+    CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
+    with open(CONFIG_DIR / "nn_config.yaml") as f:
+        nn_config = yaml.safe_load(f)
+
+    with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
+        cluster_config = yaml.safe_load(f)
+
+    # Extract values with defaults
+    NUM_WORKERS = cluster_config["num_workers"]
+    SEED = cluster_config.get("seed", 42)
+    WORLD_SIZE = NUM_WORKERS + 1
+    RANK = 0
+
+    batch_size = nn_config["batch_size"]
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    model = SimpleMNISTModel(
+        input_dim=nn_config["model"]["input_dim"],
+        hidden=nn_config["model"]["hidden"],
+        out=nn_config["model"]["out"],
+    )
+    model = model.to(get_device())
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+    
+    train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, RANK)
+    
+    run_edp_server(
+        model=model,
+        optimizer=optimizer,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        config=nn_config,
+        cluster_config=cluster_config,
+        hostname=HOSTNAME,
+        device=get_device(),
+        criterion=criterion,
+    )
 
 
 if __name__ == "__main__":

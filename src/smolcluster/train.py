@@ -23,7 +23,6 @@ from smolcluster.data.wikitext import Wikitext2Dataset
 from transformers import GPT2Tokenizer
 
 
-
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # Training

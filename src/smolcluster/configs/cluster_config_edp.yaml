@@ -1,8 +1,8 @@
 host_ip:
   mini1: "10.10.0.1"
-  # mini2: "10.10.0.1"
-  # mini3: "10.10.0.1"
-  # pi4: "10.10.0.1"
+  mini2: "10.10.0.1"
+  mini3: "10.10.0.1"
+  pi4: "10.10.0.1"
   macbook: "10.10.0.1"
   pi5: "192.168.50.1"
   win: "10.10.0.1"
@@ -20,5 +20,5 @@ seed: 42
 
 # Cluster configuration
 num_workers: 3
-workers: [pi5, win, macbook]  # Worker hostnames
+workers: [mini2, win, mini3]  # Worker hostnames
 server: mini1  # Server hostname

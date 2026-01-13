@@ -25,67 +25,11 @@ from smolcluster.utils.quantization import (
     quantize_model_weights,
 )
 
-# Login to wandb using API key from environment variable
-if "WANDB_API_KEY" in os.environ:
-    wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
-    logger_temp = logging.getLogger("[WORKER-INIT]")
-    logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
-else:
-    logger_temp = logging.getLogger("[WORKER-INIT]")
-    logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
-
-# Load configs
-CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
-with open(CONFIG_DIR / "nn_config.yaml") as f:
-    nn_config = yaml.safe_load(f)
-
-with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
-    cluster_config = yaml.safe_load(f)
-
-# Extract values with defaults
-PORT = cluster_config["port"]
-NUM_WORKERS = cluster_config["num_workers"]
-SEED = cluster_config.get("seed", 42)
-WORLD_SIZE = NUM_WORKERS + 1
-
-track_gradients = nn_config["track_gradients"]
-worker_update_interval = cluster_config["worker_update_interval"]
-use_quantization = cluster_config.get("use_quantization", True)
-
-
-# Get worker rank and hostname from command-line arguments
-if len(sys.argv) > 1:
-    WORKER_RANK = sys.argv[1]
-else:
-    WORKER_RANK = input(f"Enter worker ID (1 to {NUM_WORKERS}): ")
-
-if len(sys.argv) > 2:
-    HOSTNAME = sys.argv[2]
-else:
-    HOSTNAME = input("Enter worker hostname: ")
-
-# Set parameters
-local_rank = int(WORKER_RANK) - 1
-
-# Workers connect to the server using the IP specified for this worker's hostname
-HOST_IP = cluster_config["host_ip"][HOSTNAME]
-batch_size = nn_config["batch_size"]
-num_epochs = nn_config["num_epochs"]
-eval_steps = nn_config["eval_steps"]
-recv_model_version = -1
-# Loss criterion
-criterion = torch.nn.CrossEntropyLoss()
-
-# Track model version for elastic training
-model_version = 0
-
 # Setup logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger(f"[WORKER-{local_rank}]")
-
-logger.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
+logger = logging.getLogger("[WORKER]")
 
 
 def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
@@ -185,46 +129,73 @@ def connect_to_server(
     raise RuntimeError("Failed to connect to server")
 
 
-def main():
+def run_edp_worker(
+    model,
+    optimizer,
+    train_loader,
+    val_loader,
+    config,
+    cluster_config,
+    worker_rank,
+    hostname,
+    device,
+    criterion,
+    host_ip,
+    port,
+):
+    """
+    Run EDP worker training.
+    
+    Args:
+        model: PyTorch model to train
+        optimizer: Optimizer instance
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        config: Training configuration dict (nn_config)
+        cluster_config: Cluster configuration dict
+        worker_rank: Worker rank (0-indexed)
+        hostname: Worker hostname
+        device: Device to run on
+        criterion: Loss criterion
+        host_ip: Server IP address
+        port: Server port
+    """
     global model_version, recv_model_version
+    
+    batch_size = config["batch_size"]
+    num_epochs = config["num_epochs"]
+    eval_steps = config["eval_steps"]
+    track_gradients = config.get("track_gradients", False)
+    learning_rate = config["learning_rate"]
+    use_quantization = cluster_config.get("use_quantization", True)
+    worker_update_interval = cluster_config.get("worker_update_interval", 5)
 
     # Initialize W&B for worker
     wandb.init(
         project="smolcluster",
-        name=f"worker-{HOSTNAME}_rank{local_rank}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}",
+        name=f"worker-{hostname}_rank{worker_rank}_lr{learning_rate}_bs{batch_size}",
         config={
-            **nn_config,
-            "worker_rank": local_rank,
-            "worker_hostname": HOSTNAME,
+            **config,
+            "worker_rank": worker_rank,
+            "worker_hostname": hostname,
             "server_hostname": cluster_config["server"],
-            "worker_update_interval": cluster_config.get("worker_update_interval", 5),
+            "worker_update_interval": worker_update_interval,
         },
     )
-    logger.info(f"Worker {local_rank} wandb initialized")
+    logger.info(f"Worker {worker_rank} wandb initialized")
 
     # Connect to server with retry logic
-    sock = connect_to_server(HOST_IP, PORT)
+    sock = connect_to_server(host_ip, port)
 
     # Register with the server
-    logger.info(f"Registering as worker {local_rank} with server...")
-    send_message(sock, ("register", local_rank))
+    logger.info(f"Registering as worker {worker_rank} with server...")
+    send_message(sock, ("register", worker_rank))
 
-    model = SimpleMNISTModel(
-        input_dim=nn_config["model"]["input_dim"],
-        hidden=nn_config["model"]["hidden"],
-        out=nn_config["model"]["out"],
-    )
-    model = model.to(get_device())
-    logger.info(f"Model initialized on device: {get_device()}")
-
-    train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, local_rank)
     logger.info(
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
 
     total_steps = num_epochs * len(train_loader)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     # Wait for start signal or timeout and start anyway
     logger.info("Waiting for start_training signal from server (max 5 seconds)...")
@@ -266,8 +237,8 @@ def main():
         loss.backward()
 
         # Gradient clipping to prevent exploding gradients
-        if nn_config.get("gradient_clipping", {}).get("enabled", False):
-            max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
+        if config.get("gradient_clipping", {}).get("enabled", False):
+            max_norm = config["gradient_clipping"].get("max_norm", 1.0)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
         optimizer.step()  # Local SGD: workers apply updates independently
@@ -403,6 +374,80 @@ def main():
     send_message(sock, ("disconnect", local_rank))
     sock.close()
     logger.info(f"Training complete. Worker {local_rank} disconnected.")
+
+
+def main():
+    """Legacy main function for backward compatibility."""
+    global model_version, recv_model_version
+    
+    # Login to wandb using API key from environment variable
+    if "WANDB_API_KEY" in os.environ:
+        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+        logger_temp = logging.getLogger("[WORKER-INIT]")
+        logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
+    else:
+        logger_temp = logging.getLogger("[WORKER-INIT]")
+        logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+
+    # Load configs
+    CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
+    with open(CONFIG_DIR / "nn_config.yaml") as f:
+        nn_config = yaml.safe_load(f)
+
+    with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
+        cluster_config = yaml.safe_load(f)
+
+    # Extract values with defaults
+    NUM_WORKERS = cluster_config["num_workers"]
+    SEED = cluster_config.get("seed", 42)
+    WORLD_SIZE = NUM_WORKERS + 1
+
+    # Get worker rank and hostname from command-line arguments
+    if len(sys.argv) > 1:
+        WORKER_RANK = sys.argv[1]
+    else:
+        WORKER_RANK = input(f"Enter worker ID (1 to {NUM_WORKERS}): ")
+
+    if len(sys.argv) > 2:
+        HOSTNAME = sys.argv[2]
+    else:
+        HOSTNAME = input("Enter worker hostname: ")
+
+    # Set parameters
+    local_rank = int(WORKER_RANK) - 1
+
+    # Workers connect to the server using the IP specified for this worker's hostname
+    HOST_IP = cluster_config["host_ip"][HOSTNAME]
+    PORT = cluster_config["port"]
+    
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    model = SimpleMNISTModel(
+        input_dim=nn_config["model"]["input_dim"],
+        hidden=nn_config["model"]["hidden"],
+        out=nn_config["model"]["out"],
+    )
+    model = model.to(get_device())
+    logger.info(f"Model initialized on device: {get_device()}")
+
+    train_loader, val_loader = load_data(nn_config["batch_size"], WORLD_SIZE, SEED, local_rank)
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+    
+    run_edp_worker(
+        model=model,
+        optimizer=optimizer,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        config=nn_config,
+        cluster_config=cluster_config,
+        worker_rank=local_rank,
+        hostname=HOSTNAME,
+        device=get_device(),
+        criterion=criterion,
+        host_ip=HOST_IP,
+        port=PORT,
+    )
 
 
 if __name__ == "__main__":
