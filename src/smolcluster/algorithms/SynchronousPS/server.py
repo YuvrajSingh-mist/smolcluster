@@ -353,11 +353,11 @@ def main():
                     grads_received[step], len(grads_received[step])
                 )
 
-                # Send gradients to workers
-                # for _worker_addr, worker_socket in workers.items():
-                #     send_message(
-                #         worker_socket, ("averaged_gradients", step, grads_reduced)
-                #     )
+                # Send ACKs and server step to workers
+                for _worker_addr, worker_socket in workers.items():
+                    send_message(
+                        worker_socket, ("ACK_step", step)
+                    )
 
                 logger.info(f"[Step {step}] Applying averaged gradients to server model")
                 set_gradients(grads_reduced, model)

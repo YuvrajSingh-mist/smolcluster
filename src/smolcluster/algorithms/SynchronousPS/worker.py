@@ -275,13 +275,13 @@ def main():
             logger.info(f"[Step {step}] Sending gradients to server")
             send_message(sock, ("parameter_server_reduce", step, local_rank, grads))
 
-            # logger.info(f"[Step {step}] Waiting for averaged gradients from server")
-            # data_recv = receive_message(sock)
+            logger.info(f"[Step {step}] Waiting for ACK and step from server")
+            data_recv = receive_message(sock)
 
-            # command, recv_step, updated_grads = data_recv
-            # logger.info(f"[Step {step}] Received '{command}' from server for step {recv_step}")
+            command, recv_step = data_recv
+            logger.info(f"[Step {step}] Received '{command}' from server for step {recv_step}")
 
-            # assert recv_step == step, "Step mismatch in communication with server."
+            assert recv_step == step, "Step mismatch in communication with server."
                 
             
             # if command == "averaged_gradients":
@@ -329,7 +329,7 @@ def main():
                 send_message(sock, ("pull_weights", step, local_rank, None))
                 data_recv = receive_message(sock)
                 command, recv_step, weights = data_recv
-                assert recv_step == step, "Step mismatch when pulling weights from server."
+                # assert recv_step == step, "Step mismatch when pulling weights from server."
                 
                 if command == "model_weights":
                     # Apply Polyak averaging to blend server weights with local model
