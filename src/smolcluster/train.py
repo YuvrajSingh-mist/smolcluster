@@ -1,15 +1,20 @@
 """
-Exact Paper Reproduction: Wikitext-2 Training
+Wikitext-2 Training with EDP (Elastic Distributed Parameter Server)
 
-Reproduces arXiv 2512.19428 exactly:
-- Dataset: Wikitext-2
-- Model size: 13-18M parameters
-- Compares Grassmann vs size-matched Transformer
+This script provides both server and worker entry points for distributed
+GPT training using the refactored EDP functions.
+
+Usage:
+    Server: python train.py server <hostname>
+    Worker: python train.py worker <rank> <hostname>
 """
 import json
 import time
 import math
 import argparse
+import logging
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -23,8 +28,67 @@ from smolcluster.models.gpt import BaseTransformer
 from smolcluster.data.wikitext import Wikitext2Dataset
 from transformers import GPT2Tokenizer
 
+from smolcluster.algorithms.EDP.server import run_edp_server
+from smolcluster.algorithms.EDP.worker import run_edp_worker
+from smolcluster.utils.data import get_data_indices
+from smolcluster.utils.device import get_device
+
 
 # -----------------------------------------------------------------------------
+# Configuration and Data Loading
+# -----------------------------------------------------------------------------
+
+def load_configs():
+    """Load configuration files."""
+    CONFIG_DIR = Path(__file__).parent / "configs"
+    
+    with open(CONFIG_DIR / "gpt_config.yaml") as f:
+        gpt_config = yaml.safe_load(f)
+    
+    with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
+        cluster_config = yaml.safe_load(f)
+    
+    return gpt_config, cluster_config
+
+
+def load_data(config, world_size: int, seed: int, rank: int):
+    """Load Wikitext-2 dataset for the given rank."""
+    tokenizer = GPT2Tokenizer.from_pretrained(config['data']['tokenizer'])
+    
+    # Load full datasets
+    train_dataset = Wikitext2Dataset("train", tokenizer, config['model']['max_seq_len'])
+    val_dataset = Wikitext2Dataset("validation", tokenizer, config['model']['max_seq_len'])
+    
+    # Create validation loader (same for all workers)
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=config['training']['batch_size'], 
+        shuffle=False
+    )
+    
+    # Partition training data across workers
+    batch_indices = get_data_indices(len(train_dataset), world_size, seed)
+    train_data = torch.utils.data.Subset(train_dataset, batch_indices[rank].tolist())
+    train_loader = DataLoader(
+        train_data, 
+        batch_size=config['training']['batch_size'], 
+        shuffle=False
+    )
+    
+    return train_loader, val_loader, len(tokenizer)
+
+
+def setup_wandb():
+    """Setup Weights & Biases authentication."""
+    if "WANDB_API_KEY" in os.environ:
+        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+        logger = logging.getLogger("[INIT]")
+        logger.info("✅ Logged into wandb using WANDB_API_KEY")
+    else:
+        logger = logging.getLogger("[INIT]")
+        logger.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+
+
 # -----------------------------------------------------------------------------
 # Training
 # -----------------------------------------------------------------------------
@@ -115,212 +179,182 @@ def evaluate(model, dataloader, device):
     return avg_loss, torch.exp(torch.tensor(avg_loss)).item()
 
 
-def main():
-    """Main training function for reproducing the paper's experiments."""
-    parser = argparse.ArgumentParser(description="Paper Reproduction: Wikitext-2 & SNLI")
-    parser.add_argument("--override", nargs='*', help="Override config values (key=value pairs)")
-    args = parser.parse_args()
-
-    # Load config
-    config_path = "src/smolcluster/configs/gpt_config.yaml"
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    if config['output']['output_dir'] is None:
-        config['output']['output_dir'] = f"outputs/{config['training']['task']}_reproduction"
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # Create output directory
-    output_dir = Path(config['output']['output_dir'])
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    if config['training']['task'] == "wikitext":
-        return train_wikitext(config, device, output_dir)
-
-def train_wikitext(config, device, output_dir):
-    """Train on Wikitext-2 language modeling."""
-
-    tokenizer = GPT2Tokenizer.from_pretrained(config['data']['tokenizer'])
-    vocab_size = len(tokenizer)
-
-    # Load datasets
-    print(f"Loading Wikitext-2 (block_size={config['model']['max_seq_len']})...")
-    train_dataset = Wikitext2Dataset("train", tokenizer, config['model']['max_seq_len'])
-    val_dataset = Wikitext2Dataset("validation", tokenizer, config['model']['max_seq_len'])
-
-    print(f"Train: {len(train_dataset)} chunks, Val: {len(val_dataset)}")
-
-    train_loader = DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False, num_workers=4)
-
-    results = {}
-
-    # Initialize W&B for this model
-    wandb.init(
-        project=config['logging']['project_name'],
-        name=f"gpt_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        config={
-            "model_type": "gpt",
-            "model_dim": config['model']['model_dim'],
-            "num_layers": config['model']['num_layers'],
-            "max_seq_len": config['model']['max_seq_len'],
-            "batch_size": config['training']['batch_size'],
-            "epochs": config['training']['epochs'],
-            "lr": config['training']['learning_rate'],
-        },
-        dir=str(output_dir),
+def run_server(hostname: str):
+    """Run EDP server for GPT training."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-
+    logger = logging.getLogger("[SERVER-MAIN]")
+    
+    setup_wandb()
+    
+    # Load configs
+    gpt_config, cluster_config = load_configs()
+    
+    # Setup parameters
+    num_workers = cluster_config["num_workers"]
+    seed = cluster_config.get("seed", 42)
+    world_size = num_workers + 1
+    rank = 0  # Server is rank 0
+    
+    # Load data
+    logger.info("Loading Wikitext-2 dataset...")
+    train_loader, val_loader, vocab_size = load_data(gpt_config, world_size, seed, rank)
+    logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
+    
+    # Create model
     model = BaseTransformer(
         vocab_size=vocab_size,
-        max_seq_len=config['model']['max_seq_len'],
-        model_dim=config['model']['model_dim'],
-        num_layers=config['model']['num_layers'],
-        num_heads=config['model']['num_heads'],
-        ff_dim=config['model']['ff_dim'],
-        dropout=config['model']['dropout'],
+        max_seq_len=gpt_config['model']['max_seq_len'],
+        model_dim=gpt_config['model']['model_dim'],
+        num_layers=gpt_config['model']['num_layers'],
+        num_heads=gpt_config['model']['num_heads'],
+        ff_dim=gpt_config['model']['ff_dim'],
+        dropout=gpt_config['model']['dropout'],
+    )
+    device = get_device()
+    model = model.to(device)
+    logger.info(f"Model initialized on device: {device}")
+    
+    # Create optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=gpt_config['training']['learning_rate'],
+        weight_decay=gpt_config['training']['weight_decay']
+    )
+    
+    # Create criterion
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    # Run server
+    logger.info("Starting EDP server...")
+    run_edp_server(
+        model=model,
+        optimizer=optimizer,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        config=gpt_config,
+        cluster_config=cluster_config,
+        hostname=hostname,
+        device=device,
+        criterion=criterion,
     )
 
-    model = model.to(device)
 
+def run_worker(worker_rank: int, hostname: str):
+    """Run EDP worker for GPT training."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    logger = logging.getLogger(f"[WORKER-{worker_rank}-MAIN]")
+    
+    setup_wandb()
+    
+    # Load configs
+    gpt_config, cluster_config = load_configs()
+    
+    # Setup parameters
+    num_workers = cluster_config["num_workers"]
+    seed = cluster_config.get("seed", 42)
+    world_size = num_workers + 1
+    
+    # Worker rank is 0-indexed internally but 1-indexed in command-line
+    local_rank = worker_rank - 1
+    
+    # Get server connection info
+    host_ip = cluster_config["host_ip"][hostname]
+    port = cluster_config["port"]
+    
+    # Load data
+    logger.info("Loading Wikitext-2 dataset...")
+    train_loader, val_loader, vocab_size = load_data(gpt_config, world_size, seed, local_rank)
+    logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
+    
+    # Create model
+    model = BaseTransformer(
+        vocab_size=vocab_size,
+        max_seq_len=gpt_config['model']['max_seq_len'],
+        model_dim=gpt_config['model']['model_dim'],
+        num_layers=gpt_config['model']['num_layers'],
+        num_heads=gpt_config['model']['num_heads'],
+        ff_dim=gpt_config['model']['ff_dim'],
+        dropout=gpt_config['model']['dropout'],
+    )
+    device = get_device()
+    model = model.to(device)
+    logger.info(f"Model initialized on device: {device}")
+    
     # Print model summary
-    print("Model Summary:")
+    logger.info("Model Summary:")
     summary = torchinfo.summary(
         model, 
-        input_size=(config['training']['batch_size'], config['model']['max_seq_len']),
+        input_size=(gpt_config['training']['batch_size'], gpt_config['model']['max_seq_len']),
         device=device,
         dtypes=[torch.long]
     )
-    print(summary)
-
-    # Compile model with torch.compile for better performance
-    print("Compiling model with torch.compile...")
-    model = torch.compile(model)
-
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {num_params:,} ({num_params/1e6:.2f}M)")
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config['training']['learning_rate'], weight_decay=config['training']['weight_decay'])
-
-    # Custom learning rate scheduler with warmup and cosine decay
-    max_lr = config['training']['learning_rate']
-    min_lr = config['lr_schedule']['min_lr']
-    warmup_iters = config['lr_schedule']['warmup_iters']
-    lr_decay_iters = len(train_loader) * config['training']['epochs']
-
-    def get_lr(it):
-        # 1) linear warmup for warmup_iters steps
-        if it < warmup_iters:
-            return max_lr * (it + 1) / (warmup_iters + 1)
-        # 2) if it > lr_decay_iters, return min learning rate
-        if it > lr_decay_iters:
-            return min_lr
-        # 3) in between, use cosine decay down to min learning rate
-        decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
-        assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-        return min_lr + coeff * (max_lr - min_lr)
-
-    train_losses = []
-    val_losses = []
+    logger.info(f"\n{summary}")
     
-    # Track best validation perplexity
-    best_val_ppl = float('inf')
-    best_epoch = 0
+    # Create optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=gpt_config['training']['learning_rate'],
+        weight_decay=gpt_config['training']['weight_decay']
+    )
     
-    # Create checkpoint directory
-    ckpt_dir = output_dir / "checkpoints"
-    ckpt_dir.mkdir(exist_ok=True)
+    # Create criterion
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    # Run worker
+    logger.info(f"Starting EDP worker {local_rank}...")
+    run_edp_worker(
+        model=model,
+        optimizer=optimizer,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        config=gpt_config,
+        cluster_config=cluster_config,
+        worker_rank=local_rank,
+        hostname=hostname,
+        device=device,
+        criterion=criterion,
+        host_ip=host_ip,
+        port=port,
+    )
 
-    epoch_pbar = tqdm(range(1, config['training']['epochs'] + 1), desc="Training", unit="epoch")
-    global_step = 0
-    for epoch in epoch_pbar:
-        train_loss, global_step = train_epoch(model, train_loader, optimizer, get_lr, device, epoch, log_interval=config['logging']['log_interval'], global_step=global_step, grad_clip_norm=config['training']['grad_clip_norm'])
-        val_loss, val_ppl = evaluate(model, val_loader, device)
 
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-
-        epoch_pbar.set_postfix({
-            "epoch": epoch,
-            "train_loss": f"{train_loss:.4f}",
-            "val_loss": f"{val_loss:.4f}",
-            "val_ppl": f"{val_ppl:.2f}",
-            "best_ppl": f"{best_val_ppl:.2f}",
-        })
-
-        print(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val PPL: {val_ppl:.2f}")
-
-        # Log to W&B
-        wandb.log({
-            "epoch": epoch,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "val_perplexity": val_ppl,
-        })
-
-        # Save checkpoint every N epochs
-        if config['output']['save_checkpoints'] and epoch % config['logging']['checkpoint_interval'] == 0:
-            ckpt_path = ckpt_dir / f"epoch_{epoch}.pt"
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_loss,
-                "val_ppl": val_ppl,
-            }, ckpt_path)
-            print(f"Checkpoint saved: {ckpt_path}")
-
-        # Save best checkpoint
-        if val_ppl < best_val_ppl:
-            best_val_ppl = val_ppl
-            best_epoch = epoch
-            best_ckpt_path = ckpt_dir / "best.pt"
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_loss,
-                "val_ppl": val_ppl,
-            }, best_ckpt_path)
-            print(f"✨ New best validation PPL: {val_ppl:.2f} at epoch {epoch} - saved to {best_ckpt_path}")
-
-    print(f"\nFinal Results for GPT:")
-    print(f"  Best Val PPL: {best_val_ppl:.2f} (epoch {best_epoch})")
-    print(f"  Training complete. Checkpoints saved in {ckpt_dir}")
-    print(f"  Note: Run eval_wikitext.py with best checkpoint for test perplexity")
-
-    results["gpt"] = {
-        "num_params": num_params,
-        "best_val_ppl": float(best_val_ppl),
-        "best_epoch": best_epoch,
-        "train_losses": train_losses,
-        "val_losses": val_losses,
-    }
-
-    # Log final results to W&B
-    wandb.log({
-        "final/best_val_ppl": best_val_ppl,
-        "final/best_epoch": best_epoch,
-        "final/num_params": num_params,
-    })
-
-    # Finish W&B run for this model
-    wandb.finish()
-
-    # Save results
-    with open(output_dir / "results.json", "w") as f:
-        # Convert non-serializable items
-        save_results = {}
-        for k, v in results.items():
-            save_results[k] = {
-                "num_params": v["num_params"],
-                "best_val_ppl": float(v["best_val_ppl"]),
-                "best_epoch": v["best_epoch"],
-            }
-        json.dump(save_results, f, indent=2)
+def main():
+    """Main entry point for EDP distributed training."""
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print("  Server: python train.py server <hostname>")
+        print("  Worker: python train.py worker <rank> <hostname>")
+        sys.exit(1)
+    
+    mode = sys.argv[1].lower()
+    
+    if mode == "server":
+        if len(sys.argv) < 3:
+            print("Error: Server mode requires hostname argument")
+            print("Usage: python train.py server <hostname>")
+            sys.exit(1)
+        hostname = sys.argv[2]
+        run_server(hostname)
+    
+    elif mode == "worker":
+        if len(sys.argv) < 4:
+            print("Error: Worker mode requires rank and hostname arguments")
+            print("Usage: python train.py worker <rank> <hostname>")
+            sys.exit(1)
+        worker_rank = int(sys.argv[2])
+        hostname = sys.argv[3]
+        run_worker(worker_rank, hostname)
+    
+    else:
+        print(f"Error: Unknown mode '{mode}'")
+        print("Mode must be 'server' or 'worker'")
+        sys.exit(1)
 
     
 if __name__ == "__main__":
