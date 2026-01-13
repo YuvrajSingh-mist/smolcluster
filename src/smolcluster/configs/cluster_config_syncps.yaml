@@ -4,7 +4,7 @@ host_ip:
   mini3: "10.10.0.1"
   pi4: "192.168.51.4"
   pi5: "192.168.50.1"
-  macbook: "172.18.3.80"
+  macbook: "10.10.0.1"
   win: "10.10.0.1"
 
 port: 65432
@@ -20,6 +20,6 @@ timeout: 0.1  # How long server waits for gradients (seconds)
 seed: 42
 
 # Cluster configuration
-num_workers: 2
-workers: [pi5, win]  # Worker hostnames
+num_workers: 3
+workers: [pi5, win, macbook]  # Worker hostnames
 server: mini1  # Server hostname
