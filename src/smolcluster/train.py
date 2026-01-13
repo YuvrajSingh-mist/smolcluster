@@ -62,7 +62,7 @@ def load_data(config, world_size: int, seed: int, rank: int):
     # Create validation loader (same for all workers)
     val_loader = DataLoader(
         val_dataset, 
-        batch_size=config['training']['batch_size'], 
+        batch_size=config['batch_size'], 
         shuffle=False
     )
     
@@ -71,7 +71,7 @@ def load_data(config, world_size: int, seed: int, rank: int):
     train_data = torch.utils.data.Subset(train_dataset, batch_indices[rank].tolist())
     train_loader = DataLoader(
         train_data, 
-        batch_size=config['training']['batch_size'], 
+        batch_size=config['batch_size'], 
         shuffle=False
     )
     
@@ -206,12 +206,12 @@ def run_server(hostname: str):
     # Create model
     model = BaseTransformer(
         vocab_size=vocab_size,
-        max_seq_len=gpt_config['model']['max_seq_len'],
-        model_dim=gpt_config['model']['model_dim'],
-        num_layers=gpt_config['model']['num_layers'],
-        num_heads=gpt_config['model']['num_heads'],
-        ff_dim=gpt_config['model']['ff_dim'],
-        dropout=gpt_config['model']['dropout'],
+        max_seq_len=gpt_config['max_seq_len'],
+        model_dim=gpt_config['model_dim'],
+        num_layers=gpt_config['num_layers'],
+        num_heads=gpt_config['num_heads'],
+        ff_dim=gpt_config['ff_dim'],
+        dropout=gpt_config['dropout'],
     )
     device = get_device()
     model = model.to(device)
@@ -220,8 +220,8 @@ def run_server(hostname: str):
     # Create optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(), 
-        lr=gpt_config['training']['learning_rate'],
-        weight_decay=gpt_config['training']['weight_decay']
+        lr=gpt_config['learning_rate'],
+        weight_decay=gpt_config['weight_decay']
     )
     
     # Create criterion
@@ -275,12 +275,12 @@ def run_worker(worker_rank: int, hostname: str):
     # Create model
     model = BaseTransformer(
         vocab_size=vocab_size,
-        max_seq_len=gpt_config['model']['max_seq_len'],
-        model_dim=gpt_config['model']['model_dim'],
-        num_layers=gpt_config['model']['num_layers'],
-        num_heads=gpt_config['model']['num_heads'],
-        ff_dim=gpt_config['model']['ff_dim'],
-        dropout=gpt_config['model']['dropout'],
+        max_seq_len=gpt_config['max_seq_len'],
+        model_dim=gpt_config['model_dim'],
+        num_layers=gpt_config['num_layers'],
+        num_heads=gpt_config['num_heads'],
+        ff_dim=gpt_config['ff_dim'],
+        dropout=gpt_config['dropout'],
     )
     device = get_device()
     model = model.to(device)
@@ -290,7 +290,7 @@ def run_worker(worker_rank: int, hostname: str):
     logger.info("Model Summary:")
     summary = torchinfo.summary(
         model, 
-        input_size=(gpt_config['training']['batch_size'], gpt_config['model']['max_seq_len']),
+        input_size=(gpt_config['batch_size'], gpt_config['max_seq_len']),
         device=device,
         dtypes=[torch.long]
     )
@@ -299,8 +299,8 @@ def run_worker(worker_rank: int, hostname: str):
     # Create optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(), 
-        lr=gpt_config['training']['learning_rate'],
-        weight_decay=gpt_config['training']['weight_decay']
+        lr=gpt_config['learning_rate'],
+        weight_decay=gpt_config['weight_decay']
     )
     
     # Create criterion
