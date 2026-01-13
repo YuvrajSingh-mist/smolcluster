@@ -27,7 +27,7 @@ from smolcluster.utils.device import get_device
 
 def load_configs():
     """Load configuration files."""
-    CONFIG_DIR = Path(__file__).parent / "src" / "smolcluster" / "configs"
+    CONFIG_DIR = Path(__file__).parent  / "configs"
     
     with open(CONFIG_DIR / "nn_config.yaml") as f:
         nn_config = yaml.safe_load(f)
