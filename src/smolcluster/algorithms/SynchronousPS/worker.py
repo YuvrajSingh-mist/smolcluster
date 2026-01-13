@@ -301,12 +301,7 @@ def main():
                     f"[Step {step}] Expected 'model_weights' but got '{command}'"
                 )
 
-            # if command == "averaged_gradients":
-            # set_gradients(updated_grads, model)
-            # logger.info(f"[Step {step}] Applied averaged gradients to model")
-
-            # optimizer.step()
-
+            
             # Log gradient norms if tracking enabled
             if track_gradients:
                 for name, param in model.named_parameters():

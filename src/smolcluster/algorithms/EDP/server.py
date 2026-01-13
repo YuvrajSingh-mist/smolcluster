@@ -646,9 +646,7 @@ def main():
 
             del workers_copy
 
-            # # Apply worker's gradients
-            # optimizer.zero_grad()
-            # optimizer.step()
+           
 
             with lock:
                 model_version += 1

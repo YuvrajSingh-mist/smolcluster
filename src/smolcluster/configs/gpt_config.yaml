@@ -1,0 +1,42 @@
+# GPT Training Configuration
+# Reproduces arXiv 2512.19428 exactly for Wikitext-2
+
+# Model Architecture
+model:
+  vocab_size: null  # Will be set from tokenizer (GPT2)
+  model_dim: 256    # Model dimension (paper: 256)
+  num_layers: 6     # Number of layers (paper: 6 or 12)
+  num_heads: 4      # Number of attention heads (paper: 4)
+  ff_dim: 1024      # Feed-forward dimension (paper: 1024)
+  dropout: 0.1      # Dropout rate
+  max_seq_len: 128  # Maximum sequence length (paper: 128 or 256)
+
+# Training Hyperparameters
+training:
+  task: "wikitext"           # Task to train on ["wikitext", "snli"]
+  batch_size: null           # Batch size (auto: 32 for L=128, 16 for L=256)
+  epochs: null               # Number of epochs (auto: 30 for wikitext, 20 for SNLI)
+  learning_rate: 6e-4        # Learning rate
+  weight_decay: 0.01         # Weight decay for AdamW
+  grad_clip_norm: 1.0        # Gradient clipping norm
+
+# Learning Rate Schedule
+lr_schedule:
+  warmup_iters: 100          # Linear warmup iterations
+  min_lr: 6e-5              # Minimum learning rate for cosine decay
+
+# Data
+data:
+  dataset: "wikitext2"       # Dataset name
+  tokenizer: "openai-community/gpt2"  # HuggingFace tokenizer
+
+# Logging & Checkpoints
+logging:
+  project_name: "smolcluster-gpt-wikitext2"
+  log_interval: 50           # Steps between logging
+  checkpoint_interval: 5     # Epochs between checkpoints
+
+# Output
+output:
+  output_dir: null           # Output directory (auto-generated if null)
+  save_checkpoints: true     # Whether to save model checkpoints

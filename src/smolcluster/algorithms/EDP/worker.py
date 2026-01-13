@@ -319,18 +319,7 @@ def main():
             )
             logger.info("Model weights sent to server.")
 
-        # OLD APPROACH: Send gradients for scaling (commented out)
-        # grads = get_gradients(model)
-        # send_message(sock, (
-        #     "parameter_server_reduce",
-        #     {
-        #         "step": step,
-        #         "rank": local_rank,
-        #         "grads": grads,
-        #         "model_version": model_version,
-        #     }
-        # ))
-
+        
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             send_message(sock, ("pull_weights", model_version))

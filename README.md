@@ -252,6 +252,7 @@ smolcluster/
 │   ├── models/
 │   │   ├── __init__.py
 │   │   └── SimpleNN.py               # Simple neural network model
+│   │   └── gpt.py                    # GPT model for language modeling
 │   ├── utils/
 │   │   ├── __init__.py
 │   │   ├── common_utils.py           # Gradient ops, messaging, weight management
@@ -259,12 +260,14 @@ smolcluster/
 │   │   ├── device.py                 # Device detection (MPS/CUDA/CPU)
 │   │   └── quantization.py           # Gradient quantization for EDP
 │   ├── data/
-│   │   └── MNIST/                    # MNIST dataset (auto-downloaded)
-│   │       └── raw/                  # Raw MNIST files
+│   │   ├── MNIST/                    # MNIST dataset (auto-downloaded)
+│   │   │   └── raw/                  # Raw MNIST files
+│   │   └── wikitext.py               # Wikitext-2 dataset utilities
 │   ├── configs/
 │   │   ├── cluster_config_edp.yaml   # EDP cluster network settings
 │   │   ├── cluster_config_syncps.yaml # SyncPS cluster network settings
-│   │   └── nn_config.yaml            # Model/training settings
+│   │   ├── nn_config.yaml            # Model/training settings
+│   │   └── gpt_config.yaml           # GPT training configuration
 │   └── docs/
 │       └── setup_cluster.md          # Mac mini cluster setup guide
 ├── launch_edp.sh                     # Launch EDP training
@@ -273,6 +276,65 @@ smolcluster/
 ├── README.md                         # This file
 └── .gitignore
 ```
+
+## GPT Language Model Training
+
+The project includes a complete GPT language model training setup for reproducing research papers:
+
+### GPT Configuration (`gpt_config.yaml`)
+
+All hyperparameters are centralized in `src/smolcluster/configs/gpt_config.yaml`:
+
+```yaml
+# Model Architecture
+model:
+  model_dim: 256          # Model dimension
+  num_layers: 6           # Number of transformer layers
+  num_heads: 4            # Attention heads
+  ff_dim: 1024            # Feed-forward dimension
+  dropout: 0.1            # Dropout rate
+  max_seq_len: 128        # Maximum sequence length
+
+# Training Hyperparameters
+training:
+  batch_size: null        # Auto: 32 (L=128) or 16 (L=256)
+  epochs: null            # Auto: 30 (wikitext) or 20 (SNLI)
+  learning_rate: 6e-4     # Learning rate
+  weight_decay: 0.01      # AdamW weight decay
+  grad_clip_norm: 1.0     # Gradient clipping
+
+# Learning Rate Schedule
+lr_schedule:
+  warmup_iters: 100       # Warmup iterations
+  min_lr: 6e-5           # Minimum learning rate
+
+# Data & Logging
+data:
+  tokenizer: "openai-community/gpt2"
+logging:
+  project_name: "smolcluster-gpt-wikitext2"
+```
+
+### Training Commands
+
+```bash
+# Train with default config
+uv run python src/smolcluster/train.py
+
+# Override specific parameters
+uv run python src/smolcluster/train.py --override training.batch_size=16 training.epochs=5
+
+# Use different config file
+uv run python src/smolcluster/train.py --config path/to/custom_config.yaml
+```
+
+### Features
+
+- **Config-based**: All hyperparameters in YAML config file
+- **Auto-calculated**: Batch size and epochs auto-set based on sequence length
+- **Override support**: Command-line overrides for quick experimentation
+- **W&B logging**: Automatic experiment tracking
+- **Checkpointing**: Regular model saves with best validation tracking
 
 ## How It Works
 

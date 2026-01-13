@@ -12,7 +12,7 @@ wheels/
 # Data and logs
 data/
 wandb/
-*/data/
+*/data/MNIST
 */wandb/
 .ruff_cache/
 
