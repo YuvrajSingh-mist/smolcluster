@@ -53,11 +53,11 @@ def load_configs():
 
 def load_data(config, world_size: int, seed: int, rank: int):
     """Load Wikitext-2 dataset for the given rank."""
-    tokenizer = GPT2Tokenizer.from_pretrained(config['data']['tokenizer'])
+    tokenizer = GPT2Tokenizer.from_pretrained(config['tokenizer'])
     
     # Load full datasets
-    train_dataset = Wikitext2Dataset("train", tokenizer, config['model']['max_seq_len'])
-    val_dataset = Wikitext2Dataset("validation", tokenizer, config['model']['max_seq_len'])
+    train_dataset = Wikitext2Dataset("train", tokenizer, config['max_seq_len'])
+    val_dataset = Wikitext2Dataset("validation", tokenizer, config['max_seq_len'])
     
     # Create validation loader (same for all workers)
     val_loader = DataLoader(
