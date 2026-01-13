@@ -43,10 +43,9 @@ Pi 4 (192.168.51.4) ──── Mac mini 3 (192.168.51.2)  [Worker gateway]
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## Topology
+## Cluster Topology
 
-[Cluster Topology Diagram](src/smolcluster/docs/cluster_topology.png)
-
+<img src="src/smolcluster/docs/architecture.png" alt="Cluster Topology" width="100%">
 
 ## Installation
 
@@ -276,10 +275,15 @@ smolcluster/
 ```
 
 ## How It Works
+
 ### Elastic Distributed Parallelism (EDP)
 1. **Asynchronous Operation**: Workers operate independently without waiting for each other
 2. **Stale Gradient Handling**: Server accepts gradients even if they're from slightly older model versions
-3. **Optional Quantization**: 8-bit quantization reduces communication overhead
+3. **Push-Pull Pattern**:
+   - Workers compute local gradients and push to server
+   - Workers periodically pull latest model weights from server
+4. **Gradient Accumulation**: Server averages gradients from multiple workers before updating model
+5. **Optional Quantization**: 8-bit quantization reduces communication overhead
 
 ### Synchronous Parameter Server (SyncPS)
 1. **Barrier-Based Synchronization**: All workers must complete each step before proceeding
@@ -292,11 +296,7 @@ smolcluster/
 5. **Polyak Averaging**: Smooth weight updates using exponential moving average
 
 ### Common Elements
-- **Data Partitioning**: MNIST training data is split across workers using deterministic seed-based approach
-- **Heterogeneous Support**: Each worker can have different compute capabilities
-- **Fault Tolerance**: Connection retry logic handles temporary network issues
-- **W&B Logging**: Comprehensive metrics tracking across all nodes
-
+- *
 ## **Push-Pull Pattern**:
    - Workers compute local gradients and push to server
    - Workers periodically pull latest model weights from server
@@ -323,22 +323,25 @@ For setup instructions for creating a Mac mini cluster using Thunderbolt and SSH
 5. **Polyak Averaging**: Smooth weight updates using exponential moving average
 
 ### Common Elements
-- **Data Partitioning**: MNIST training data is split across workers using deterministic seed-based approach
-- **Heterogeneous Support**: Each worker can have different compute capabilities
-- **Fault Tolerance**: Connection retry logic handles temporary network issues
-- **W&B Logging**: Comprehensive metrics tracking across all node
-└── .gitignore
-```
+### Connection Issues
+- Verify all nodes can ping the server IP: `ping 10.10.0.1`
+- Check firewall rules allow port 65432
+- Ensure server is started before workers
+- Review connection logs in W&B for detailed error messages
 
-## How It Works
+### Training Issues
+- If gradients explode: Enable gradient clipping in `nn_config.yaml`
+- If loss doesn't decrease: Reduce learning rate or increase batch size
+- For SyncPS stragglers: Increase timeout in `cluster_config_syncps.yaml`
+- For EDP staleness: Decrease `worker_update_interval`
 
-1. **Data Partitioning**: MNIST training data is split across workers using a deterministic seed-based approach
-2. **Gradient Computation**: Each worker computes gradients on its local data partition
-3. **Gradient Averaging**: Server collects gradients from all workers, computes average, and redistributes
-4. **Model Updates**: Each node updates its model using the averaged gradients
-5. **Synchronization**: Process repeats for each batch across epochs
+### W&B Issues
+- Set `WANDB_API_KEY` environment variable for automatic login
+- Check W&B run names match expected format
+- Verify network connectivity to wandb.ai
 
+## Contributing
+Pull requests welcome! Please ensure your code follows the existing style and includes appropriate logging.
 
-## Setting Up a Mac Mini Cluster
-For setup instructions for creating a Mac mini cluster using Thunderbolt and SSH, refer to the [setup_cluster.md](src/smolcluster/docs/setup_cluster.md) guide.
-
+## License
+MIT
