@@ -31,6 +31,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("[WORKER]")
 
+# Global variables for model versioning
+model_version = 0
+recv_model_version = -1
+
 
 def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
     # load MNIST
