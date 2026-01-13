@@ -88,11 +88,13 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
         ]
     )
     DATA_DIR = Path(__file__).parent.parent.parent / "data"
-    data = torchvision.datasets.MNIST(str(DATA_DIR), download=True, transform=transforms)
+    data = torchvision.datasets.MNIST(
+        str(DATA_DIR), download=True, transform=transforms
+    )
     lendata = len(data)
-    
+
     torch.manual_seed(SEED)
-     
+
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )
@@ -133,22 +135,21 @@ def polyak_blend_weights(
 ) -> dict[str, torch.Tensor]:
     """
     Blend current worker model with server's model using Polyak averaging.
-    
+
     Args:
         current_weights: Current worker model weights
         server_weights: Server's averaged model weights
         alpha: Blending factor (0.5 = equal blend, higher = more server influence)
-    
+
     Returns:
         Blended model weights
     """
     blended = {}
     for name in current_weights.keys():
         blended[name] = (
-            alpha * server_weights[name] + 
-            (1.0 - alpha) * current_weights[name]
+            alpha * server_weights[name] + (1.0 - alpha) * current_weights[name]
         )
-    
+
     return blended
 
 
@@ -203,7 +204,6 @@ def connect_to_server(
 
 
 def main():
-    
     # Initialize W&B for worker
     wandb.init(
         project="smolcluster",
@@ -216,7 +216,7 @@ def main():
         },
     )
     logger.info(f"Worker {local_rank} wandb initialized")
-    
+
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
@@ -236,7 +236,6 @@ def main():
     logger.info(
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
-    
 
     # optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
@@ -262,13 +261,15 @@ def main():
             total_loss += loss.item()
             model.zero_grad()
             loss.backward()
-            
+
             # Gradient clipping
             if nn_config.get("gradient_clipping", {}).get("enabled", False):
                 max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-                logger.info(f"[Step {step}] Applied gradient clipping with max_norm={max_norm}")
-            
+                logger.info(
+                    f"[Step {step}] Applied gradient clipping with max_norm={max_norm}"
+                )
+
             grads = get_gradients(model)
             logger.info(f"[Step {step}] Computed local gradients")
 
@@ -280,28 +281,32 @@ def main():
             data_recv = receive_message(sock)
 
             command, recv_step, weights = data_recv
-            logger.info(f"[Step {step}] Received '{command}' from server for step {recv_step}")
+            logger.info(
+                f"[Step {step}] Received '{command}' from server for step {recv_step}"
+            )
 
             assert recv_step == step, "Step mismatch in communication with server."
-                
-            if command == "model_weights":
-                    # Apply Polyak averaging to blend server weights with local model
-                    current_weights = get_weights(model)
-                    alpha = polyak_alpha  # Use the loaded polyak_alpha value
-                    blended_weights = polyak_blend_weights(current_weights, weights, alpha)
-                    set_weights(blended_weights, model)
-                    logger.info(f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={alpha})")
-            else:
-                    logger.warning(f"[Step {step}] Expected 'model_weights' but got '{command}'")
-                    
-                    
-            # if command == "averaged_gradients":
-                # set_gradients(updated_grads, model)
-                # logger.info(f"[Step {step}] Applied averaged gradients to model")
 
-            
+            if command == "model_weights":
+                # Apply Polyak averaging to blend server weights with local model
+                current_weights = get_weights(model)
+                alpha = polyak_alpha  # Use the loaded polyak_alpha value
+                blended_weights = polyak_blend_weights(current_weights, weights, alpha)
+                set_weights(blended_weights, model)
+                logger.info(
+                    f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={alpha})"
+                )
+            else:
+                logger.warning(
+                    f"[Step {step}] Expected 'model_weights' but got '{command}'"
+                )
+
+            # if command == "averaged_gradients":
+            # set_gradients(updated_grads, model)
+            # logger.info(f"[Step {step}] Applied averaged gradients to model")
+
             # optimizer.step()
-            
+
             # Log gradient norms if tracking enabled
             if track_gradients:
                 for name, param in model.named_parameters():
@@ -314,60 +319,48 @@ def main():
                                 "epoch": epoch + 1,
                             }
                         )
-            
+
             # Run evaluation every eval_steps
             if step % eval_steps == 0:
                 val_loss, val_accuracy = evaluate(model, val_loader, criterion)
-                wandb.log({
+                wandb.log(
+                    {
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                        "accuracy/val": val_accuracy,
+                    }
+                )
+                logger.info(
+                    f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%"
+                )
+                model.train()  # Switch back to training mode
+
+            # Log to wandb
+            wandb.log(
+                {
                     "step": step,
                     "epoch": epoch + 1,
-                    "losses/val": val_loss,
-                    "accuracy/val": val_accuracy,
-                })
-                logger.info(f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%")
-                model.train()  # Switch back to training mode
-            
-            # Log to wandb
-            wandb.log({
-                "step": step,
-                "epoch": epoch + 1,
-                "losses/train_batch": loss.item(),
-            })
+                    "losses/train_batch": loss.item(),
+                }
+            )
             logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
 
-            # if step % worker_update_interval == 0:
-            #     logger.info(f"[Step {step}] Requesting full model weights from server")
-            #     send_message(sock, ("pull_weights", step, local_rank, None))
-            #     data_recv = receive_message(sock)
-            #     command, recv_step, weights = data_recv
-            #     # assert recv_step == step, "Step mismatch when pulling weights from server."
-                
-            #     if command == "model_weights":
-            #         # Apply Polyak averaging to blend server weights with local model
-            #         current_weights = get_weights(model)
-            #         alpha = polyak_alpha  # Use the loaded polyak_alpha value
-            #         blended_weights = polyak_blend_weights(current_weights, weights, alpha)
-            #         set_weights(blended_weights, model)
-            #         logger.info(f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={alpha})")
-            #     else:
-            #         logger.warning(f"[Step {step}] Expected 'model_weights' but got '{command}'")
-                    
         avg_loss = total_loss / len(train_loader)
-        wandb.log({
-            "epoch": epoch + 1,
-            "losses/train_epoch": avg_loss,
-        })
+        wandb.log(
+            {
+                "epoch": epoch + 1,
+                "losses/train_epoch": avg_loss,
+            }
+        )
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
         )
-    
+
     wandb.finish()
     sock.close()
     logger.info("Worker training completed and connection closed.")
 
-            
-            
-    
 
 if __name__ == "__main__":
     main()

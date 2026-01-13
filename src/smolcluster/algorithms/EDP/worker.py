@@ -13,14 +13,17 @@ import yaml
 
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.common_utils import (
-    get_gradients,
+    get_weights,
     receive_message,
     send_message,
-    set_weights,
-    get_weights)
+)
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
-from smolcluster.utils.quantization import dequantize_model_weights, quantize_model_weights, calculate_compression_ratio
+from smolcluster.utils.quantization import (
+    calculate_compression_ratio,
+    dequantize_model_weights,
+    quantize_model_weights,
+)
 
 # Login to wandb using API key from environment variable
 if "WANDB_API_KEY" in os.environ:
@@ -94,7 +97,9 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
         ]
     )
     DATA_DIR = Path(__file__).parent.parent.parent / "data"
-    data = torchvision.datasets.MNIST(str(DATA_DIR), download=True, transform=transforms)
+    data = torchvision.datasets.MNIST(
+        str(DATA_DIR), download=True, transform=transforms
+    )
     lendata = len(data)
     torch.manual_seed(SEED)
     trainset, testset = torch.utils.data.random_split(
@@ -181,9 +186,8 @@ def connect_to_server(
 
 
 def main():
-    
     global model_version, recv_model_version
-    
+
     # Initialize W&B for worker
     wandb.init(
         project="smolcluster",
@@ -192,12 +196,12 @@ def main():
             **nn_config,
             "worker_rank": local_rank,
             "worker_hostname": HOSTNAME,
-            "server_hostname": cluster_config['server'],
+            "server_hostname": cluster_config["server"],
             "worker_update_interval": cluster_config.get("worker_update_interval", 5),
         },
     )
     logger.info(f"Worker {local_rank} wandb initialized")
-    
+
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
@@ -217,9 +221,9 @@ def main():
     logger.info(
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
-    
+
     total_steps = num_epochs * len(train_loader)
-    
+
     optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     # Wait for start signal or timeout and start anyway
@@ -234,24 +238,24 @@ def main():
                 break
         except socket.timeout:
             pass
-    
+
     logger.info("Starting training loop...")
     sock.settimeout(None)  # Reset to blocking
 
     # Initialize iterator for continuous training
     train_iter = iter(train_loader)
- 
+
     for step in range(total_steps):
         model.train()
         epoch = step // len(train_loader)
-        
+
         # Fetch next batch, cycling through dataset
         try:
             data, target = next(train_iter)
         except StopIteration:
             train_iter = iter(train_loader)
             data, target = next(train_iter)
-        
+
         logger.info("Performing local forward and backward pass.")
         # optimizer.zero_grad()
         data, target = data.to(get_device()), target.to(get_device())
@@ -260,49 +264,61 @@ def main():
         loss = criterion(output, target)
 
         loss.backward()
-        
+
         # Gradient clipping to prevent exploding gradients
         if nn_config.get("gradient_clipping", {}).get("enabled", False):
             max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        
+
         optimizer.step()  # Local SGD: workers apply updates independently
-        
+
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
-        
+
         if use_quantization:
             quantized_weights = quantize_model_weights(weights)
-            
+
             # Log compression ratio on first step
             if step == 0:
                 comp_info = calculate_compression_ratio(weights, quantized_weights)
-                logger.info(f"Quantization: {comp_info['original_mb']:.2f}MB → {comp_info['compressed_mb']:.2f}MB (ratio: {comp_info['ratio']:.2f}x)")
-            
-            logger.info("Local forward and backward pass done. Sending quantized model weights to server.")
-            send_message(sock, (
-                "polyark_averaging",
-                {
-                    "step": step,
-                    "rank": local_rank,
-                    "quantized_weights": quantized_weights,
-                    "model_version": model_version,
-                }
-            ))
+                logger.info(
+                    f"Quantization: {comp_info['original_mb']:.2f}MB → {comp_info['compressed_mb']:.2f}MB (ratio: {comp_info['ratio']:.2f}x)"
+                )
+
+            logger.info(
+                "Local forward and backward pass done. Sending quantized model weights to server."
+            )
+            send_message(
+                sock,
+                (
+                    "polyark_averaging",
+                    {
+                        "step": step,
+                        "rank": local_rank,
+                        "quantized_weights": quantized_weights,
+                        "model_version": model_version,
+                    },
+                ),
+            )
             logger.info("Quantized model weights sent to server.")
         else:
-            logger.info("Local forward and backward pass done. Sending model weights to server.")
-            send_message(sock, (
-                "polyark_averaging",
-                {
-                    "step": step,
-                    "rank": local_rank,
-                    "weights": weights,
-                    "model_version": model_version,
-                }
-            ))
+            logger.info(
+                "Local forward and backward pass done. Sending model weights to server."
+            )
+            send_message(
+                sock,
+                (
+                    "polyark_averaging",
+                    {
+                        "step": step,
+                        "rank": local_rank,
+                        "weights": weights,
+                        "model_version": model_version,
+                    },
+                ),
+            )
             logger.info("Model weights sent to server.")
-        
+
         # OLD APPROACH: Send gradients for scaling (commented out)
         # grads = get_gradients(model)
         # send_message(sock, (
@@ -314,27 +330,33 @@ def main():
         #         "model_version": model_version,
         #     }
         # ))
-        
+
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             send_message(sock, ("pull_weights", model_version))
             sock.settimeout(1.0)  # Wait up to 1 second for weights
             try:
                 weights, new_version = receive_message(sock)
-                
+
                 if use_quantization:
-                    dequant_weights = dequantize_model_weights(weights, device=get_device())
+                    dequant_weights = dequantize_model_weights(
+                        weights, device=get_device()
+                    )
                     model.load_state_dict(dequant_weights)
                 else:
                     # print(weights)
                     model.load_state_dict(weights)
-                
+
                 recv_model_version = new_version
-                logger.info(f"Updated to model version {recv_model_version} from server.")
+                logger.info(
+                    f"Updated to model version {recv_model_version} from server."
+                )
             except socket.timeout:
                 logger.warning("Timeout while pulling weights from server.")
             except BlockingIOError:
-                logger.error(f"non-blocking socket error while pulling weights from server.")
+                logger.error(
+                    "non-blocking socket error while pulling weights from server."
+                )
             finally:
                 sock.settimeout(None)  # Restore blocking socket
 
@@ -352,35 +374,39 @@ def main():
                             }
                         )
                 logger.info("Gradient tracking complete.")
-                
+
         # Update local model version if received new weights
         if recv_model_version != -1 and recv_model_version != model_version:
             model_version = recv_model_version
             logger.info(f"Updated local model version to {model_version}.")
-        
+
         # Run evaluation every eval_steps
         if step % eval_steps == 0:
             val_loss, val_accuracy = evaluate(model, val_loader, criterion)
-            wandb.log({
-                "step": step,
-                "epoch": epoch,
-                "losses/val": val_loss,
-                "accuracy/val": val_accuracy,
-                "losses/train_batch": loss.item(),
-            })
-            logger.info(f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%")
+            wandb.log(
+                {
+                    "step": step,
+                    "epoch": epoch,
+                    "losses/val": val_loss,
+                    "accuracy/val": val_accuracy,
+                    "losses/train_batch": loss.item(),
+                }
+            )
+            logger.info(
+                f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%"
+            )
         else:
             # Log training loss only
-            wandb.log({
-                "step": step,
-                "epoch": epoch,
-                "losses/train_batch": loss.item(),
-            })
-        
-        logger.info(
-            f"Epoch: {epoch} , Step {step}/{total_steps} completed."
-        )
-    
+            wandb.log(
+                {
+                    "step": step,
+                    "epoch": epoch,
+                    "losses/train_batch": loss.item(),
+                }
+            )
+
+        logger.info(f"Epoch: {epoch} , Step {step}/{total_steps} completed.")
+
     # Finish wandb tracking
     wandb.finish()
     logger.info(f"Worker {local_rank} wandb tracking finished.")
@@ -388,7 +414,7 @@ def main():
     send_message(sock, ("disconnect", local_rank))
     sock.close()
     logger.info(f"Training complete. Worker {local_rank} disconnected.")
-    
-    
+
+
 if __name__ == "__main__":
     main()

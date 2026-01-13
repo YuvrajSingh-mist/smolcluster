@@ -6,7 +6,7 @@ import sys
 import threading
 from collections import defaultdict
 from pathlib import Path
-from typing import Tuple
+
 import torch
 import torchinfo
 import torchvision
@@ -20,7 +20,7 @@ from smolcluster.utils.common_utils import (
     get_weights,
     receive_message,
     send_message,
-    set_gradients
+    set_gradients,
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
@@ -89,11 +89,13 @@ def load_data(
         ]
     )
     DATA_DIR = Path(__file__).parent.parent.parent / "data"
-    data = torchvision.datasets.MNIST(str(DATA_DIR), download=True, transform=transforms)
+    data = torchvision.datasets.MNIST(
+        str(DATA_DIR), download=True, transform=transforms
+    )
     lendata = len(data)
-    
+
     torch.manual_seed(SEED)
-     
+
     trainset, testset = torch.utils.data.random_split(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )
@@ -135,20 +137,20 @@ def compute_leader_gradients(
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     model.train()
     data, target = data.to(get_device()), target.to(get_device())
     output = model(data.view(data.size(0), -1))
     loss = criterion(output, target)
     optimizer.zero_grad()
     loss.backward()
-    
+
     # Gradient clipping
     if nn_config.get("gradient_clipping", {}).get("enabled", False):
         max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         logger.debug(f"Applied gradient clipping with max_norm={max_norm}")
-    
+
     grads = get_gradients(model)
     return loss, grads
 
@@ -173,26 +175,15 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             )
 
             if command == "parameter_server_reduce":
-                logger.info(
-                    f"[Step {recv_step}] Storing gradients from worker {rank}"
-                )
+                logger.info(f"[Step {recv_step}] Storing gradients from worker {rank}")
                 with lock:
                     curr_step = recv_step
                     grads_received[curr_step][rank] = grads
-                    logger.info(f"[Step {recv_step}] Now have {len(grads_received[curr_step])} gradient sets")
+                    logger.info(
+                        f"[Step {recv_step}] Now have {len(grads_received[curr_step])} gradient sets"
+                    )
                 step_event.set()
-                
-            # elif command == "pull_weights":
-                
-            #     with lock:
-            #         curr_step = recv_step
-                
-            #     logger.info(f"[Step {recv_step}] Worker {rank} requested model weights")
-            #     weights = get_weights(model)
-            #     send_message(conn, ("model_weights", curr_step, weights))
-            #     logger.info(f"[Step {recv_step}] Sent model weights to worker {rank}")
-            #     step_event.set()
-                
+
             # Add handling for other commands if needed, e.g., 'disconnect'
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
@@ -311,8 +302,7 @@ def main():
         model.train()
         total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
-        
-        
+
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
             logger.info(f"[Step {step}] Server computing leader gradients")
@@ -322,16 +312,16 @@ def main():
             grads_received[step][RANK] = leader_grads
             total_loss += leader_loss.item()
             logger.info(f"[Step {step}] Leader loss: {leader_loss.item():.4f}")
-            
+
             wandb.log(
                 {
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/leader_step": leader_loss.item(),
-                    "losses/leader_loss": leader_loss.item() / (step+1),
+                    "losses/leader_loss": leader_loss.item() / (step + 1),
                 }
             )
-           
+
             while True:
                 with lock:
                     curr_workers_len = len(grads_received[step])
@@ -348,7 +338,9 @@ def main():
                     break
 
             if len(grads_received[step]) != 0:
-                logger.info(f"[Step {step}] Averaging gradients from {len(grads_received[step])} participants")
+                logger.info(
+                    f"[Step {step}] Averaging gradients from {len(grads_received[step])} participants"
+                )
                 grads_reduced = parameter_server_reduce(
                     grads_received[step], len(grads_received[step])
                 )
@@ -358,12 +350,12 @@ def main():
                     logger.info(f"[Step {step}] Worker {rank} requested model weights")
                     weights = get_weights(model)
                     send_message(worker_socket, ("model_weights", step, weights))
-                 
-                    
 
-                logger.info(f"[Step {step}] Applying averaged gradients to server model")
+                logger.info(
+                    f"[Step {step}] Applying averaged gradients to server model"
+                )
                 set_gradients(grads_reduced, model)
-        
+
                 optimizer.step()
                 logger.info(f"[Step {step}] Server model updated")
                 grads_received.pop(step, None)
@@ -375,8 +367,7 @@ def main():
                     f"No gradients received for step {step}. Skipping grad update."
                 )
                 del leader_grads
-                
-            
+
             # Log gradient norms if tracking enabled
             if track_gradients:
                 for name, param in model.named_parameters():
@@ -412,7 +403,9 @@ def main():
                         "accuracy/val": val_acc,
                     }
                 )
-                logger.info(f"Step {step}: Val Loss={val_loss:.4f}, Val Acc={val_acc:.2f}%")
+                logger.info(
+                    f"Step {step}: Val Loss={val_loss:.4f}, Val Acc={val_acc:.2f}%"
+                )
 
         avg_loss = total_loss / len(train_loader)
 
@@ -426,7 +419,7 @@ def main():
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
         )
-    
+
     logger.info("Training completed successfully!")
     wandb.finish()
     sock.close()

@@ -18,7 +18,7 @@ def receive_message(sock: socket.SocketType) -> dict:
         return None
 
     msglen = struct.unpack(">I", raw_msglen)[0]
-    
+
     # Read the message data in chunks
     data = b""
     remaining = msglen
@@ -29,7 +29,7 @@ def receive_message(sock: socket.SocketType) -> dict:
             raise ConnectionError("Socket connection broken while receiving message")
         data += chunk
         remaining -= len(chunk)
-    
+
     return pickle.loads(data)
 
 
@@ -49,22 +49,25 @@ def set_gradients(grads: dict[str, torch.Tensor], model: torch.nn.Module):
                 param.grad = grads[name].clone()
 
 
-def set_weights(weights: dict[str, torch.Tensor], model: torch.nn.Module, grad_scaling: float=0.0) -> torch.nn.Module:
-    
+def set_weights(
+    weights: dict[str, torch.Tensor], model: torch.nn.Module, grad_scaling: float = 0.0
+) -> torch.nn.Module:
     curr_weights = get_weights(model)
     for name, param in model.named_parameters():
         if name in weights:
             weights[name] = weights[name].to(param.device)
             if grad_scaling != 0.0:
-                param.data = grad_scaling * curr_weights[name].clone() + (1 - grad_scaling) * weights[name].to(param.device)
+                param.data = grad_scaling * curr_weights[name].clone() + (
+                    1 - grad_scaling
+                ) * weights[name].to(param.device)
             else:
                 param.data = weights[name].clone()
-                
+
     return model
+
 
 def get_weights(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     weights = {}
     for name, param in model.named_parameters():
         weights[name] = torch.Tensor(param.data.detach().cpu().clone())
     return weights
-

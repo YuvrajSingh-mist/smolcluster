@@ -5,7 +5,7 @@ import socket
 import sys
 import threading
 import time
-from typing import Tuple
+from pathlib import Path
 
 import torch
 import torchinfo
@@ -17,16 +17,17 @@ from torch.utils.data import DataLoader
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.common_utils import (
     get_gradients,
+    get_weights,
     receive_message,
     send_message,
     set_gradients,
-    get_weights,
-    set_weights,
-    
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
-from smolcluster.utils.quantization import dequantize_model_weights, quantize_model_weights
+from smolcluster.utils.quantization import (
+    dequantize_model_weights,
+    quantize_model_weights,
+)
 
 # Login to wandb using API key from environment variable
 if "WANDB_API_KEY" in os.environ:
@@ -94,7 +95,9 @@ def load_data(
             torchvision.transforms.Normalize((0.5,), (0.5,)),
         ]
     )
-    data = torchvision.datasets.MNIST("../../../data", download=True, transform=transforms)
+    data = torchvision.datasets.MNIST(
+        "../../../data", download=True, transform=transforms
+    )
     lendata = len(data)
     torch.manual_seed(SEED)
     trainset, testset = torch.utils.data.random_split(
@@ -119,16 +122,15 @@ def evaluate(
     correct = 0
     total = 0
     val_iter = iter(val_loader)
-    
+
     with torch.no_grad():
-        for step in range(len(val_loader)):
-            
+        for _step in range(len(val_loader)):
             try:
                 data, target = next(val_iter)
             except StopIteration:
                 val_iter = iter(val_loader)
                 data, target = next(val_iter)
-            
+
             data, target = data.to(get_device()), target.to(get_device())
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
@@ -148,19 +150,19 @@ def compute_leader_gradients(
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     model.train()
     data, target = data.to(get_device()), target.to(get_device())
     output = model(data.view(data.size(0), -1))
     loss = criterion(output, target)
     optimizer.zero_grad()
     loss.backward()
-    
+
     # Gradient clipping
     if nn_config.get("gradient_clipping", {}).get("enabled", False):
         max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-    
+
     grads = get_gradients(model)
     return loss, grads
 
@@ -170,7 +172,6 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
     logger.info(f"Handling worker at {addr}")
 
     while True:
-        
         message = receive_message(conn)
 
         # Handle connection closed or empty message
@@ -185,7 +186,7 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             recv_step = payload["step"]
             rank = payload["rank"]
             worker_version = payload["model_version"]
-            
+
             # Check if worker sent quantized weights, weights, or gradients
             if "quantized_weights" in payload:
                 # New approach: Dequantize and use Polyak averaging
@@ -197,7 +198,10 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 device_str = str(get_device())
                 weights = dequantize_model_weights(quantized_weights, device=device_str)
                 with lock:
-                    workers_grads_received[(rank, recv_step, worker_version)] = {"type": "weights", "data": weights}
+                    workers_grads_received[(rank, recv_step, worker_version)] = {
+                        "type": "weights",
+                        "data": weights,
+                    }
             elif "weights" in payload:
                 # Legacy: Full float32 weights (no compression)
                 weights = payload["weights"]
@@ -205,7 +209,10 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                     f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
                 )
                 with lock:
-                    workers_grads_received[(rank, recv_step, worker_version)] = {"type": "weights", "data": weights}
+                    workers_grads_received[(rank, recv_step, worker_version)] = {
+                        "type": "weights",
+                        "data": weights,
+                    }
             else:
                 # Old approach: Gradient scaling (kept for reference)
                 grads = payload["grads"]
@@ -213,15 +220,22 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                     f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
                 )
                 with lock:
-                    workers_grads_received[(rank, recv_step, worker_version)] = {"type": "grads", "data": grads}
-                
+                    workers_grads_received[(rank, recv_step, worker_version)] = {
+                        "type": "grads",
+                        "data": grads,
+                    }
+
             gradients_event.set()
-            logger.info(f"Data stored successfully for worker {rank} at step {recv_step}")
-        
-        elif command == 'pull_weights':
+            logger.info(
+                f"Data stored successfully for worker {rank} at step {recv_step}"
+            )
+
+        elif command == "pull_weights":
             worker_version = payload  # payload is the worker's current model version
-            logger.info(f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})")
-            
+            logger.info(
+                f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
+            )
+
             weights = get_weights(model)
             if use_quantization:
                 quantized_weights = quantize_model_weights(weights)
@@ -230,47 +244,45 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
             else:
                 send_message(conn, (weights, model_version))
                 logger.info(f"Weights sent to worker {addr}")
-            
-        elif command == 'disconnect':
+
+        elif command == "disconnect":
             logger.info(f"Worker {addr} requested disconnection.")
             #  Remove disconnected worker
             with lock:
                 workers.pop(addr, None)
-            
-        
+
     conn.close()
-    
+
 
 def polyak_average_weights(
     current_weights: dict[str, torch.Tensor],
     worker_weights: dict[str, torch.Tensor],
     staleness: int,
     # alpha_base: float = 1.0
-) -> Tuple[dict[str, torch.Tensor], float]:
+) -> tuple[dict[str, torch.Tensor], float]:
     """
     Blend current model with worker's model using staleness-aware Polyak averaging.
-    
+
     Args:
         current_weights: Current server model weights
         worker_weights: Worker's trained model weights
         staleness: |current_version - worker_version|
         alpha_base: Base weight for worker model (default: 1.0)
-    
+
     Returns:
         Blended model weights
     """
     # Worker weight decreases with staleness
     staleness_factor = 1 / (1 + staleness)
-    
+
     blended = {}
     for name in current_weights.keys():
         blended[name] = (
-            staleness_factor * worker_weights[name] + 
-            (1.0 - staleness_factor) * current_weights[name]
+            staleness_factor * worker_weights[name]
+            + (1.0 - staleness_factor) * current_weights[name]
         )
-    
-    return blended, staleness_factor
 
+    return blended, staleness_factor
 
 
 model = SimpleMNISTModel(
@@ -300,11 +312,10 @@ sock.listen(5)
 logger.info(f"Server listening on {HOST_IP}:{PORT}")
 
 
-
 def main():
     global model_version
     shutdown_flag = threading.Event()
-    
+
     # Initialize W&B
     wandb.init(
         project="smolcluster",
@@ -312,8 +323,8 @@ def main():
         config={
             **nn_config,
             "server_hostname": HOSTNAME,
-            "worker_hostnames": cluster_config['workers'],
-            "num_workers": len(cluster_config['workers']),
+            "worker_hostnames": cluster_config["workers"],
+            "num_workers": len(cluster_config["workers"]),
         },
     )
 
@@ -330,11 +341,13 @@ def main():
             try:
                 client_socket, client_address = sock.accept()
                 logger.info(f"Accepted connection from {client_address}")
-                
+
                 # Wait for registration message
                 message = receive_message(client_socket)
                 if message is None:
-                    logger.warning(f"Connection from {client_address} closed before registration")
+                    logger.warning(
+                        f"Connection from {client_address} closed before registration"
+                    )
                     client_socket.close()
                     continue
 
@@ -343,9 +356,15 @@ def main():
                     logger.info(f"Worker {rank} registered from {client_address}")
                     with lock:
                         workers[rank] = client_socket
-                    threading.Thread(target=handle_worker, args=(client_socket, client_address), daemon=True).start()
+                    threading.Thread(
+                        target=handle_worker,
+                        args=(client_socket, client_address),
+                        daemon=True,
+                    ).start()
                 else:
-                    logger.warning(f"Unexpected message from {client_address}: {command}")
+                    logger.warning(
+                        f"Unexpected message from {client_address}: {command}"
+                    )
                     client_socket.close()
             except OSError:
                 # Socket closed, exit gracefully
@@ -358,50 +377,52 @@ def main():
             except Exception as e:
                 if not shutdown_flag.is_set():
                     logger.error(f"Error accepting worker: {e}")
-    
+
     # Start worker acceptance thread
     threading.Thread(target=accept_workers, daemon=True).start()
     logger.info("Worker acceptance thread started")
-    
+
     # Give workers a moment to connect
     time.sleep(2)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
     logger.info(f"Starting training for {num_epochs} epochs.")
-    
+
     # Send start signal to all connected workers
     with lock:
         for worker_socket in workers.values():
             try:
                 send_message(worker_socket, "start_training")
-            except:
-                pass
-    
+            except Exception as e:
+                logger.error(f"Error sending start signal to worker: {e}")
+
     train_iter = iter(train_loader)
     total_steps = num_epochs * len(train_loader)
     total_loss = 0.0
-   
+
     for step in range(total_steps):
         model.train()
-        
+
         try:
             data, target = next(train_iter)
         except StopIteration:
             train_iter = iter(train_loader)
             data, target = next(train_iter)
-        
+
         data = data.to(get_device())
         target = target.to(get_device())
-        
+
         epoch = step // len(train_loader)
-        
+
         # Compute leader gradients
-        leader_loss, leader_grads = compute_leader_gradients(model, data, target, criterion, optimizer)
+        leader_loss, leader_grads = compute_leader_gradients(
+            model, data, target, criterion, optimizer
+        )
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
-        
+
         total_loss += leader_loss.item()
-        
+
         if track_gradients:
             logger.info("Tracking gradients in wandb...")
             for name, param in model.named_parameters():
@@ -415,96 +436,104 @@ def main():
                         }
                     )
             logger.info("Gradient tracking complete.")
-            
+
         # Collect any available worker data (non-blocking with small timeout)
         gradients_event.wait(timeout=0.01)  # Very short wait
         gradients_event.clear()
-        
+
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
-        
+
         if workers_copy:
             logger.info(f"Step {step}: Collected {len(workers_copy)} worker update(s)")
-            
+
             # Polyak averaging with model weights
             current_weights = get_weights(model)
-            
-            for (rank, recv_step, worker_version), worker_data in workers_copy.items():
+
+            for (rank, _recv_step, worker_version), worker_data in workers_copy.items():
                 staleness = abs(model_version - worker_version)
-                
+
                 if worker_data["type"] == "weights":
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
-                    worker_weights = {k: v.to(get_device()) for k, v in worker_weights.items()}
-                    current_weights = {k: v.to(get_device()) for k, v in current_weights.items()}
-                    
+                    worker_weights = {
+                        k: v.to(get_device()) for k, v in worker_weights.items()
+                    }
+                    current_weights = {
+                        k: v.to(get_device()) for k, v in current_weights.items()
+                    }
+
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
-                    
+
                     logger.info(
                         f"Applying worker {rank} model via Polyak averaging "
                         f"(staleness: {staleness}, alpha: {staleness_factor:.3f})"
                     )
-                    
+
                     # Update model with blended weights
                     model.load_state_dict(blended_weights)
-                    
+
                     current_weights = blended_weights  # Update for next worker
-                    
+
                     with lock:
                         model_version += 1
-                        
+
                 else:
                     # OLD APPROACH: Gradient scaling (kept for backward compatibility)
                     # This code path is commented out but functional if workers send gradients
                     grads = worker_data["data"]
                     scale = 1.0 / (1e-8 + staleness)
-                    
+
                     logger.info(
                         f"[DEPRECATED] Applying worker {rank} grads via scaling "
                         f"(staleness: {staleness}, scale: {scale:.3f})"
                     )
-                    
+
                     optimizer.zero_grad()
                     scaled_grads = {k: v * scale for k, v in grads.items()}
                     set_gradients(scaled_grads, model)
-                    
+
                     # Gradient clipping
                     if nn_config.get("gradient_clipping", {}).get("enabled", False):
                         max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-                    
+
                     optimizer.step()
-                    
+
                     with lock:
                         model_version += 1
-                
+
             del workers_copy
             gc.collect()
-        
+
         # Apply leader gradients
         optimizer.zero_grad()
         set_gradients(leader_grads, model)
-        
+
         # Gradient clipping
         if nn_config.get("gradient_clipping", {}).get("enabled", False):
             max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        
+
         optimizer.step()
-        
+
         with lock:
             model_version += 1
-        
+
         del leader_grads
         gc.collect()
-        
-        logger.info(f"Applied leader gradients. Step {step}: Updated to model version {model_version}")
-       
-        logger.info(f"Epoch {epoch + 1}, Step: {step}: Step loss = {leader_loss.item():.4f}")
-        
+
+        logger.info(
+            f"Applied leader gradients. Step {step}: Updated to model version {model_version}"
+        )
+
+        logger.info(
+            f"Epoch {epoch + 1}, Step: {step}: Step loss = {leader_loss.item():.4f}"
+        )
+
         if step % 50 == 0:
             wandb.log(
                 {
@@ -514,9 +543,7 @@ def main():
                     "losses/avg_loss": total_loss / (step + 1),
                 }
             )
-            
-           
-            
+
             wandb.log(
                 {
                     "step": step,
@@ -527,9 +554,8 @@ def main():
             )
 
         if step % eval_steps == 0:
-            
             logger.info(f"Evaluating model at step {step}...")
-            
+
             val_loss, val_acc = evaluate(model, val_loader, criterion)
 
             wandb.log(
@@ -541,101 +567,104 @@ def main():
                 }
             )
 
-    logger.info(f"Training completed. Total steps: {step + 1}, Final model version: {model_version}")
+    logger.info(
+        f"Training completed. Total steps: {step + 1}, Final model version: {model_version}"
+    )
     logger.info("Waiting for any remaining worker updates...")
-    
-    gradients_event.wait(timeout=0.01) 
+
+    gradients_event.wait(timeout=0.01)
     gradients_event.clear()
-    
+
     while len(workers) > 0:
-        
-        gradients_event.wait(timeout=0.01)  
+        gradients_event.wait(timeout=0.01)
         gradients_event.clear()
-    
+
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
-        
-        
+
         if workers_copy:
             logger.info(f"Step {step}: Collected {len(workers_copy)} worker update(s)")
-            
+
             # NEW APPROACH: Polyak averaging with model weights
             current_weights = get_weights(model)
-            
-            for (rank, recv_step, worker_version), worker_data in workers_copy.items():
+
+            for (rank, _recv_step, worker_version), worker_data in workers_copy.items():
                 staleness = abs(model_version - worker_version)
-                
+
                 if worker_data["type"] == "weights":
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
 
-                    worker_weights = {k: v.to(get_device()) for k, v in worker_weights.items()}
-                    current_weights = {k: v.to(get_device()) for k, v in current_weights.items()}
-                    
-                    
+                    worker_weights = {
+                        k: v.to(get_device()) for k, v in worker_weights.items()
+                    }
+                    current_weights = {
+                        k: v.to(get_device()) for k, v in current_weights.items()
+                    }
+
                     blended_weights, staleness_factor = polyak_average_weights(
                         current_weights, worker_weights, staleness
                     )
-                    
+
                     logger.info(
                         f"Applying worker {rank} model via Polyak averaging "
                         f"(staleness: {staleness}, alpha: {staleness_factor:.3f})"
                     )
-                    
+
                     # Update model with blended weights
                     model.load_state_dict(blended_weights)
                     current_weights = blended_weights  # Update for next worker
-                    
+
                     with lock:
                         model_version += 1
-                        
+
                 else:
                     # OLD APPROACH: Gradient scaling (kept for backward compatibility)
                     # This code path is commented out but functional if workers send gradients
                     grads = worker_data["data"]
                     scale = 1.0 / (1e-8 + staleness)
-                    
+
                     logger.info(
                         f"[DEPRECATED] Applying worker {rank} grads via scaling "
                         f"(staleness: {staleness}, scale: {scale:.3f})"
                     )
-                    
+
                     optimizer.zero_grad()
                     scaled_grads = {k: v * scale for k, v in grads.items()}
                     set_gradients(scaled_grads, model)
-                    
+
                     # Gradient clipping
                     if nn_config.get("gradient_clipping", {}).get("enabled", False):
                         max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-                    
+
                     optimizer.step()
-                    
+
                     with lock:
                         model_version += 1
-                
+
             del workers_copy
-            
+
             # # Apply worker's gradients
             # optimizer.zero_grad()
             # optimizer.step()
-            
+
             with lock:
                 model_version += 1
-            
+
             step += 1
-            
+
             gc.collect()
-            
+
             data = data.to(get_device())
             target = target.to(get_device())
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_loss += loss.item()
-            
+
             logger.info(f"Step: {step}: Step loss = {loss.item():.4f}")
-            
+
             if step % 50 == 0:
                 wandb.log(
                     {
@@ -645,9 +674,7 @@ def main():
                         "losses/avg_loss": total_loss / (step + 1),
                     }
                 )
-                
-                
-                
+
                 wandb.log(
                     {
                         "step": step,
@@ -658,9 +685,8 @@ def main():
                 )
 
             if step % eval_steps == 0:
-                
                 logger.info(f"Evaluating model at step {step}...")
-                
+
                 val_loss, val_acc = evaluate(model, val_loader, criterion)
 
                 wandb.log(
@@ -671,16 +697,13 @@ def main():
                         "accuracy/val": val_acc,
                     }
                 )
-        
-        
-        
+
     shutdown_flag.set()
     sock.close()
     logger.info("Server shutdown complete")
-    
+
     wandb.finish()
 
 
 if __name__ == "__main__":
-    
     main()
