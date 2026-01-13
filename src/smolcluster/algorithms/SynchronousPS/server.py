@@ -181,9 +181,13 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 step_event.set()
                 
             elif command == "pull_weights":
+                
+                with lock:
+                    curr_step = recv_step
+                
                 logger.info(f"Worker {rank} requested model weights at step {recv_step}")
                 weights = get_weights(model)
-                send_message(conn, ("model_weights", weights))
+                send_message(conn, ("model_weights", curr_step, weights))
                 step_event.set()
                 
             # Add handling for other commands if needed, e.g., 'disconnect'
@@ -342,10 +346,10 @@ def main():
                 )
 
                 # Send gradients to workers
-                for _worker_addr, worker_socket in workers.items():
-                    send_message(
-                        worker_socket, ("averaged_gradients", step, grads_reduced)
-                    )
+                # for _worker_addr, worker_socket in workers.items():
+                #     send_message(
+                #         worker_socket, ("averaged_gradients", step, grads_reduced)
+                #     )
 
                 set_weights(grads_reduced, model)
         
