@@ -14,16 +14,16 @@ model:
 # Training Hyperparameters
 training:
   task: "wikitext"           # Task to train on ["wikitext", "snli"]
-  batch_size: null           # Batch size (auto: 32 for L=128, 16 for L=256)
-  epochs: null               # Number of epochs (auto: 30 for wikitext, 20 for SNLI)
-  learning_rate: 6e-4        # Learning rate
+  batch_size: 16           # Batch size
+  epochs: 5               # Number of epochs
+  learning_rate: 0.0006        # Learning rate
   weight_decay: 0.01         # Weight decay for AdamW
   grad_clip_norm: 1.0        # Gradient clipping norm
 
 # Learning Rate Schedule
 lr_schedule:
   warmup_iters: 100          # Linear warmup iterations
-  min_lr: 6e-5              # Minimum learning rate for cosine decay
+  min_lr: 0.00006              # Minimum learning rate for cosine decay
 
 # Data
 data:
