@@ -45,7 +45,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Cluster Topology
 
-<img src="src/smolcluster/images/architecture.png" alt="Cluster Topology" width="100%">
+<img src="images/architecture.png" alt="Cluster Topology" width="100%">
 
 ## Installation
 
