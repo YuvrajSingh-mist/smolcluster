@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torchinfo
 import wandb
 import yaml
 
@@ -171,6 +172,11 @@ def run_worker(worker_rank: int, hostname: str):
     device = get_device()
     model = model.to(device)
     logger.info(f"Model initialized on device: {device}")
+    
+    # Print model summary
+    logger.info("Model Summary:")
+    summary = torchinfo.summary(model, input_size=(nn_config["batch_size"], 784), device=device)
+    logger.info(f"\n{summary}")
     
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
+import torchinfo
 import wandb
 from tqdm import tqdm
 import yaml
@@ -183,6 +184,16 @@ def train_wikitext(config, device, output_dir):
     )
 
     model = model.to(device)
+
+    # Print model summary
+    print("Model Summary:")
+    summary = torchinfo.summary(
+        model, 
+        input_size=(config['training']['batch_size'], config['model']['max_seq_len']),
+        device=device,
+        dtypes=[torch.long]
+    )
+    print(summary)
 
     # Compile model with torch.compile for better performance
     print("Compiling model with torch.compile...")
