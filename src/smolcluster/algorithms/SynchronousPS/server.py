@@ -20,7 +20,7 @@ from smolcluster.utils.common_utils import (
     get_weights,
     receive_message,
     send_message,
-    set_weights,
+    set_gradients
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
@@ -147,6 +147,7 @@ def compute_leader_gradients(
     if nn_config.get("gradient_clipping", {}).get("enabled", False):
         max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        logger.debug(f"Applied gradient clipping with max_norm={max_norm}")
     
     grads = get_gradients(model)
     return loss, grads
@@ -173,11 +174,12 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
 
             if command == "parameter_server_reduce":
                 logger.info(
-                    f"Storing gradients from worker {rank} for batch {recv_step}"
+                    f"[Step {recv_step}] Storing gradients from worker {rank}"
                 )
                 with lock:
                     curr_step = recv_step
                     grads_received[curr_step][rank] = grads
+                    logger.info(f"[Step {recv_step}] Now have {len(grads_received[curr_step])} gradient sets")
                 step_event.set()
                 
             elif command == "pull_weights":
@@ -185,9 +187,10 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 with lock:
                     curr_step = recv_step
                 
-                logger.info(f"Worker {rank} requested model weights at step {recv_step}")
+                logger.info(f"[Step {recv_step}] Worker {rank} requested model weights")
                 weights = get_weights(model)
                 send_message(conn, ("model_weights", curr_step, weights))
+                logger.info(f"[Step {recv_step}] Sent model weights to worker {rank}")
                 step_event.set()
                 
             # Add handling for other commands if needed, e.g., 'disconnect'
@@ -308,13 +311,17 @@ def main():
         model.train()
         total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
+        
+        
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
+            logger.info(f"[Step {step}] Server computing leader gradients")
             leader_loss, leader_grads = compute_leader_gradients(
                 model, data, target, criterion, optimizer
             )
             grads_received[step][RANK] = leader_grads
             total_loss += leader_loss.item()
+            logger.info(f"[Step {step}] Leader loss: {leader_loss.item():.4f}")
             
             wandb.log(
                 {
@@ -341,6 +348,7 @@ def main():
                     break
 
             if len(grads_received[step]) != 0:
+                logger.info(f"[Step {step}] Averaging gradients from {len(grads_received[step])} participants")
                 grads_reduced = parameter_server_reduce(
                     grads_received[step], len(grads_received[step])
                 )
@@ -351,9 +359,11 @@ def main():
                 #         worker_socket, ("averaged_gradients", step, grads_reduced)
                 #     )
 
-                set_weights(grads_reduced, model)
+                logger.info(f"[Step {step}] Applying averaged gradients to server model")
+                set_gradients(grads_reduced, model)
         
                 optimizer.step()
+                logger.info(f"[Step {step}] Server model updated")
                 grads_received.pop(step, None)
                 del grads_reduced, leader_grads
                 gc.collect()

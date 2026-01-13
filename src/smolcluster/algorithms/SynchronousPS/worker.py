@@ -14,9 +14,9 @@ import yaml
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.common_utils import (
     get_gradients,
+    get_weights,
     receive_message,
     send_message,
-    set_gradients,
     set_weights,
 )
 from smolcluster.utils.data import get_data_indices
@@ -65,6 +65,7 @@ batch_size = nn_config["batch_size"]
 num_epochs = nn_config["num_epochs"]
 eval_steps = nn_config["eval_steps"]
 worker_update_interval = cluster_config["worker_update_interval"]
+polyak_alpha = nn_config["polyak_alpha"]
 # Loss criterion
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -122,6 +123,32 @@ def evaluate(model, val_loader, criterion):
     avg_loss = total_loss / len(val_loader)
     accuracy = 100 * correct / total
     return avg_loss, accuracy
+
+
+def polyak_blend_weights(
+    current_weights: dict[str, torch.Tensor],
+    server_weights: dict[str, torch.Tensor],
+    alpha: float = 0.5,
+) -> dict[str, torch.Tensor]:
+    """
+    Blend current worker model with server's model using Polyak averaging.
+    
+    Args:
+        current_weights: Current worker model weights
+        server_weights: Server's averaged model weights
+        alpha: Blending factor (0.5 = equal blend, higher = more server influence)
+    
+    Returns:
+        Blended model weights
+    """
+    blended = {}
+    for name in current_weights.keys():
+        blended[name] = (
+            alpha * server_weights[name] + 
+            (1.0 - alpha) * current_weights[name]
+        )
+    
+    return blended
 
 
 def connect_to_server(
@@ -305,8 +332,12 @@ def main():
                 assert recv_step == step, "Step mismatch when pulling weights from server."
                 
                 if command == "model_weights":
-                    set_weights(weights, model)
-                    logger.info(f"[Step {step}] ✅ Successfully updated to server's model weights")
+                    # Apply Polyak averaging to blend server weights with local model
+                    current_weights = get_weights(model)
+                    alpha = polyak_alpha  # Use the loaded polyak_alpha value
+                    blended_weights = polyak_blend_weights(current_weights, weights, alpha)
+                    set_weights(blended_weights, model)
+                    logger.info(f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={alpha})")
                 else:
                     logger.warning(f"[Step {step}] Expected 'model_weights' but got '{command}'")
                     

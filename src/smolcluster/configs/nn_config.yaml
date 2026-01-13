@@ -3,6 +3,7 @@ learning_rate: 0.0002
 num_epochs: 10
 eval_steps: 50
 track_gradients: true
+polyak_alpha: 0.9  # Polyak averaging blend factor (0.5 = equal blend, higher = more server influence)
 gradient_clipping:
   enabled: true
   max_norm: 1.0  # Maximum gradient norm
