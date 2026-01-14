@@ -319,7 +319,7 @@ def run_edp_worker(
                     model.load_state_dict(dequant_weights, strcit=False)
                 else:
                     # print(weights)
-                    model.load_state_dict(weights)
+                    model.load_state_dict(weights, strcit=False)
 
                 recv_model_version = new_version
                 logger.info(
