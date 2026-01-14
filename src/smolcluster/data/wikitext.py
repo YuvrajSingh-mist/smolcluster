@@ -28,12 +28,14 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
      
         input_encodings = tokenizer(texts, padding='max_length', max_length=ModelArgs.block_size, truncation=True, return_tensors="pt")
       
-        input_encodings["labels"] = input_encodings["input_ids"].clone()  # Use `input_ids` as labels
+        input_ids = input_encodings["input_ids"]
         
-        input_encodings["labels"][:, :-1] = input_encodings["input_ids"][:, 1:]  # Shift right
-        input_encodings["labels"][:, -1] = tokenizer.eos_token_id  # Let the last token be end 
+        # Create labels by shifting input_ids
+        labels = input_ids.clone()
+        labels[:, :-1] = input_ids[:, 1:]  # Shift right
+        labels[:, -1] = tokenizer.eos_token_id  # Let the last token be end 
       
-        return input_encodings
+        return input_ids, labels
 
     # Load full datasets
     train_dataset = load_dataset("wikitext", "wikitext-103-v1", split="train")
