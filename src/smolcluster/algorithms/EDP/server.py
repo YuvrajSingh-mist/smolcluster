@@ -98,13 +98,13 @@ def evaluate(
             target = target.view(B*T)
             loss = criterion(output, target)
             total_val_loss += loss.item()
-            _, predicted = torch.max(output.data, 1)
-            total += target.size(0)
-            correct += (predicted == target).sum().item()
+            # _, predicted = torch.max(output.data, 1)
+            # total += target.size(0)
+            # correct += (predicted == target).sum().item()
     avg_loss = total_val_loss / len(val_loader)
-    accuracy = 100 * (correct / total)
+    # accuracy = 100 * (correct / total)
     model.train()
-    return avg_loss, accuracy
+    return avg_loss
 
 
 def compute_leader_gradients(
@@ -541,14 +541,13 @@ def run_edp_server(
         if step % eval_steps == 0:
             logger.info(f"Evaluating model at step {step}...")
 
-            val_loss, val_acc = evaluate(device, model, val_loader, criterion)
+            val_loss = evaluate(device, model, val_loader, criterion)
 
             wandb.log(
                 {
                     "step": step,
                     "epoch": epoch,
                     "losses/val": val_loss,
-                    "accuracy/val": val_acc,
                 }
             )
 

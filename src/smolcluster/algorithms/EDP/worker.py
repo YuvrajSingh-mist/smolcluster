@@ -67,8 +67,7 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
 def evaluate(device, model, val_loader, criterion):
     model.eval()
     total_loss = 0.0
-    correct = 0
-    total = 0
+   
     with torch.no_grad():
         for data, target in val_loader:
             data, target = data.to(device), target.to(device)
@@ -78,12 +77,14 @@ def evaluate(device, model, val_loader, criterion):
             target = target.view(B*T)
             loss = criterion(output, target)
             total_loss += loss.item()
-            _, predicted = torch.max(output.data, 1)
-            total += target.size(0)
-            correct += (predicted == target).sum().item()
+            # _, predicted = torch.max(output.data, 1)
+            # total += target.size(0)
+            # correct += (predicted == target).sum().item()
     avg_loss = total_loss / len(val_loader)
-    accuracy = 100 * correct / total
-    return avg_loss, accuracy
+    model.train()
+    
+    # accuracy = 100 * correct / total
+    return avg_loss
 
 
 def connect_to_server(
@@ -355,13 +356,12 @@ def run_edp_worker(
 
         # Run evaluation every eval_steps
         if step % eval_steps == 0:
-            val_loss, val_accuracy = evaluate(device, model, val_loader, criterion)
+            val_loss = evaluate(device, model, val_loader, criterion)
             wandb.log(
                 {
                     "step": step,
                     "epoch": epoch,
                     "losses/val": val_loss,
-                    "accuracy/val": val_accuracy,
                     "losses/train_batch": loss.item(),
                 }
             )
