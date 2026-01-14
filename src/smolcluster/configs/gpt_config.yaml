@@ -14,7 +14,7 @@ max_seq_len: 128  # Maximum sequence length (paper: 128 or 256)
 # Training Hyperparameters
 task: "wikitext"           # Task to train on ["wikitext", "snli"]
 batch_size: 16           # Batch size
-num/-epochs: 5               # Number of epochs
+num_epochs: 5               # Number of epochs
 learning_rate: 0.0006        # Learning rate
 weight_decay: 0.01         # Weight decay for AdamW
 grad_clip_norm: 1.0        # Gradient clipping norm

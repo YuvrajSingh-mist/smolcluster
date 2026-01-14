@@ -12,12 +12,14 @@ dependencies = [
     "datasets>=4.4.2",
     "numpy>=1.24.0",
     "pyyaml>=6.0.3",
+    "python-dotenv>=1.0.0",
     "torch>=2.0.0",
     "torchinfo>=1.8.0",
     "torchvision>=0.15.0",
     "tqdm>=4.67.1",
     "transformers>=4.57.5",
     "wandb>=0.17.0",
+    "dotenv>=0.9.9",
 ]
 
 [project.optional-dependencies]

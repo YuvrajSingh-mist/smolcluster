@@ -1,73 +1,66 @@
 """WikiText-2 dataset for language modeling.
 
-This module provides the Wikitext2Dataset class for loading and preprocessing
+This module provides the prepare_dataset function for loading and preprocessing
 the WikiText-2 dataset for causal language modeling tasks.
 """
 
-import torch
-from torch.utils.data import Dataset
+from transformers import AutoTokenizer
 from datasets import load_dataset
-
-
-class Wikitext2Dataset(Dataset):
-    """Wikitext-2 dataset for language modeling.
+import os
+from dotenv import load_dotenv
+# Partition training data across workers
+from smolcluster.utils.data import get_data_indices
+from torch.utils.data import DataLoader
     
-    Loads the WikiText-2 dataset and creates fixed-length chunks for
-    causal language modeling. The dataset concatenates all text and
-    splits it into non-overlapping sequences of max_seq_len tokens.
+load_dotenv()
+
+TOKEN = os.getenv("HF_TOKEN")
+
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", token=TOKEN)
+
+tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+
+class ModelArgs:
+    block_size = 128
+
+def prepare_dataset(config, world_size: int, seed: int, rank: int):
+    def collate_fn(batch):
+        # Extract text data
+        texts = batch  # batch is list of strings
+
+     
+        input_encodings = tokenizer(texts, padding='max_length', max_length=ModelArgs.block_size, truncation=True, return_tensors="pt")
+      
+        input_encodings["labels"] = input_encodings["input_ids"].clone()  # Use `input_ids` as labels
+        
+        input_encodings["labels"][:, :-1] = input_encodings["input_ids"][:, 1:]  # Shift right
+        input_encodings["labels"][:, -1] = tokenizer.eos_token_id  # Let the last token be end 
+      
+        return input_encodings
+
+    # Load full datasets
+    train_dataset = load_dataset("wikitext", "wikitext-103-v1", split="train")
+    train_texts = [item["text"] for item in train_dataset if item["text"].strip()]
+    val_dataset = load_dataset("wikitext", "wikitext-103-v1", split="validation")
+    val_texts = [item["text"] for item in val_dataset if item["text"].strip()]
     
-    For language modeling, both input and target are the same sequence,
-    where the model predicts the next token at each position.
+    # Create validation loader (same for all workers)
+
+    val_loader = DataLoader(
+        val_texts, 
+        batch_size=config['batch_size'], 
+        shuffle=False,
+        collate_fn=collate_fn
+    )
     
-    Args:
-        split: Dataset split ('train', 'validation', 'test')
-        tokenizer: HuggingFace tokenizer (e.g., BertTokenizer, GPT2Tokenizer)
-        max_seq_len: Maximum sequence length (default: 256)
-    """
+
+    batch_indices = get_data_indices(len(train_texts), world_size, seed)
+    train_data = [train_texts[i] for i in batch_indices[rank].tolist()]
+    train_loader = DataLoader(
+        train_data, 
+        batch_size=config['batch_size'], 
+        shuffle=True,
+        collate_fn=collate_fn
+    )
     
-    def __init__(self, split: str, tokenizer, max_seq_len: int = 256):
-        """Initialize the dataset.
-
-        Args:
-            split (str): Dataset split ('train', 'validation', 'test').
-            tokenizer: Tokenizer for encoding text.
-            max_seq_len (int): Maximum sequence length.
-        """
-        self.max_seq_len = max_seq_len
-        self.tokenizer = tokenizer
-
-        # Load wikitext-2
-        dataset = load_dataset("wikitext", "wikitext-103-v1", split=split)
-
-        # Concatenate all text and tokenize
-        # Note: We encode the full text (2M+ tokens) then chunk it ourselves
-        # Suppress tokenizer's max_length warning since we handle chunking manually
-        all_text = "\n".join([t for t in dataset["text"] if t.strip()])
-        self.tokens = tokenizer.encode(all_text, verbose=False)
-
-        # Create chunks
-        self.num_chunks = len(self.tokens) // max_seq_len
-        self.tokens = self.tokens[:self.num_chunks * max_seq_len]
-
-    def __len__(self):
-        """Return the number of chunks in the dataset.
-
-        Returns:
-            int: Number of chunks.
-        """
-        return self.num_chunks
-
-    def __getitem__(self, idx):
-        """Get a chunk of tokens.
-
-        Args:
-            idx (int): Index of the chunk.
-
-        Returns:
-            tuple: (input_ids, target_ids) both of shape (max_seq_len,).
-                   For language modeling, input and target are identical.
-        """
-        start = idx * self.max_seq_len
-        chunk = self.tokens[start:start + self.max_seq_len]
-        x = torch.tensor(chunk, dtype=torch.long)
-        return x, x.clone()  # input and target are same for LM
+    return train_loader, val_loader, len(tokenizer), tokenizer.pad_token_id

@@ -1,3 +1,3 @@
-from .wikitext import Wikitext2Dataset
+from .wikitext import prepare_dataset
 
-__all__ = ["Wikitext2Dataset"]
+__all__ = ["prepare_dataset"]

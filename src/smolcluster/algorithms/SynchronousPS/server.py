@@ -26,13 +26,13 @@ from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 
 # Login to wandb using API key from environment variable
-if "WANDB_API_KEY" in os.environ:
-    wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+if "WANDB_API_TOKEN" in os.environ:
+    wandb.login(key=os.environ["WANDB_API_TOKEN"], relogin=True)
     logger_temp = logging.getLogger("[SERVER-INIT]")
-    logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
+    logger_temp.info("✅ Logged into wandb using WANDB_API_TOKEN")
 else:
     logger_temp = logging.getLogger("[SERVER-INIT]")
-    logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+    logger_temp.warning("⚠️  WANDB_API_TOKEN not set - wandb may prompt for login")
 
 # Get hostname from command-line argument
 if len(sys.argv) > 1:

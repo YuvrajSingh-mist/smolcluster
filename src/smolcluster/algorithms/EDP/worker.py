@@ -385,13 +385,13 @@ def main():
     global model_version, recv_model_version
     
     # Login to wandb using API key from environment variable
-    if "WANDB_API_KEY" in os.environ:
-        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+    if "WANDB_API_TOKEN" in os.environ:
+        wandb.login(key=os.environ["WANDB_API_TOKEN"], relogin=True)
         logger_temp = logging.getLogger("[WORKER-INIT]")
-        logger_temp.info("✅ Logged into wandb using WANDB_API_KEY")
+        logger_temp.info("✅ Logged into wandb using WANDB_API_TOKEN")
     else:
         logger_temp = logging.getLogger("[WORKER-INIT]")
-        logger_temp.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+        logger_temp.warning("⚠️  WANDB_API_TOKEN not set - wandb may prompt for login")
 
     # Load configs
     CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"

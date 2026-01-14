@@ -24,9 +24,12 @@ import torchinfo
 import wandb
 from tqdm import tqdm
 import yaml
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from smolcluster.models.gpt import BaseTransformer
-from smolcluster.data.wikitext import Wikitext2Dataset
-from transformers import GPT2Tokenizer
+from smolcluster.data.wikitext import prepare_dataset
 
 from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
@@ -53,40 +56,23 @@ def load_configs():
 
 def load_data(config, world_size: int, seed: int, rank: int):
     """Load Wikitext-2 dataset for the given rank."""
-    tokenizer = GPT2Tokenizer.from_pretrained(config['tokenizer'])
     
-    # Load full datasets
-    train_dataset = Wikitext2Dataset("train", tokenizer, config['max_seq_len'])
-    val_dataset = Wikitext2Dataset("validation", tokenizer, config['max_seq_len'])
+    train_loader, val_loader, vocab_size, pad_token_id = prepare_dataset(config, world_size, seed, rank)
     
-    # Create validation loader (same for all workers)
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=config['batch_size'], 
-        shuffle=False
-    )
-    
-    # Partition training data across workers
-    batch_indices = get_data_indices(len(train_dataset), world_size, seed)
-    train_data = torch.utils.data.Subset(train_dataset, batch_indices[rank].tolist())
-    train_loader = DataLoader(
-        train_data, 
-        batch_size=config['batch_size'], 
-        shuffle=False
-    )
+    return train_loader, val_loader, vocab_size, pad_token_id
     
     return train_loader, val_loader, len(tokenizer)
 
 
 def setup_wandb():
     """Setup Weights & Biases authentication."""
-    if "WANDB_API_KEY" in os.environ:
-        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+    if "WANDB_API_TOKEN" in os.environ:
+        wandb.login(key=os.environ["WANDB_API_TOKEN"], relogin=True)
         logger = logging.getLogger("[INIT]")
-        logger.info("✅ Logged into wandb using WANDB_API_KEY")
+        logger.info("✅ Logged into wandb using WANDB_API_TOKEN")
     else:
         logger = logging.getLogger("[INIT]")
-        logger.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
+        logger.warning("⚠️  WANDB_API_TOKEN not set - wandb may prompt for login")
 
 
 # -----------------------------------------------------------------------------
@@ -200,7 +186,7 @@ def run_server(hostname: str):
     
     # Load data
     logger.info("Loading Wikitext-2 dataset...")
-    train_loader, val_loader, vocab_size = load_data(gpt_config, world_size, seed, rank)
+    train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, rank)
     logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
     
     # Create model
@@ -225,7 +211,7 @@ def run_server(hostname: str):
     )
     
     # Create criterion
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
     # Run server
     logger.info("Starting EDP server...")
@@ -269,7 +255,7 @@ def run_worker(worker_rank: int, hostname: str):
     
     # Load data
     logger.info("Loading Wikitext-2 dataset...")
-    train_loader, val_loader, vocab_size = load_data(gpt_config, world_size, seed, local_rank)
+    train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, local_rank)
     logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
     
     # Create model
@@ -304,7 +290,7 @@ def run_worker(worker_rank: int, hostname: str):
     )
     
     # Create criterion
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
     # Run worker
     logger.info(f"Starting EDP worker {local_rank}...")
