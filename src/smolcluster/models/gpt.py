@@ -94,7 +94,7 @@ class BaseTransformer(nn.Module):
         num_heads: int = 8,
         ff_dim: int = None,
         dropout: float = 0.1,
-        tie_weights: bool = True,
+        tie_weights: bool = False,
     ):
         """Initialize the size-matched transformer model.
 
