@@ -18,6 +18,7 @@ num_epochs: 5               # Number of epochs
 learning_rate: 0.0006        # Learning rate
 weight_decay: 0.01         # Weight decay for AdamW
 grad_clip_norm: 1.0        # Gradient clipping norm
+eval_steps: 200             # Evaluation steps interval
 
 # Learning Rate Schedule
 

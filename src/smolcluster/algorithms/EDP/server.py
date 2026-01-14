@@ -190,9 +190,9 @@ def run_edp_server(
     batch_size = config["batch_size"]
     num_epochs = config["num_epochs"]
     eval_steps = config["eval_steps"]
-    track_gradients = config.get("track_gradients", False)
+    track_gradients = config["track_gradients"]
     learning_rate = config["learning_rate"]
-    use_quantization = cluster_config.get("use_quantization", True)
+    use_quantization = cluster_config["use_quantization"]
     
     # Create and bind socket
     HOST_IP = "0.0.0.0"
