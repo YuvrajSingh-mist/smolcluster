@@ -74,7 +74,7 @@ def load_data(
 
 
 def evaluate(
-    devuce: torch.device, model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module
+    device: torch.device, model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module
 ) -> tuple[float, float]:
     model.eval()
     total_val_loss = 0.0
