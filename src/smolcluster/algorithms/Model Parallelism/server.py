@@ -24,6 +24,8 @@ from smolcluster.utils.common_utils import (
     receive_message,
     send_message,
     set_gradients,
+    get_layer_weights,
+    get_layers_per_node
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
@@ -251,7 +253,7 @@ def main():
             "mode": "synchronous_ps",
         },
     )
-    
+    layers = 
     model_summary = str(
         torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
     )
