@@ -19,6 +19,7 @@ dependencies = [
     "transformers>=4.57.5",
     "wandb>=0.17.0",
     "dotenv>=0.9.9",
+    "safetensors>=0.7.0",
 ]
 
 [project.optional-dependencies]

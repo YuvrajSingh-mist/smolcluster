@@ -49,7 +49,10 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         val_texts, 
         batch_size=config['batch_size'], 
         shuffle=False,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        num_workers=2,
+        persistent_workers=True,
+        prefetch_factor=2
     )
     
 
@@ -59,7 +62,10 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         train_data, 
         batch_size=config['batch_size'], 
         shuffle=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        num_workers=2,
+        persistent_workers=True,
+        prefetch_factor=2
     )
     
     return train_loader, val_loader, len(tokenizer), tokenizer.pad_token_id

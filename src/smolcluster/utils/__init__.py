@@ -4,6 +4,7 @@ from .common_utils import (
     receive_message,
     send_message,
     set_gradients,
+    get_layers_per_node,
     set_weights,
 )
 from .data import get_data_indices
@@ -16,6 +17,7 @@ __all__ = [
     "get_device",
     "get_gradients",
     "set_gradients",
+    "get_layers_per_node",
     "set_weights",
     "get_weights",
 ]
