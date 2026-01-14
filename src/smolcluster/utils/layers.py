@@ -1,5 +1,5 @@
 from transformers import AutoConfig
-from typing import List
+from typing import List, Dict
 import torch
 from safetensors import safe_open
 from pathlib import Path
@@ -49,21 +49,34 @@ def get_layers_per_node(config: AutoConfig, model, num_nodes: int, local_rank: i
     
 
         
-def get_layer_weights(layers: dict[str, torch.Tensor], layer_name: str) -> dict:
+def set_layer_weights(model, layers: Dict[str, torch.Tensor]) -> dict:
     
     results = []
     
-    for i in layers['model.transformer.h.10'].named_parameters():
-        results.append('h.' + layer_name.split('.')[-1] + i[0])
-        
+    for layer in layers:
+        for name, param in layers[layer].named_parameters():
+            results.append('h.' + layer_name.split('.')[-1] + name)
+            
     
     stage_sd = {}
     with safe_open(safetensors_path, framework="pt") as f:
         for k in f.keys():
             if k in results:
                 stage_sd[k] = f.get_tensor(k)
+    delete_layer = []
+    for name, params in model.named_parameters():
         
-    return stage_sd
+        curr_name = 'h.' + name.split('.')[-1]
+        if curr_name in list(stage_sd.keys()):
+            params.data = stage_sd[name].cpu().clone()
+        else:
+            delete_layer.append(name)
+    
+    for layer in delete_layer:
+        for name, param in model.named_parameters():
+             if layer == name:
+                 del name
+    return model
         
         
         

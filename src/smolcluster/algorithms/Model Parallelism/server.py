@@ -24,7 +24,10 @@ from smolcluster.utils.common_utils import (
     receive_message,
     send_message,
     set_gradients,
-    get_layer_weights,
+   
+)
+from smolcluster.utils.layers import (
+    set_layer_weights,
     get_layers_per_node
 )
 from smolcluster.utils.data import get_data_indices
@@ -62,10 +65,9 @@ WORLD_SIZE = NUM_WORKERS + 1
 TIMEOUT = cluster_config["timeout"]
 
 RANK = 0
-batch_size = nn_config["batch_size"]
-eval_steps = nn_config["eval_steps"]
-num_epochs = nn_config["num_epochs"]
-track_gradients = nn_config["track_gradients"]
+num_nodes = nn_config['num_nodes']
+model_name = nn_config['model_name']
+
 criterion = torch.nn.CrossEntropyLoss()
 
 
@@ -218,7 +220,7 @@ def parameter_server_reduce(
 
 config = AutoConfig.from_pretrained(nn_config["model_name"])
 
-model = GPT2LMHeadModel.from_pretrained(config)
+model = GPT2LMHeadModel(config)
 model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
 
@@ -253,7 +255,8 @@ def main():
             "mode": "synchronous_ps",
         },
     )
-    layers = 
+    layers = get_layers_per_node(config, model, num_nodes, RANK, 'causal_gpt2')
+    model = set_layer_weights(model, layers)
     model_summary = str(
         torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
     )
@@ -300,32 +303,11 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
 
-    logger.info(f"Starting training for {num_epochs} epochs.")
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0.0
-        logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
+    logger.info(f"Starting inference for {model_name}.")
+    
+    
+    with torch.no_grad():
 
-        for batch_idx, (data, target) in enumerate(train_loader):
-            step = epoch * len(train_loader) + batch_idx
-            logger.info(f"[Step {step}] Server computing leader gradients")
-            leader_loss, leader_grads = compute_leader_gradients(
-                model, data, target, criterion, optimizer
-            )
-            grads_received[step][RANK] = leader_grads
-            total_loss += leader_loss.item()
-            logger.info(f"[Step {step}] Leader loss: {leader_loss.item():.4f}")
-
-            wandb.log(
-                {
-                    "step": step,
-                    "epoch": epoch + 1,
-                    "losses/leader_step": leader_loss.item(),
-                    "losses/leader_loss": leader_loss.item() / (step + 1),
-                }
-            )
-
-            while True:
                 with lock:
                     curr_workers_len = len(grads_received[step])
 
@@ -371,58 +353,7 @@ def main():
                 )
                 del leader_grads
 
-            # Log gradient norms if tracking enabled
-            if track_gradients:
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_norm = torch.norm(param.grad.detach(), 2).item()
-                        wandb.log(
-                            {
-                                f"gradients/layer_{name}": grad_norm,
-                                "step": step,
-                                "epoch": epoch + 1,
-                            }
-                        )
-
-            # Log training metrics
-            wandb.log(
-                {
-                    "step": step,
-                    "epoch": epoch + 1,
-                    # "losses/train_step": loss.item(),
-                    "lr": nn_config["learning_rate"],
-                    "batch_size": nn_config["batch_size"],
-                }
-            )
-
-            if step % eval_steps == 0:
-                val_loss, val_acc = evaluate(model, val_loader, criterion)
-
-                wandb.log(
-                    {
-                        "step": step,
-                        "epoch": epoch + 1,
-                        "losses/val": val_loss,
-                        "accuracy/val": val_acc,
-                    }
-                )
-                logger.info(
-                    f"Step {step}: Val Loss={val_loss:.4f}, Val Acc={val_acc:.2f}%"
-                )
-
-        avg_loss = total_loss / len(train_loader)
-
-        wandb.log(
-            {
-                "epoch": epoch + 1,
-                "losses/train_epoch": avg_loss,
-            }
-        )
-
-        logger.info(
-            f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
-        )
-
+        
     logger.info("Training completed successfully!")
     wandb.finish()
     sock.close()

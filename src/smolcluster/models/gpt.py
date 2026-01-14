@@ -72,14 +72,12 @@ class BaseTransformerBlock(nn.Module):
         # Reshape and project
         attn_out = attn_out.transpose(1, 2).reshape(batch_size, seq_len, self.model_dim)
         attn_out = self.out_proj(attn_out)
-        x = x + self.dropout(attn_out)
-        scaled_residual = x * (torch.sqrt(torch.tensor(self.num_layers, dtype=x.dtype)))
+        x = x + self.ln1(self.dropout(attn_out))
+        scaled_residual = x * (self.num_layers ** -0.5)
         # FFN with residual
-        normed = self.ln1(scaled_residual)
-        x = x + self.ffn(normed)
-        scaled_residual_2 = x * (torch.sqrt(torch.tensor(self.num_layers, dtype=x.dtype)))
-        out_normed = self.ln2(scaled_residual_2)
-        return out_normed
+        x = x + self.ln2(self.ffn(scaled_residual))
+        scaled_residual_2 = x * (self.num_layers ** -0.5)
+        return scaled_residual_2
 
 
 class BaseTransformer(nn.Module):

@@ -1,2 +1,5 @@
 model_name:
   causal_gpt2
+
+num_nodes:
+  3
