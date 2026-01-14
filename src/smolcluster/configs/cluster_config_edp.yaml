@@ -21,6 +21,6 @@ track_gradients: true  # Whether server tracks gradient norms for each worker
 seed: 42
 
 # Cluster configuration
-num_workers: 3
-workers: [mini2, win, mini3]  # Worker hostnames
+num_workers: 2
+workers: [mini2, mini3]  # Worker hostnames
 server: mini1  # Server hostname
