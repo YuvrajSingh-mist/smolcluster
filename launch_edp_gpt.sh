@@ -145,7 +145,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching server on $SERVER..."
-SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py server $SERVER"
+SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py server $SERVER"
 launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -157,7 +157,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done

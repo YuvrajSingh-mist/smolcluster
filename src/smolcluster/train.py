@@ -57,9 +57,7 @@ def load_data(config, world_size: int, seed: int, rank: int):
     train_loader, val_loader, vocab_size, pad_token_id = prepare_dataset(config, world_size, seed, rank)
     
     return train_loader, val_loader, vocab_size, pad_token_id
-    
-    return train_loader, val_loader, len(tokenizer)
-
+   
 
 def setup_wandb():
     """Setup Weights & Biases authentication."""
