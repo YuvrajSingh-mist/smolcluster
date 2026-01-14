@@ -315,7 +315,7 @@ def run_edp_worker(
                     dequant_weights = dequantize_model_weights(
                         weights, device=device
                     )
-                    model.load_state_dict(dequant_weights)
+                    model.load_state_dict(dequant_weights, strcit=False)
                 else:
                     # print(weights)
                     model.load_state_dict(weights)
