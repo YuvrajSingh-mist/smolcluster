@@ -72,7 +72,10 @@ def evaluate(device, model, val_loader, criterion):
     with torch.no_grad():
         for data, target in val_loader:
             data, target = data.to(device), target.to(device)
-            output = model(data.view(data.size(0), -1))
+            output = model(data)
+            B,T,C = output.shape
+            output = output.view(B*T, C)
+            target = target.view(B*T)
             loss = criterion(output, target)
             total_loss += loss.item()
             _, predicted = torch.max(output.data, 1)

@@ -458,6 +458,8 @@ def run_edp_server(
                     )
 
                     # Update model with blended weights
+                    print(model.state_dict().keys())
+                    print(blended_weights.keys())
                     model.load_state_dict(blended_weights)
 
                     current_weights = blended_weights  # Update for next worker
@@ -641,7 +643,10 @@ def run_edp_server(
 
             data = data.to(device)
             target = target.to(device)
-            output = model(data.view(data.size(0), -1))
+            output = model(data)
+            B,T,C = output.shape
+            target = target.view(B*T)
+            output = output.view(B*T, C)
             loss = criterion(output, target)
             total_loss += loss.item()
 
