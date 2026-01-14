@@ -366,7 +366,7 @@ def run_edp_worker(
                 }
             )
             logger.info(
-                f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%"
+                f"Evaluation at step {step}: Val Loss={val_loss:.4f}"
             )
         else:
             # Log training loss only

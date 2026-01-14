@@ -672,14 +672,14 @@ def run_edp_server(
             if step % eval_steps == 0:
                 logger.info(f"Evaluating model at step {step}...")
 
-                val_loss, val_acc = evaluate(model, val_loader, criterion)
+                val_loss = evaluate(device, model, val_loader, criterion)
 
                 wandb.log(
                     {
                         "step": step,
                         "epoch": epoch,
                         "losses/val": val_loss,
-                        "accuracy/val": val_acc,
+                    
                     }
                 )
 
