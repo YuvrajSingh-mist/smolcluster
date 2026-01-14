@@ -15,7 +15,7 @@ import torch.nn.functional as F
 class BaseTransformerBlock(nn.Module):
     """Standard transformer block with multi-head attention."""
 
-    def __init__(self, model_dim: int, num_heads: int, ff_dim: int, dropout: float = 0.1):
+    def __init__(self, model_dim: int, num_heads: int, ff_dim: int, dropout: float = 0.1, num_layers: int  = 4):
         """Initialize the transformer block.
 
         Args:
@@ -23,11 +23,13 @@ class BaseTransformerBlock(nn.Module):
             num_heads (int): Number of attention heads.
             ff_dim (int): Dimension of the feed-forward network.
             dropout (float): Dropout probability.
+            num_layers (int): Number of layers in the block.
         """
         super().__init__()
         self.model_dim = model_dim
         self.num_heads = num_heads
         self.head_dim = model_dim // num_heads
+        self.num_layers = num_layers
         assert model_dim % num_heads == 0, "model_dim must be divisible by num_heads"
         
         self.ln1 = nn.LayerNorm(model_dim)
@@ -40,29 +42,26 @@ class BaseTransformerBlock(nn.Module):
         self.ffn = nn.Sequential(
             nn.Linear(model_dim, ff_dim),
             nn.GELU(),
-            nn.Dropout(dropout),
             nn.Linear(ff_dim, model_dim),
-            nn.Dropout(dropout),
+            
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass with multi-head attention.
 
         Args:
             x (torch.Tensor): Input tensor of shape (batch_size, seq_len, model_dim).
-            attn_mask (torch.Tensor, optional): Attention mask for causal attention (unused, kept for compatibility).
-
+            
         Returns:
             torch.Tensor: Output tensor after self-attention and FFN.
         """
         batch_size, seq_len, _ = x.shape
         
         # Self-attention with residual
-        normed = self.ln1(x)
         
         # Compute Q, K, V
-        qkv = self.qkv_proj(normed)
+        qkv = self.qkv_proj(x)
         qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch, heads, seq_len, head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -74,12 +73,13 @@ class BaseTransformerBlock(nn.Module):
         attn_out = attn_out.transpose(1, 2).reshape(batch_size, seq_len, self.model_dim)
         attn_out = self.out_proj(attn_out)
         x = x + self.dropout(attn_out)
-
+        scaled_residual = x * (torch.sqrt(torch.tensor(self.num_layers, dtype=x.dtype)))
         # FFN with residual
-        normed = self.ln2(x)
+        normed = self.ln1(scaled_residual)
         x = x + self.ffn(normed)
-
-        return x
+        scaled_residual_2 = x * (torch.sqrt(torch.tensor(self.num_layers, dtype=x.dtype)))
+        out_normed = self.ln2(scaled_residual_2)
+        return out_normed
 
 
 class BaseTransformer(nn.Module):
@@ -120,7 +120,7 @@ class BaseTransformer(nn.Module):
         self.embedding_dropout = nn.Dropout(dropout)
 
         self.blocks = nn.ModuleList([
-            BaseTransformerBlock(model_dim, num_heads, ff_dim, dropout)
+            BaseTransformerBlock(model_dim, num_heads, ff_dim, dropout, num_layers)
             for _ in range(num_layers)
         ])
 
@@ -148,15 +148,14 @@ class BaseTransformer(nn.Module):
             torch.nn.init.ones_(module.weight)
             torch.nn.init.zeros_(module.bias)
 
-    def forward(self, input_ids, labels=None):
+    def forward(self, input_ids) -> torch.Tensor:
         """Forward pass of the transformer model.
 
         Args:
             input_ids (torch.Tensor): Input token ids of shape (batch_size, seq_len).
-            labels (torch.Tensor, optional): Target token ids for loss computation.
 
         Returns:
-            tuple: (logits, loss) where loss is None if labels not provided.
+            torch.Tensor: Logits of shape (batch_size, seq_len, vocab_size).
         """
         batch_size, seq_len = input_ids.shape
         device = input_ids.device

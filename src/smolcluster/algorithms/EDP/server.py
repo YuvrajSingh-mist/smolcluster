@@ -200,6 +200,20 @@ def run_edp_server(
     learning_rate = config["learning_rate"]
     use_quantization = cluster_config["use_quantization"]
     
+    # Checkpoint settings
+    save_checkpoints = config.get("save_checkpoints", False)
+    checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
+    checkpoint_steps = config.get("checkpoint_steps", 0)
+    checkpoint_epochs = config.get("checkpoint_epochs", 0)
+    keep_last_n = config.get("keep_last_n_checkpoints", 0)
+    
+    # Create checkpoint directory
+    if save_checkpoints:
+        checkpoint_path = Path(checkpoint_dir)
+        checkpoint_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Checkpoints will be saved to: {checkpoint_path.absolute()}")
+        saved_checkpoints = []
+    
     # Create and bind socket
     HOST_IP = "0.0.0.0"
     PORT = cluster_config["port"]
@@ -518,12 +532,28 @@ def run_edp_server(
         logger.info(
             f"Epoch {epoch + 1}, Step: {step}: Step loss = {leader_loss.item():.4f}"
         )
-
+        
+        # Save checkpoint based on steps
+        if save_checkpoints and checkpoint_steps > 0 and step > 0 and step % checkpoint_steps == 0:
+            checkpoint_file = checkpoint_path / f"checkpoint_step_{step}.pt"
+            torch.save({
+                'step': step,
+                'epoch': epoch + 1,
+                'model_version': model_version,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': total_loss / (step + 1),
+                'config': config,
+            }, checkpoint_file)
+            logger.info(f"💾 Saved checkpoint: {checkpoint_file}")
+            
+            
+           
         if step % 50 == 0:
             wandb.log(
                 {
                     "step": step,
-                    "epoch": epoch,
+                    "epoch": epoch + 1,
                     "losses/leader_step_loss": leader_loss.item(),
                     "losses/avg_loss": total_loss / (step + 1),
                 }
@@ -532,7 +562,7 @@ def run_edp_server(
             wandb.log(
                 {
                     "step": step,
-                    "epoch": epoch,
+                    "epoch": epoch + 1,
                     "lr": learning_rate,
                     "batch_size": batch_size,
                 }
@@ -546,7 +576,7 @@ def run_edp_server(
             wandb.log(
                 {
                     "step": step,
-                    "epoch": epoch,
+                    "epoch": epoch + 1,
                     "losses/val": val_loss,
                 }
             )
@@ -637,6 +667,8 @@ def run_edp_server(
 
             step += 1
 
+            epoch = step // len(train_loader)
+            
             gc.collect()
 
             data = data.to(device)
@@ -654,7 +686,7 @@ def run_edp_server(
                 wandb.log(
                     {
                         "step": step,
-                        "epoch": epoch,
+                        "epoch": epoch + 1,
                         "losses/step_loss": loss.item(),
                         "losses/avg_loss": total_loss / (step + 1),
                     }
@@ -663,7 +695,7 @@ def run_edp_server(
                 wandb.log(
                     {
                         "step": step,
-                        "epoch": epoch,
+                        "epoch": epoch + 1,
                         "lr": learning_rate,
                         "batch_size": batch_size,
                     }
@@ -677,7 +709,7 @@ def run_edp_server(
                 wandb.log(
                     {
                         "step": step,
-                        "epoch": epoch,
+                        "epoch": epoch + 1,
                         "losses/val": val_loss,
                     
                     }

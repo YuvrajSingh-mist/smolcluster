@@ -34,9 +34,11 @@ tokenizer: "openai-community/gpt2"  # HuggingFace tokenizer
 
 project_name: "smolcluster-gpt-wikitext2"
 log_interval: 50           # Steps between logging
-checkpoint_interval: 5     # Epochs between checkpoints
-track_gradients : true      # Whether to track gradient norms
-# Output
+track_gradients: true      # Whether to track gradient norms
 
-output_dir: null           # Output directory (auto-generated if null)
+# Checkpoint Settings
 save_checkpoints: true     # Whether to save model checkpoints
+checkpoint_dir: "checkpoints"  # Directory to save checkpoints (relative to project root)
+checkpoint_steps: 500      # Save checkpoint every N steps (set to 0 to disable step-based saving)
+checkpoint_epochs: 1       # Save checkpoint every N epochs (set to 0 to disable epoch-based saving)
+keep_last_n_checkpoints: 3 # Number of recent checkpoints to keep (0 = keep all)
