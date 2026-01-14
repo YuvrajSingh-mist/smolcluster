@@ -85,13 +85,17 @@ def evaluate(
     with torch.no_grad():
         for _step in range(len(val_loader)):
             try:
-                data, target = next(val_iter)
+                batch = next(val_iter)
             except StopIteration:
                 val_iter = iter(val_loader)
-                data, target = next(val_iter)
+                batch = next(val_iter)
 
+            data, target = batch
             data, target = data.to(device), target.to(device)
-            output = model(data.view(data.size(0), -1))
+            output = model(data)
+            B,T,C = output.shape
+            output = output.view(B*T, C)
+            target = target.view(B*T)
             loss = criterion(output, target)
             total_val_loss += loss.item()
             _, predicted = torch.max(output.data, 1)
