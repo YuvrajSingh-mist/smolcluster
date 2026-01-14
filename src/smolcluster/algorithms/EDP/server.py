@@ -302,8 +302,13 @@ def run_edp_server(
         },
     )
 
+    # Get input size from config (support both MNIST and GPT models)
+    
+    input_size = (batch_size, config['max_seq_len'])
+    input_dtype = [torch.long]
+    
     model_summary = str(
-        torchinfo.summary(model, input_size=(batch_size, 784), device=device)
+        torchinfo.summary(model, input_size=input_size, device=device, dtypes=input_dtype)
     )
     logger.info("Model Summary:")
     logger.info(model_summary)
