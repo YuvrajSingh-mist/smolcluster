@@ -12,7 +12,6 @@ dependencies = [
     "datasets>=4.4.2",
     "numpy>=1.24.0",
     "pyyaml>=6.0.3",
-    "python-dotenv>=1.0.0",
     "torch>=2.0.0",
     "torchinfo>=1.8.0",
     "torchvision>=0.15.0",

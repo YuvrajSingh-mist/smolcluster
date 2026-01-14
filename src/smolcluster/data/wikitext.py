@@ -7,12 +7,9 @@ the WikiText-2 dataset for causal language modeling tasks.
 from transformers import AutoTokenizer
 from datasets import load_dataset
 import os
-from dotenv import load_dotenv
 # Partition training data across workers
 from smolcluster.utils.data import get_data_indices
 from torch.utils.data import DataLoader
-    
-load_dotenv()
 
 TOKEN = os.getenv("HF_TOKEN")
 

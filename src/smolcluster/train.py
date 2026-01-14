@@ -24,9 +24,6 @@ import torchinfo
 import wandb
 from tqdm import tqdm
 import yaml
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.data.wikitext import prepare_dataset
@@ -66,13 +63,13 @@ def load_data(config, world_size: int, seed: int, rank: int):
 
 def setup_wandb():
     """Setup Weights & Biases authentication."""
-    if "WANDB_API_TOKEN" in os.environ:
-        wandb.login(key=os.environ["WANDB_API_TOKEN"], relogin=True)
+    if "WANDB_API_KEY" in os.environ:
+        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
         logger = logging.getLogger("[INIT]")
-        logger.info("✅ Logged into wandb using WANDB_API_TOKEN")
+        logger.info("✅ Logged into wandb using WANDB_API_KEY")
     else:
         logger = logging.getLogger("[INIT]")
-        logger.warning("⚠️  WANDB_API_TOKEN not set - wandb may prompt for login")
+        logger.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
 
 
 # -----------------------------------------------------------------------------

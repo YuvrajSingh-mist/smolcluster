@@ -19,9 +19,6 @@ import torch
 import torchinfo
 import wandb
 import yaml
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
@@ -76,13 +73,13 @@ def load_data(batch_size: int, world_size: int, seed: int, rank: int):
 
 def setup_wandb():
     """Setup Weights & Biases authentication."""
-    if "WANDB_API_TOKEN" in os.environ:
-        wandb.login(key=os.environ["WANDB_API_TOKEN"], relogin=True)
+    if "WANDB_API_KEY" in os.environ:
+        wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
         logger = logging.getLogger("[INIT]")
-        logger.info("✅ Logged into wandb using WANDB_API_TOKEN")
+        logger.info("✅ Logged into wandb using WANDB_API_KEY")
     else:
         logger = logging.getLogger("[INIT]")
-        logger.warning("⚠️  WANDB_API_TOKEN not set - wandb may prompt for login")
+        logger.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
 
 
 def run_server(hostname: str):

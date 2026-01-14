@@ -1,9 +1,12 @@
 #!/bin/bash
 
-# SmolCluster Launch Script - EDP Version
-# Launches distributed training across Mac mini nodes via SSH using EDP (Elastic Distributed Parameter server)
+# Load environment variables from .env
+if [[ -f ".env" ]]; then
+    export $(grep -v '^#' .env | xargs)
+fi
 
-set -e  # Exit on any error
+# Set WANDB_API_KEY for wandb compatibility
+export WANDB_API_KEY="$WANDB_API_TOKEN"
 
 # Configuration
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,21 +35,6 @@ fi
 echo "🚀 SmolCluster Launch Script - EDP Version"
 echo "📁 Project dir: $PROJECT_DIR"
 echo "⚙️  Config file: $CONFIG_FILE"
-
-# Enforce wandb login
-echo ""
-echo "🔐 Weights & Biases (wandb) Authentication"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if [[ -z "$WANDB_API_KEY" ]]; then
-    echo "⚠️  WANDB_API_KEY not set. Please provide your API key."
-    echo "Get your API key from: https://wandb.ai/authorize"
-    echo ""
-    read -p "Enter WANDB_API_KEY: " WANDB_API_KEY
-    if [[ -z "$WANDB_API_KEY" ]]; then
-        echo "❌ No API key provided. Exiting."
-        exit 1
-    fi
-fi
 
 # Verify the API key works by setting it as env var and testing
 export WANDB_API_KEY
