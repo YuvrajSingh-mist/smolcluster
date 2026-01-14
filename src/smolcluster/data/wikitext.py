@@ -51,7 +51,7 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         shuffle=False,
         collate_fn=collate_fn,
         persistent_workers=True,
-        prefetch_factor=2
+        # prefetch_factor=2
     )
     
 
@@ -63,7 +63,7 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         shuffle=True,
         collate_fn=collate_fn,
         persistent_workers=True,
-        prefetch_factor=2
+        # prefetch_factor=2
     )
     
     return train_loader, val_loader, len(tokenizer), tokenizer.pad_token_id
