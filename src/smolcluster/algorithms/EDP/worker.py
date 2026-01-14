@@ -337,7 +337,7 @@ def run_edp_worker(
                 logger.info("Tracking gradients in wandb...")
                 for name, param in model.named_parameters():
                     if param.grad is not None:
-                        logger.info(f"Logging gradients for layer: {name}")
+                        # logger.info(f"Logging gradients for layer: {name}")
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
                         wandb.log(
                             {
