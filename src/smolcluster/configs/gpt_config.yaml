@@ -35,7 +35,7 @@ tokenizer: "openai-community/gpt2"  # HuggingFace tokenizer
 project_name: "smolcluster-gpt-wikitext2"
 log_interval: 50           # Steps between logging
 checkpoint_interval: 5     # Epochs between checkpoints
-
+track_gradients : true      # Whether to track gradient norms
 # Output
 
 output_dir: null           # Output directory (auto-generated if null)
