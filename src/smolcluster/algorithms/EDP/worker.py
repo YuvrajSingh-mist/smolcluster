@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import socket
 import subprocess
@@ -34,6 +35,34 @@ logger = logging.getLogger("[WORKER]")
 # Global variables for model versioning
 model_version = 0
 recv_model_version = -1
+
+
+def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
+    """Create learning rate schedule with linear warmup and cosine decay.
+    
+    Args:
+        warmup_iters: Number of warmup iterations
+        max_iters: Total training iterations
+        learning_rate: Peak learning rate (after warmup)
+        min_lr: Minimum learning rate (end of decay)
+    
+    Returns:
+        Function that takes step and returns learning rate
+    """
+    def get_lr(step):
+        # Linear warmup
+        if step < warmup_iters:
+            return learning_rate * (step + 1) / warmup_iters
+        
+        # Cosine decay after warmup
+        if step > max_iters:
+            return min_lr
+        
+        decay_ratio = (step - warmup_iters) / (max_iters - warmup_iters)
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+        return min_lr + coeff * (learning_rate - min_lr)
+    
+    return get_lr
 
 
 def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
@@ -177,6 +206,18 @@ def run_edp_worker(
     learning_rate = config["learning_rate"]
     use_quantization = cluster_config.get("use_quantization", True)
     worker_update_interval = cluster_config.get("worker_update_interval", 5)
+    
+    # Learning rate scheduler setup
+    use_lr_scheduler = config.get("use_lr_scheduler", False)
+    total_steps = num_epochs * len(train_loader)
+    if use_lr_scheduler:
+        warmup_iters = config["warmup_iters"]
+        min_lr = config["min_lr"]
+        get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
+        logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
+    else:
+        get_lr_fn = None
+        logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
 
     # Initialize W&B for worker
     wandb.init(
@@ -229,6 +270,14 @@ def run_edp_worker(
     for step in range(total_steps):
         model.train()
         epoch = step // len(train_loader)
+        
+        # Update learning rate if scheduler enabled
+        if get_lr_fn is not None:
+            current_lr = get_lr_fn(step)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
+        else:
+            current_lr = learning_rate
 
         # Fetch next batch, cycling through dataset
         try:
@@ -363,6 +412,7 @@ def run_edp_worker(
                     "epoch": epoch,
                     "losses/val": val_loss,
                     "losses/train_batch": loss.item(),
+                    "lr": current_lr,
                 }
             )
             logger.info(
@@ -375,6 +425,7 @@ def run_edp_worker(
                     "step": step,
                     "epoch": epoch,
                     "losses/train_batch": loss.item(),
+                    "lr": current_lr,
                 }
             )
 

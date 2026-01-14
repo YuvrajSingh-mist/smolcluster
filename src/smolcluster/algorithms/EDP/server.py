@@ -1,5 +1,6 @@
 import gc
 import logging
+import math
 import os
 import socket
 import sys
@@ -42,6 +43,34 @@ model_version = 0  # Track global model version for elastic training
 
 workers = {}
 workers_grads_received = {}  # Single dict for all worker gradients: {(rank, recv_step, worker_version): grads}
+
+
+def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
+    """Create learning rate schedule with linear warmup and cosine decay.
+    
+    Args:
+        warmup_iters: Number of warmup iterations
+        max_iters: Total training iterations
+        learning_rate: Peak learning rate (after warmup)
+        min_lr: Minimum learning rate (end of decay)
+    
+    Returns:
+        Function that takes step and returns learning rate
+    """
+    def get_lr(step):
+        # Linear warmup
+        if step < warmup_iters:
+            return learning_rate * (step + 1) / warmup_iters
+        
+        # Cosine decay after warmup
+        if step > max_iters:
+            return min_lr
+        
+        decay_ratio = (step - warmup_iters) / (max_iters - warmup_iters)
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+        return min_lr + coeff * (learning_rate - min_lr)
+    
+    return get_lr
 
 
 def load_data(
@@ -199,6 +228,18 @@ def run_edp_server(
     track_gradients = config["track_gradients"]
     learning_rate = config["learning_rate"]
     use_quantization = cluster_config["use_quantization"]
+    
+    # Learning rate scheduler setup
+    use_lr_scheduler = config.get("use_lr_scheduler", False)
+    total_steps = num_epochs * len(train_loader)
+    if use_lr_scheduler:
+        warmup_iters = config["warmup_iters"]
+        min_lr = config["min_lr"]
+        get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
+        logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
+    else:
+        get_lr_fn = None
+        logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
     
     # Checkpoint settings
     save_checkpoints = config.get("save_checkpoints", False)
@@ -401,6 +442,14 @@ def run_edp_server(
 
     for step in range(total_steps):
         model.train()
+        
+        # Update learning rate if scheduler enabled
+        if get_lr_fn is not None:
+            current_lr = get_lr_fn(step)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
+        else:
+            current_lr = learning_rate
 
         try:
             batch = next(train_iter)
@@ -563,7 +612,7 @@ def run_edp_server(
                 {
                     "step": step,
                     "epoch": epoch + 1,
-                    "lr": learning_rate,
+                    "lr": current_lr,
                     "batch_size": batch_size,
                 }
             )

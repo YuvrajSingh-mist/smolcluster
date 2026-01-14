@@ -22,7 +22,8 @@ eval_steps: 200             # Evaluation steps interval
 
 # Learning Rate Schedule
 
-warmup_iters: 100          # Linear warmup iterations
+use_lr_scheduler: true     # Enable/disable learning rate scheduling
+warmup_iters: 400          # Linear warmup iterations
 min_lr: 0.00006              # Minimum learning rate for cosine decay
 
 # Data
