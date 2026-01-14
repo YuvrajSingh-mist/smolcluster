@@ -90,7 +90,7 @@ def evaluate(
                 val_iter = iter(val_loader)
                 data, target = next(val_iter)
 
-            data, target = data.to(get_device()), target.to(get_device())
+            data, target = data.to(device), target.to(device)
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_val_loss += loss.item()
@@ -112,8 +112,7 @@ def compute_leader_gradients(
     config: dict,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     model.train()
-    device = next(model.parameters()).device
-    data, target = data.to(device), target.to(device)
+    # data, target = data.to(device), target.to(device)
     output = model(data)
     B,T,C = output.shape
     output = output.view(B*T, C)
@@ -391,11 +390,11 @@ def run_edp_server(
             train_iter = iter(train_loader)
             batch = next(train_iter)
 
-        data = batch[0].to(get_device())
-        target = batch[1].to(get_device())
+        data = batch[0].to(device)
+        target = batch[1].to(device)
 
         epoch = step // len(train_loader)
-
+        
         # Compute leader gradients
         leader_loss, leader_grads = compute_leader_gradients(
             model, data, target, criterion, optimizer, config
@@ -439,10 +438,10 @@ def run_edp_server(
                     # Polyak averaging: blend worker model with current model
                     worker_weights = worker_data["data"]
                     worker_weights = {
-                        k: v.to(get_device()) for k, v in worker_weights.items()
+                        k: v.to(device) for k, v in worker_weights.items()
                     }
                     current_weights = {
-                        k: v.to(get_device()) for k, v in current_weights.items()
+                        k: v.to(device) for k, v in current_weights.items()
                     }
 
                     blended_weights, staleness_factor = polyak_average_weights(
@@ -578,10 +577,10 @@ def run_edp_server(
                     worker_weights = worker_data["data"]
 
                     worker_weights = {
-                        k: v.to(get_device()) for k, v in worker_weights.items()
+                        k: v.to(device) for k, v in worker_weights.items()
                     }
                     current_weights = {
-                        k: v.to(get_device()) for k, v in current_weights.items()
+                        k: v.to(device) for k, v in current_weights.items()
                     }
 
                     blended_weights, staleness_factor = polyak_average_weights(

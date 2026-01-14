@@ -170,18 +170,7 @@ class BaseTransformer(nn.Module):
 
         hidden_states = self.ln_f(hidden_states)
         logits = self.lm_head(hidden_states)
-
-        loss = None
-        if labels is not None:
-            shift_logits = logits[:, :-1, :].contiguous()
-            shift_labels = labels[:, 1:].contiguous()
-            loss = F.cross_entropy(
-                shift_logits.view(-1, self.vocab_size),
-                shift_labels.view(-1),
-                ignore_index=-100,
-            )
-
-        return logits, loss
+        return logits
 
     def get_num_params(self) -> int:
         """Get the total number of parameters in the model.
