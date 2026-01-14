@@ -219,23 +219,29 @@ def run_edp_worker(
 
     # Initialize iterator for continuous training
     train_iter = iter(train_loader)
-
+    # Main training loop
+    model = model.to(device)
+    
     for step in range(total_steps):
         model.train()
         epoch = step // len(train_loader)
 
         # Fetch next batch, cycling through dataset
         try:
-            data, target = next(train_iter)
+            batch = next(train_iter)
         except StopIteration:
             train_iter = iter(train_loader)
-            data, target = next(train_iter)
+            batch = next(train_iter)
 
         logger.info("Performing local forward and backward pass.")
         # optimizer.zero_grad()
-        data, target = data.to(get_device()), target.to(get_device())
+        data, target = batch[0].to(device), batch[1].to(device)
 
-        output = model(data.view(data.size(0), -1))
+        output = model(data)
+        B,T,C = output.shape
+        output = output.view(B*T, C)
+        target = target.view(B*T)
+        
         loss = criterion(output, target)
 
         loss.backward()

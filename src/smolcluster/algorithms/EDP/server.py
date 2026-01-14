@@ -114,7 +114,10 @@ def compute_leader_gradients(
     model.train()
     device = next(model.parameters()).device
     data, target = data.to(device), target.to(device)
-    output = model(data.view(data.size(0), -1))
+    output = model(data)
+    B,T,C = output.shape
+    output = output.view(B*T, C)
+    target = target.view(B*T)
     loss = criterion(output, target)
     optimizer.zero_grad()
     loss.backward()
@@ -383,13 +386,13 @@ def run_edp_server(
         model.train()
 
         try:
-            data, target = next(train_iter)
+            batch = next(train_iter)
         except StopIteration:
             train_iter = iter(train_loader)
-            data, target = next(train_iter)
+            batch = next(train_iter)
 
-        data = data.to(get_device())
-        target = target.to(get_device())
+        data = batch[0].to(get_device())
+        target = batch[1].to(get_device())
 
         epoch = step // len(train_loader)
 
