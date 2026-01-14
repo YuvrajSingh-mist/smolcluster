@@ -458,9 +458,8 @@ def run_edp_server(
                     )
 
                     # Update model with blended weights
-                    print(model.state_dict().keys())
-                    print(blended_weights.keys())
-                    model.load_state_dict(blended_weights)
+
+                    model.load_state_dict(blended_weights, strict=False)
 
                     current_weights = blended_weights  # Update for next worker
 
@@ -599,7 +598,7 @@ def run_edp_server(
                     )
 
                     # Update model with blended weights
-                    model.load_state_dict(blended_weights)
+                    model.load_state_dict(blended_weights, strict=False)
                     current_weights = blended_weights  # Update for next worker
 
                     with lock:
