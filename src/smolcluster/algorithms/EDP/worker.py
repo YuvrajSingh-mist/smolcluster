@@ -64,14 +64,14 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
     return train_loader, val_loader
 
 
-def evaluate(model, val_loader, criterion):
+def evaluate(device, model, val_loader, criterion):
     model.eval()
     total_loss = 0.0
     correct = 0
     total = 0
     with torch.no_grad():
         for data, target in val_loader:
-            data, target = data.to(get_device()), target.to(get_device())
+            data, target = data.to(device), target.to(device)
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_loss += loss.item()
@@ -310,7 +310,7 @@ def run_edp_worker(
 
                 if use_quantization:
                     dequant_weights = dequantize_model_weights(
-                        weights, device=get_device()
+                        weights, device=device
                     )
                     model.load_state_dict(dequant_weights)
                 else:
@@ -352,7 +352,7 @@ def run_edp_worker(
 
         # Run evaluation every eval_steps
         if step % eval_steps == 0:
-            val_loss, val_accuracy = evaluate(model, val_loader, criterion)
+            val_loss, val_accuracy = evaluate(device, model, val_loader, criterion)
             wandb.log(
                 {
                     "step": step,
