@@ -50,7 +50,8 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         batch_size=config['batch_size'], 
         shuffle=False,
         collate_fn=collate_fn,
-        persistent_workers=True,
+        num_workers=0
+        # persistent_workers=True,
         # prefetch_factor=2
     )
     
@@ -62,7 +63,8 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         batch_size=config['batch_size'], 
         shuffle=True,
         collate_fn=collate_fn,
-        persistent_workers=True,
+        num_workers=0
+        # persistent_workers=True,
         # prefetch_factor=2
     )
     
