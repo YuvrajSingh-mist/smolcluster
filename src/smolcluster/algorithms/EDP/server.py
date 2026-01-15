@@ -429,8 +429,11 @@ def run_edp_server(
             logger.info("Gradient tracking complete.")
 
             
-
-        for _ in range(MAX_MSGS_PER_STEP):
+        start_time = time.time()
+        
+        while time.time() - start_time < 0.1:
+            
+        # for _ in range(MAX_MSGS_PER_STEP):
             
             try:
                 message, conn, addr = bounded_queue.get_nowait()
