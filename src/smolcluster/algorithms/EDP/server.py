@@ -493,10 +493,11 @@ def run_edp_server(
                 
                 if use_quantization:
                     quantized_weights = quantize_model_weights(weights)
-                    send_message(conn, (quantized_weights, model_version))
+                    threading.Thread(target=send_message, args=(conn, (quantized_weights, model_version)), daemon=True).start()
                     logger.info(f"Quantized weights sent to worker {addr}")
                 else:
-                    send_message(conn, (weights, model_version))
+                    threading.Thread(target=send_message, args=(conn, (weights, model_version)), daemon=True).start()
+                    
                     logger.info(f"Weights sent to worker {addr}")
 
             elif command == "disconnect":
