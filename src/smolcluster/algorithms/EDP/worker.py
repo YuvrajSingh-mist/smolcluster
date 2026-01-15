@@ -65,33 +65,6 @@ def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     return get_lr
 
 
-def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
-    # load MNIST
-    transforms = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize((0.5,), (0.5,)),
-        ]
-    )
-    DATA_DIR = Path(__file__).parent.parent.parent / "data"
-    data = torchvision.datasets.MNIST(
-        str(DATA_DIR), download=True, transform=transforms
-    )
-    lendata = len(data)
-    torch.manual_seed(SEED)
-    trainset, testset = torch.utils.data.random_split(
-        data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
-    )
-    val_loader = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False, num_workers=0
-    )
-    batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
-    train_data = torch.utils.data.Subset(trainset, batch_indices[local_rank])
-    train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=False, num_workers=0
-    )
-    return train_loader, val_loader
-
 
 def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
     model.eval()

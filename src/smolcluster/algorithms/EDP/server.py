@@ -10,7 +10,6 @@ from pathlib import Path
 
 import torch
 import torchinfo
-import torchvision
 import wandb
 import yaml
 from torch.utils.data import DataLoader
@@ -73,42 +72,13 @@ def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     return get_lr
 
 
-def load_data(
-    batch_size: int, WORLD_SIZE: int, SEED: int, RANK: int
-) -> tuple[DataLoader, DataLoader]:
-    # load MNIST
-    transforms = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize((0.5,), (0.5,)),
-        ]
-    )
-    data = torchvision.datasets.MNIST(
-        "../../../data", download=True, transform=transforms
-    )
-    lendata = len(data)
-    torch.manual_seed(SEED)
-    trainset, testset = torch.utils.data.random_split(
-        data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
-    )
-    val_loader = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
-    )
-    batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
-    train_data = torch.utils.data.Subset(trainset, batch_indices[RANK])
-    train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
-    )
-    return train_loader, val_loader
-
 
 def evaluate(
     device: torch.device, model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module, decoder_type_ppl: bool = False
 ) -> tuple[float, float]:
     model.eval()
     total_val_loss = 0.0
-    correct = 0
-    total = 0
+    
     val_iter = iter(val_loader)
 
     with torch.no_grad():
@@ -519,7 +489,7 @@ def run_edp_server(
                     model, leader_loss = compute_leader_loss(
                         model, data, target, criterion, optimizer
                     )
-                    logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader loss.")
+                    logger.info(f"Epoch {epoch + 1}, Step: {step / total_steps}: Computed leader loss.")
 
                     total_loss += leader_loss.item()
                     
@@ -530,7 +500,7 @@ def run_edp_server(
 
                     optimizer.step()
                     logger.info(
-                        f"Applied leader gradients with workers. Step {step}: Updated to model version {model_version}"
+                        f"Applied leader gradients with workers. Step {step / total_steps}: Updated to model version {model_version}"
                     )
                      # Calculate and log PPL for decoder models
                     if decoder_type_ppl:
@@ -548,7 +518,7 @@ def run_edp_server(
         model, leader_loss = compute_leader_loss(
             model, data, target, criterion, optimizer
         )
-        logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader loss.")
+        logger.info(f"Epoch {epoch + 1}, Step: {step / total_steps}: Computed leader loss.")
 
         total_loss += leader_loss.item()
         
@@ -570,11 +540,11 @@ def run_edp_server(
 
 
         logger.info(
-            f"Applied leader gradients. Step {step}: Updated to model version {model_version}"
+            f"Applied leader gradients. Step {step / total_steps}: Updated to model version {model_version}"
         )
 
         logger.info(
-            f"Epoch {epoch + 1}, Step: {step}: Step loss = {leader_loss.item():.4f}"
+            f"Epoch {epoch + 1}, Step: {step / total_steps}: Step loss = {leader_loss.item():.4f}"
         )
         
         # Calculate tokens/sec throughput

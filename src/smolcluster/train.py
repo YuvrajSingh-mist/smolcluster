@@ -52,7 +52,7 @@ def load_configs():
 
 
 def load_data(config, world_size: int, seed: int, rank: int):
-    """Load Wikitext-2 dataset for the given rank."""
+    """dataset for the given rank."""
     
     train_loader, val_loader, vocab_size, pad_token_id = prepare_dataset(config, world_size, seed, rank)
     
@@ -70,94 +70,6 @@ def setup_wandb():
         logger.warning("⚠️  WANDB_API_KEY not set - wandb may prompt for login")
 
 
-# -----------------------------------------------------------------------------
-# Training
-# -----------------------------------------------------------------------------
-
-def train_epoch(model, dataloader, optimizer, get_lr_fn, device, epoch, log_interval=50, global_step=0, grad_clip_norm=1.0):
-    """Train for one epoch.
-
-    Args:
-        model: The model to train.
-        dataloader: DataLoader for training data.
-        optimizer: Optimizer.
-        get_lr_fn: Learning rate schedule function (or None for no scheduling).
-        device: Device to run on.
-        epoch (int): Current epoch number.
-        log_interval (int): Logging interval.
-        global_step (int): Global training step counter.
-        grad_clip_norm (float): Gradient clipping norm.
-
-    Returns:
-        tuple: (avg_loss, global_step)
-    """
-    model.train()
-    total_loss = 0
-    total_tokens = 0
-    start_time = time.time()
-
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    for step, (x, y) in enumerate(pbar):
-        x, y = x.to(device), y.to(device)
-
-        # Update learning rate if scheduler provided
-        if get_lr_fn is not None:
-            lr = get_lr_fn(global_step)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-
-        optimizer.zero_grad()
-        
-        _, loss = model(x, labels=y)
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-        optimizer.step()
-        
-        global_step += 1
-
-        total_loss += loss.item() * x.size(0)
-        total_tokens += x.numel()
-
-        if step % log_interval == 0:
-            elapsed = time.time() - start_time
-            tok_per_sec = total_tokens / elapsed if elapsed > 0 else 0
-            current_lr = optimizer.param_groups[0]['lr']
-            pbar.set_postfix({
-                "loss": f"{loss.item():.4f}",
-                "ppl": f"{loss.exp().item():.2f}",
-                "lr": f"{current_lr:.2e}",
-                "tok/s": f"{tok_per_sec:.0f}",
-                "grad_norm": f"{grad_norm.item():.4f}",
-            })
-
-    avg_loss = total_loss / len(dataloader.dataset)
-    return avg_loss, global_step
-
-
-@torch.no_grad()
-def evaluate(model, dataloader, device):
-    """Evaluate the model on validation/test set.
-
-    Args:
-        model: The model to evaluate.
-        dataloader: DataLoader for evaluation data.
-        device: Device to run on.
-
-    Returns:
-        tuple: (avg_loss, perplexity)
-    """
-    model.eval()
-    total_loss = 0
-    total_count = 0
-
-    for x, y in dataloader:
-        x, y = x.to(device), y.to(device)
-        _, loss = model(x, labels=y)
-        total_loss += loss.item() * x.size(0)
-        total_count += x.size(0)
-
-    avg_loss = total_loss / total_count
-    return avg_loss, torch.exp(torch.tensor(avg_loss)).item()
 
 
 def run_server(hostname: str):
@@ -249,7 +161,7 @@ def run_worker(worker_rank: int, hostname: str):
     port = cluster_config["port"]
     
     # Load data
-    logger.info("Loading Wikitext-2 dataset...")
+    logger.info(f"Loading {gpt_config.get('dataset_name', 'dataset')} dataset...")
     train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, local_rank)
     logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
     
