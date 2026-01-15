@@ -23,7 +23,7 @@ def receive_message(sock: socket.SocketType) -> dict:
     data = b""
     remaining = msglen
     while remaining > 0:
-        chunk_size = min(4096, remaining)  # Read in 4KB chunks for speed
+        chunk_size = min(1048576 * 4, remaining)  # Read in 1MB chunks for speed
         chunk = sock.recv(chunk_size)
         if not chunk:
             raise ConnectionError("Socket connection broken while receiving message")
