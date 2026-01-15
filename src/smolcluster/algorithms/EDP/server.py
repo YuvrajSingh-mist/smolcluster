@@ -505,7 +505,8 @@ def run_edp_server(
                 )
 
             elif command == "pull_weights":
-                command, rank, worker_version = payload
+                rank = payload["rank"]
+                worker_version = payload["model_version"]
                 logger.info(
                     f"Worker rank {rank} at {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
                 )
