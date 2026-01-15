@@ -404,8 +404,8 @@ def run_edp_worker(
                         "non-blocking socket error while performing polyark averaging."
                     )
                     logger.info("Will retry polyark averaging in the next interval.")
-                    # Backoff with random interval [10, 20, 30, 40, 50] + worker_rank offset to desynchronize
-                    backoff_interval = random.choice([10, 20, 30, 40, 50]) + worker_rank
+                    # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
+                    backoff_interval = random.choice([10, 20, 30, 40, 50])
                     polyark_average_update = backoff_interval
                     logger.info(f"Backoff: next polyark averaging at interval {backoff_interval}")
                     
@@ -427,8 +427,8 @@ def run_edp_worker(
                     "non-blocking socket error while requesting weights from server."
                 )
                 logger.info("Will retry pulling weights in the next interval.")
-                # Backoff with random interval [10, 20, 30, 40, 50] + worker_rank offset to desynchronize
-                backoff_interval = random.choice([10, 20, 30, 40, 50]) + worker_rank
+                # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
+                backoff_interval = random.choice([10, 20, 30, 40, 50])
                 worker_update_interval = backoff_interval
                 logger.info(f"Backoff: next weight pull at interval {backoff_interval}")
                 
