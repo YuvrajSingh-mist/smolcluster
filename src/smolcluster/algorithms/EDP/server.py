@@ -545,10 +545,10 @@ def run_edp_server(
                     set_gradients(scaled_grads, model)
 
                     # Gradient clipping
-                    if config.get("gradient_clipping", {}).get("enabled", False):
-                        max_norm = config["gradient_clipping"].get("max_norm", 1.0)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-
+                    if config.get("grad_clip_norm",0.0) != 0:
+                     max_norm = config["grad_clip_norm"]
+                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            
                     optimizer.step()
 
                     with lock:
@@ -562,8 +562,8 @@ def run_edp_server(
         set_gradients(leader_grads, model)
 
         # Gradient clipping
-        if config.get("gradient_clipping", {}).get("enabled", False):
-            max_norm = config["gradient_clipping"].get("max_norm", 1.0)
+        if config.get("grad_clip_norm",0.0) != 0:
+            max_norm = config["grad_clip_norm"]
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
         optimizer.step()
