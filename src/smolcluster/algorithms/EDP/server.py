@@ -534,7 +534,7 @@ def run_edp_server(
                     else:
                         optimizer.step()
                     logger.info(
-                        f"Applied leader gradients with workers. Step {step / total_steps}: Updated to model version {model_version}"
+                        f"Applied leader gradients with workers. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
                     )
                      # Calculate and log PPL for decoder models
                     if decoder_type_ppl:
@@ -554,7 +554,7 @@ def run_edp_server(
             model, leader_loss = compute_leader_loss(
                 model, data, target, criterion, optimizer, config, use_fp16, scaler
             )
-            logger.info(f"Epoch {epoch + 1}, Step: {step / total_steps}: Computed leader loss.")
+            logger.info(f"Epoch {epoch + 1}, Step: {step} +  '/' + {total_steps}: Computed leader loss.")
 
             total_loss += leader_loss.item()
             
@@ -581,11 +581,11 @@ def run_edp_server(
 
 
         logger.info(
-            f"Applied leader gradients. Step {step / total_steps}: Updated to model version {model_version}"
+            f"Applied leader gradients. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
         )
 
         logger.info(
-            f"Epoch {epoch + 1}, Step: {step / total_steps}: Step loss = {leader_loss.item():.4f}"
+            f"Epoch {epoch + 1}, Step: {step} +  '/' + {total_steps}: Step loss = {leader_loss.item():.4f}"
         )
         
         # Calculate tokens/sec throughput
