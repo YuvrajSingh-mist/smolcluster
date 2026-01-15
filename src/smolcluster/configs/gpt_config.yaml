@@ -28,8 +28,9 @@ min_lr: 0.00003              # Minimum learning rate for cosine decay
 
 # Data
 
-dataset_name: "wikitext-103-v1"       # Dataset name
-tokenizer: "openai-community/gpt2"  # HuggingFace tokenizer
+dataset_name: "wikitext"              # Dataset name
+dataset_config: "wikitext-103-v1"     # Dataset configuration/subset
+tokenizer: "openai-community/gpt2"    # HuggingFace tokenizer
 
 # Logging & Checkpoints
 
