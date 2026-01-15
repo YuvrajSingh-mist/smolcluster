@@ -401,7 +401,7 @@ def run_edp_worker(
             logger.info(f"Pulling weights from server at step {step}.")
             
             try:
-                send_message(sock, ("pull_weights", model_version))
+                send_message(sock, ("pull_weights", worker_rank, model_version))
                 logger.info("Requested weights from server.")
                 
                 backoff_interval = random.choice([10, 20, 30, 40, 50])

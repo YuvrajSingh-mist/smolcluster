@@ -11,19 +11,14 @@ from pathlib import Path
 import torch
 import torchinfo
 import wandb
-import yaml
 from torch.utils.data import DataLoader
 
-from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.common_utils import (
-    get_gradients,
     get_weights,
     receive_message,
     send_message,
-    set_gradients,
 )
-from smolcluster.utils.data import get_data_indices
-from smolcluster.utils.device import get_device
+
 from smolcluster.utils.quantization import (
     dequantize_model_weights,
     quantize_model_weights,
@@ -50,7 +45,7 @@ def sender_loop(sock, send_queue):
     """Sender thread that processes messages from a queue using send_message."""
     while True:
         try:
-            msg = send_queue.get(timeout=0.1)
+            msg = send_queue.get(timeout=0.01)
             send_message(sock, msg)
         except Exception as e:
             # Queue timeout or socket error
@@ -493,7 +488,7 @@ def run_edp_server(
                             "data": weights,
                         }
                 elif "weights" in payload:
-                    # Legacy: Full float32 weights (no compression)
+                    
                     weights = payload["weights"]
                     logger.info(
                         f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
@@ -504,14 +499,13 @@ def run_edp_server(
                             "data": weights,
                         }
                 
-                # gradients_event.set()
+                
                 logger.info(
                     f"Data stored successfully for worker {rank} at step {recv_step}"
                 )
 
             elif command == "pull_weights":
-                rank = payload.get("rank") if isinstance(payload, dict) else None
-                worker_version = payload.get("worker_version") if isinstance(payload, dict) else payload
+                command, rank, worker_version = payload
                 logger.info(
                     f"Worker rank {rank} at {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
                 )
