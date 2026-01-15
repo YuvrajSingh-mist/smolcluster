@@ -457,12 +457,7 @@ def run_edp_server(
         epoch = step // len(train_loader)
         
        
-        # Calculate and log PPL for decoder models
-        if decoder_type_ppl:
-            train_ppl = math.exp(leader_loss.item())
-            if step % 50 == 0:
-                wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
-
+       
         if track_gradients:
             logger.info("Tracking gradients in wandb...")
             for name, param in model.named_parameters():
@@ -536,7 +531,12 @@ def run_edp_server(
                     logger.info(
                         f"Applied leader gradients with workers. Step {step}: Updated to model version {model_version}"
                     )
-                    
+                     # Calculate and log PPL for decoder models
+                    if decoder_type_ppl:
+                        train_ppl = math.exp(total_loss / (step + 1))
+                        if step % 50 == 0:
+                            wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+
                     with lock:
                         model_version += 1
 
@@ -551,6 +551,12 @@ def run_edp_server(
 
         total_loss += leader_loss.item()
         
+         # Calculate and log PPL for decoder models
+        if decoder_type_ppl:
+            train_ppl = math.exp(total_loss / (step + 1))
+            if step % 50 == 0:
+                wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+
         # Gradient clipping
         if config.get("grad_clip_norm", 0.0) != 0.0:
             max_norm = config["grad_clip_norm"]
