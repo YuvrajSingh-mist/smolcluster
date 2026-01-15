@@ -47,27 +47,17 @@ workers_grads_received = {}  # Single dict for all worker gradients: {(rank, rec
 
 
 def sender_loop(sock, send_queue):
-    """Non-blocking sender thread that processes messages from a queue."""
-    from smolcluster.utils.common_utils import serialize
-    
-    sock.setblocking(False)
-    buffer = b""
-
+    """Sender thread that processes messages from a queue using send_message."""
     while True:
-        if not buffer:
-            try:
-                msg = send_queue.get(timeout=0.01)
-                buffer = serialize(msg)
-            except:
-                continue
-
         try:
-            sent = sock.send(buffer)
-            buffer = buffer[sent:]
-        except BlockingIOError:
-            time.sleep(0.001)
-        except OSError:
-            break
+            msg = send_queue.get(timeout=0.1)
+            send_message(sock, msg)
+        except Exception as e:
+            # Queue timeout or socket error
+            if isinstance(e, OSError):
+                logger.error(f"Socket error in sender_loop: {e}")
+                break
+            continue
 
 
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
