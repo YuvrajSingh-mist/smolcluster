@@ -390,6 +390,14 @@ def run_edp_server(
                     logger.info(f"Worker {rank} registered from {client_address}")
                     with lock:
                         workers[rank] = client_socket
+                    
+                    # Send start signal immediately to this worker
+                    try:
+                        send_message(client_socket, "start_training")
+                        logger.info(f"Sent start_training signal to worker {rank}")
+                    except Exception as e:
+                        logger.error(f"Error sending start signal to worker {rank}: {e}")
+                    
                     threading.Thread(
                         target=handle_worker,
                         args=(client_socket, client_address),
@@ -419,16 +427,7 @@ def run_edp_server(
     # Give workers a moment to connect
     time.sleep(2)
 
-
     logger.info(f"Starting training for {num_epochs} epochs.")
-
-    # Send start signal to all connected workers
-    with lock:
-        for worker_socket in workers.values():
-            try:
-                send_message(worker_socket, "start_training")
-            except Exception as e:
-                logger.error(f"Error sending start signal to worker: {e}")
 
     train_iter = iter(train_loader)
     total_steps = num_epochs * len(train_loader)

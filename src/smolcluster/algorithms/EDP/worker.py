@@ -260,21 +260,31 @@ def run_edp_worker(
 
     total_steps = num_epochs * len(train_loader)
 
-    # Wait for start signal or timeout and start anyway
-    logger.info("Waiting for start_training signal from server (max 5 seconds)...")
+    # Wait for start signal from server (error if not received)
+    logger.info("Waiting for start_training signal from server (max 10 seconds)...")
     start_time = time.time()
-    while time.time() - start_time < 5:
+    received_start_signal = False
+    
+    while time.time() - start_time < 10:
         sock.settimeout(0.1)
         try:
             recv_command = receive_message(sock)
             if recv_command == "start_training":
                 logger.info("Received start_training command from server.")
+                received_start_signal = True
                 break
         except socket.timeout:
             pass
-
-    logger.info("Starting training loop...")
+    
     sock.settimeout(None)  # Reset to blocking
+    
+    if not received_start_signal:
+        logger.error("Failed to receive start_training signal from server within timeout!")
+        sock.close()
+        wandb.finish()
+        raise RuntimeError("Worker did not receive start signal from server. Server may not be ready or connection issue.")
+    
+    logger.info("Starting training loop...")
 
     # Initialize iterator for continuous training
     train_iter = iter(train_loader)
@@ -436,6 +446,7 @@ def run_edp_worker(
                 sock.setblocking(True)  # Restore blocking socket
                 
             sock.settimeout(1.0)  # Wait up to 1 second for weights
+            
             try:
                 weights, new_version = receive_message(sock)
 
