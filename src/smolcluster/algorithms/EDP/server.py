@@ -458,7 +458,7 @@ def run_edp_server(
         
        
        
-        if track_gradients and step % 200 == 0:
+        if track_gradients and step % 1000 == 0:
             logger.info("Tracking gradients in wandb...")
             for name, param in model.named_parameters():
                 if param.grad is not None:
