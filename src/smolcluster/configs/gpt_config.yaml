@@ -3,8 +3,8 @@
 
 # Model Architecture
 
-vocab_size: null  # Will be set from tokenizer (GPT2)
-model_dim: 768    # Model dimension 
+vocab_size: null  # Will be set from tokenizer
+model_dim: 256    # Model dimension 
 num_layers: 6     # Number of layers (paper: 6 or 12)
 num_heads: 4      # Number of attention heads (paper: 4)
 ff_dim: 768      # Feed-forward dimension (paper: 1024)

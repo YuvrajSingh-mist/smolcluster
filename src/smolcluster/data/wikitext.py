@@ -38,9 +38,9 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         return input_ids, labels
 
     # Load full datasets
-    train_dataset = load_dataset("wikitext", "wikitext-103-v1", split="train")
+    train_dataset = load_dataset(config['dataset_name'], split="train")
     train_texts = [item["text"] for item in train_dataset if item["text"].strip()]
-    val_dataset = load_dataset("wikitext", "wikitext-103-v1", split="validation")
+    val_dataset = load_dataset(config['dataset_name'], split="validation")
     val_texts = [item["text"] for item in val_dataset if item["text"].strip()]
     
     # Create validation loader (same for all workers)

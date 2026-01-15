@@ -10,7 +10,7 @@ host_ip:
 port: 65432
 
 # Worker update settings
-worker_update_interval: 10  # How often workers pull latest weights (in steps)
+worker_update_interval: 50  # How often workers pull latest weights (in steps)
 
 # Quantization settings
 use_quantization: false  # Enable/disable weight quantization for communication
