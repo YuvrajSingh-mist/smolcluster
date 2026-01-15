@@ -22,7 +22,7 @@ polyark_average_update: 20  # How often to perform Polyark averaging (in steps)
 # Randomness seed
 seed: 42
 
-queue_size: 10
+queue_size: 1000  # Size of the gradient queue for each worker
 
 # Cluster configuration
 num_workers: 2

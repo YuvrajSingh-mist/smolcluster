@@ -241,7 +241,7 @@ def run_edp_server(
     
     #Defining the bounded queue
     bounded_queue = Queue(maxsize=cluster_config['queue_size'])
-    MAX_MSGS_PER_STEP = 8 #to how much messages from queue to process per step
+    MAX_MSGS_PER_STEP = 100 #to how much messages from queue to process per step
     
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
     scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
@@ -430,93 +430,79 @@ def run_edp_server(
 
             
 
-            for _ in range(MAX_MSGS_PER_STEP):
-                
-                try:
-                    message, conn, addr = bounded_queue.get_nowait()
-                except Exception as e:
-                    logging.error(f"Error getting message from queue: {e}")
-                    break
+        for _ in range(MAX_MSGS_PER_STEP):
+            
+            try:
+                message, conn, addr = bounded_queue.get_nowait()
+            except Exception as e:
+                logging.error(f"Error getting message from queue: {e}")
+                break
 
-                command, payload = message
+            command, payload = message
 
-                
-                if command == "polyark_averaging":
-                    recv_step = payload["step"]
-                    rank = payload["rank"]
-                    worker_version = payload["model_version"]
+            
+            if command == "polyark_averaging":
+                recv_step = payload["step"]
+                rank = payload["rank"]
+                worker_version = payload["model_version"]
 
-                    # Check if worker sent quantized weights, weights, or gradients
-                    if "quantized_weights" in payload:
-                        # New approach: Dequantize and use Polyak averaging
-                        quantized_weights = payload["quantized_weights"]
-                        logger.info(
-                            f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                        )
-                        # Dequantize weights back to float32 on the server's device
-                        device_str = str(device)
-                        weights = dequantize_model_weights(quantized_weights, device=device_str)
-                        
-                        with lock:
-                            workers_grads_received[(rank, recv_step, worker_version)] = {
-                                "type": "weights",
-                                "data": weights,
-                            }
-                    elif "weights" in payload:
-                        # Legacy: Full float32 weights (no compression)
-                        weights = payload["weights"]
-                        logger.info(
-                            f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                        )
-                        with lock:
-                            workers_grads_received[(rank, recv_step, worker_version)] = {
-                                "type": "weights",
-                                "data": weights,
-                            }
-                    else:
-                        # Old approach: Gradient scaling (kept for reference)
-                        grads = payload["grads"]
-                        logger.info(
-                            f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                        )
-                        with lock:
-                            workers_grads_received[(rank, recv_step, worker_version)] = {
-                                "type": "grads",
-                                "data": grads,
-                            }
-
-                    # gradients_event.set()
+                # Check if worker sent quantized weights, weights, or gradients
+                if "quantized_weights" in payload:
+                    # New approach: Dequantize and use Polyak averaging
+                    quantized_weights = payload["quantized_weights"]
                     logger.info(
-                        f"Data stored successfully for worker {rank} at step {recv_step}"
+                        f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
                     )
-
-                elif command == "pull_weights":
-                    worker_version = payload  # payload is the worker's current model version
-                    logger.info(
-                        f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
-                    )
-
-                    weights = get_weights(model)
+                    # Dequantize weights back to float32 on the server's device
+                    device_str = str(device)
+                    weights = dequantize_model_weights(quantized_weights, device=device_str)
                     
-                    
-                    if use_quantization:
-                        quantized_weights = quantize_model_weights(weights)
-                        send_message(conn, (quantized_weights, model_version))
-                        logger.info(f"Quantized weights sent to worker {addr}")
-                    else:
-                        send_message(conn, (weights, model_version))
-                        logger.info(f"Weights sent to worker {addr}")
-
-                elif command == "disconnect":
-                    logger.info(f"Worker {addr} requested disconnection.")
-                    #  Remove disconnected worker
                     with lock:
-                        workers.pop(addr, None)
-                    
-        # # Collect any available worker data (non-blocking with small timeout)
-        # gradients_event.wait(timeout=0.01)  # Very short wait
-        # gradients_event.clear()
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                elif "weights" in payload:
+                    # Legacy: Full float32 weights (no compression)
+                    weights = payload["weights"]
+                    logger.info(
+                        f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                
+                # gradients_event.set()
+                logger.info(
+                    f"Data stored successfully for worker {rank} at step {recv_step}"
+                )
 
+            elif command == "pull_weights":
+                worker_version = payload  # payload is the worker's current model version
+                logger.info(
+                    f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
+                )
+
+                weights = get_weights(model)
+                
+                
+                if use_quantization:
+                    quantized_weights = quantize_model_weights(weights)
+                    send_message(conn, (quantized_weights, model_version))
+                    logger.info(f"Quantized weights sent to worker {addr}")
+                else:
+                    send_message(conn, (weights, model_version))
+                    logger.info(f"Weights sent to worker {addr}")
+
+            elif command == "disconnect":
+                logger.info(f"Worker {addr} requested disconnection.")
+                #  Remove disconnected worker
+                with lock:
+                    workers.pop(addr, None)
+                    
+      
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
@@ -575,7 +561,7 @@ def run_edp_server(
                     else:
                         optimizer.step()
                     logger.info(
-                        f"Applied leader gradients with workers. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
+                        f"Applied leader gradients with workers. Step {step} '/' {total_steps}: Updated to model version {model_version}"
                     )
                      # Calculate and log PPL for decoder models
                     if decoder_type_ppl:
