@@ -83,12 +83,12 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )
     val_loader = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False
+        testset, batch_size=batch_size, shuffle=False, num_workers=0
     )
     batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
     train_data = torch.utils.data.Subset(trainset, batch_indices[local_rank])
     train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=False
+        train_data, batch_size=batch_size, shuffle=False, num_workers=0
     )
     return train_loader, val_loader
 
@@ -96,7 +96,7 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
 def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
     model.eval()
     total_loss = 0.0
-   
+    
     with torch.no_grad():
         for data, target in val_loader:
             data, target = data.to(device), target.to(device)
@@ -289,7 +289,9 @@ def run_edp_worker(
             batch = next(train_iter)
 
         logger.info("Performing local forward and backward pass.")
-        # optimizer.zero_grad()
+        
+        optimizer.zero_grad()
+        
         data, target = batch[0].to(device), batch[1].to(device)
 
         output = model(data)
@@ -367,9 +369,9 @@ def run_edp_worker(
                     dequant_weights = dequantize_model_weights(
                         weights, device=device
                     )
-                    model.load_state_dict(dequant_weights, strcit=False)
+                    model.load_state_dict(dequant_weights, strict=False)
                 else:
-                    # print(weights)
+                    
                     model.load_state_dict(weights, strict=False)
 
                 recv_model_version = new_version

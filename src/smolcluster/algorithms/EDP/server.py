@@ -92,12 +92,12 @@ def load_data(
         data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
     )
     val_loader = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False
+        testset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
     )
     batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
     train_data = torch.utils.data.Subset(trainset, batch_indices[RANK])
     train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=False
+        train_data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
     )
     return train_loader, val_loader
 
@@ -137,15 +137,16 @@ def evaluate(
     return avg_loss, ppl
 
 
-def compute_leader_gradients(
+def compute_leader_loss(
     model: torch.nn.Module,
     data: torch.Tensor,
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    config: dict,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    
+) -> tuple[torch.nn.Module, torch.Tensor]:
     model.train()
+    
     # data, target = data.to(device), target.to(device)
     output = model(data)
     B,T,C = output.shape
@@ -155,13 +156,7 @@ def compute_leader_gradients(
     optimizer.zero_grad()
     loss.backward()
 
-    # Gradient clipping
-    if config.get("grad_clip_norm", 0.0) != 0.0:
-        max_norm = config.get("grad_clip_norm")
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-
-    grads = get_gradients(model)
-    return loss, grads
+    return model, loss
 
 
 def polyak_average_weights(
@@ -461,14 +456,7 @@ def run_edp_server(
 
         epoch = step // len(train_loader)
         
-        # Compute leader gradients
-        leader_loss, leader_grads = compute_leader_gradients(
-            model, data, target, criterion, optimizer, config
-        )
-        logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
-
-        total_loss += leader_loss.item()
-        
+       
         # Calculate and log PPL for decoder models
         if decoder_type_ppl:
             train_ppl = math.exp(leader_loss.item())
@@ -530,42 +518,39 @@ def run_edp_server(
                     model.load_state_dict(blended_weights, strict=False)
 
                     current_weights = blended_weights  # Update for next worker
-
-                    with lock:
-                        model_version += 1
-
-                else:
-                    # OLD APPROACH: Gradient scaling (kept for backward compatibility)
-                    # This code path is commented out but functional if workers send gradients
-                    grads = worker_data["data"]
-                    scale = 1.0 / (1e-8 + staleness)
-
-                    logger.info(
-                        f"[DEPRECATED] Applying worker {rank} grads via scaling "
-                        f"(staleness: {staleness}, scale: {scale:.3f})"
+                    
+                      # Compute leader gradients
+                    model, leader_loss = compute_leader_loss(
+                        model, data, target, criterion, optimizer
                     )
+                    logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader loss.")
 
-                    optimizer.zero_grad()
-                    scaled_grads = {k: v * scale for k, v in grads.items()}
-                    set_gradients(scaled_grads, model)
-
+                    total_loss += leader_loss.item()
+                    
                     # Gradient clipping
-                    if config.get("grad_clip_norm",0.0) != 0.0:
-                     max_norm = config["grad_clip_norm"]
-                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-            
-                    optimizer.step()
+                    if config.get("grad_clip_norm", 0.0) != 0.0:
+                        max_norm = config["grad_clip_norm"]
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
+                    optimizer.step()
+                    logger.info(
+                        f"Applied leader gradients with workers. Step {step}: Updated to model version {model_version}"
+                    )
+                    
                     with lock:
                         model_version += 1
 
             del workers_copy
             gc.collect()
 
-        # Apply leader gradients
-        optimizer.zero_grad()
-        set_gradients(leader_grads, model)
+         # Compute leader gradients
+        model, leader_loss = compute_leader_loss(
+            model, data, target, criterion, optimizer
+        )
+        logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader loss.")
 
+        total_loss += leader_loss.item()
+        
         # Gradient clipping
         if config.get("grad_clip_norm", 0.0) != 0.0:
             max_norm = config["grad_clip_norm"]
@@ -576,8 +561,6 @@ def run_edp_server(
         with lock:
             model_version += 1
 
-        del leader_grads
-        gc.collect()
 
         logger.info(
             f"Applied leader gradients. Step {step}: Updated to model version {model_version}"
@@ -689,30 +672,6 @@ def run_edp_server(
                     with lock:
                         model_version += 1
 
-                else:
-                    # OLD APPROACH: Gradient scaling (kept for backward compatibility)
-                    # This code path is commented out but functional if workers send gradients
-                    grads = worker_data["data"]
-                    scale = 1.0 / (1e-8 + staleness)
-
-                    logger.info(
-                        f"[DEPRECATED] Applying worker {rank} grads via scaling "
-                        f"(staleness: {staleness}, scale: {scale:.3f})"
-                    )
-
-                    optimizer.zero_grad()
-                    scaled_grads = {k: v * scale for k, v in grads.items()}
-                    set_gradients(scaled_grads, model)
-
-                    # Gradient clipping
-                    if config.get("gradient_clipping", {}).get("enabled", False):
-                        max_norm = config["gradient_clipping"].get("max_norm", 1.0)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-
-                    optimizer.step()
-
-                    with lock:
-                        model_version += 1
 
             del workers_copy
 
@@ -775,6 +734,10 @@ def run_edp_server(
     shutdown_flag.set()
     sock.close()
     logger.info("Server shutdown complete")
+    
+    # Cleanup DataLoaders to prevent resource leaks
+    del train_loader, val_loader
+    gc.collect()
 
     wandb.finish()
 
