@@ -1,6 +1,7 @@
 import logging
 import math
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -215,10 +216,10 @@ def run_edp_worker(
     use_fp16 = config.get("use_fp16", False)
     polyark_average_update = cluster_config["polyark_average_update"]
     
-    # Initialize AMP scaler if fp16 enabled
-    scaler = torch.cuda.amp.GradScaler() if use_fp16 and device.type == 'cuda' else None
+    # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
+    scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
     if use_fp16:
-        logger.info(f"Mixed precision training (fp16) enabled: {device.type == 'cuda'}")
+        logger.info(f"Mixed precision training (fp16) enabled on device: {device.type}")
     
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -309,7 +310,7 @@ def run_edp_worker(
 
         # Use AMP if enabled
         if use_fp16 and scaler is not None:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast(device_type=device.type):
                 output = model(data)
                 B,T,C = output.shape
                 output = output.view(B*T, C)
@@ -341,7 +342,8 @@ def run_edp_worker(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
                 
             optimizer.step()  # Local SGD: workers apply updates independently
-
+        
+        logger.info("Local forward and backward pass complete.")
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
 
@@ -376,6 +378,7 @@ def run_edp_worker(
                 )
                 logger.info("Quantized model weights sent to server.")
             else:
+                
                 logger.info(
                     "Local forward and backward pass done. Sending model weights to server."
                 )
@@ -401,14 +404,16 @@ def run_edp_worker(
                         "non-blocking socket error while performing polyark averaging."
                     )
                     logger.info("Will retry polyark averaging in the next interval.")
-                    polyark_average_update = (polyark_average_update + step) % total_steps  # Backoff update interval
+                    # Backoff with random interval [10, 20, 30, 40, 50] + worker_rank offset to desynchronize
+                    backoff_interval = random.choice([10, 20, 30, 40, 50]) + worker_rank
+                    polyark_average_update = backoff_interval
+                    logger.info(f"Backoff: next polyark averaging at interval {backoff_interval}")
                     
                 finally:
                     sock.setblocking(True)  # Restore blocking socket
                     
                     
-            
-        
+
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             
@@ -422,9 +427,10 @@ def run_edp_worker(
                     "non-blocking socket error while requesting weights from server."
                 )
                 logger.info("Will retry pulling weights in the next interval.")
-                
-                #applying backpressure by increasing the update interval
-                worker_update_interval = (worker_update_interval +  step) % total_steps  # Backoff update interval
+                # Backoff with random interval [10, 20, 30, 40, 50] + worker_rank offset to desynchronize
+                backoff_interval = random.choice([10, 20, 30, 40, 50]) + worker_rank
+                worker_update_interval = backoff_interval
+                logger.info(f"Backoff: next weight pull at interval {backoff_interval}")
                 
             finally:
                 sock.setblocking(True)  # Restore blocking socket

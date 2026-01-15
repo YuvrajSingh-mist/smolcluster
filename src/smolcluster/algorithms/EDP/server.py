@@ -114,6 +114,7 @@ def compute_leader_loss(
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     config: dict,
+    device: torch.device,
     use_fp16: bool = False,
     scaler = None,
 ) -> tuple[torch.nn.Module, torch.Tensor]:
@@ -122,7 +123,7 @@ def compute_leader_loss(
     
     # Use AMP if enabled
     if use_fp16 and scaler is not None:
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast(device_type=device.type):
             output = model(data)
             B,T,C = output.shape
             output = output.view(B*T, C)
@@ -220,10 +221,10 @@ def run_edp_server(
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     use_fp16 = config.get("use_fp16", False)
     
-    # Initialize AMP scaler if fp16 enabled
-    scaler = torch.cuda.amp.GradScaler() if use_fp16 and device.type == 'cuda' else None
+    # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
+    scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
     if use_fp16:
-        logger.info(f"Mixed precision training (fp16) enabled: {device.type == 'cuda'}")
+        logger.info(f"Mixed precision training (fp16) enabled on device: {device.type}")
     
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -516,7 +517,7 @@ def run_edp_server(
                     
                       # Compute leader gradients
                     model, leader_loss = compute_leader_loss(
-                        model, data, target, criterion, optimizer, config, use_fp16, scaler
+                        model, data, target, criterion, optimizer, config, device, use_fp16, scaler
                     )
                     logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader loss.")
 
@@ -552,7 +553,7 @@ def run_edp_server(
             
             # Compute leader gradients
             model, leader_loss = compute_leader_loss(
-                model, data, target, criterion, optimizer, config, use_fp16, scaler
+                model, data, target, criterion, optimizer, config, device, use_fp16, scaler
             )
             logger.info(f"Epoch {epoch + 1}, Step: {step} / {total_steps}: Computed leader loss.")
 
@@ -717,7 +718,7 @@ def run_edp_server(
             
             # Use AMP if enabled (for consistency)
             if use_fp16 and scaler is not None:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast(device_type=device.type):
                     output = model(data)
                     B,T,C = output.shape
                     target = target.view(B*T)

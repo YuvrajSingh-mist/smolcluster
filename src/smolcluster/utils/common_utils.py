@@ -7,11 +7,23 @@ import torch
 
 
 def send_message(sock: socket.SocketType, message: Any) -> None:
+    # Optimize socket for high-bandwidth transfers (40Gbps Thunderbolt)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8 * 1024 * 1024)  # 8MB send buffer (macOS limit)
+    except OSError:
+        pass  # Use system default if unable to set
+    
     data = pickle.dumps(message)
     sock.sendall(struct.pack(">I", len(data)) + data)
 
 
 def receive_message(sock: socket.SocketType) -> dict:
+    # Optimize socket for high-bandwidth transfers (40Gbps Thunderbolt)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)  # 8MB receive buffer (macOS limit)
+    except OSError:
+        pass  # Use system default if unable to set
+    
     # Read the 4-byte message length header
     raw_msglen = sock.recv(4)
     if not raw_msglen:
@@ -19,11 +31,11 @@ def receive_message(sock: socket.SocketType) -> dict:
 
     msglen = struct.unpack(">I", raw_msglen)[0]
 
-    # Read the message data in chunks
+    # Read the message data in larger chunks for 40Gbps connections
     data = b""
     remaining = msglen
     while remaining > 0:
-        chunk_size = min(1048576 * 4, remaining)  # Read in 1MB chunks for speed
+        chunk_size = min(8 * 1024 * 1024, remaining)  # 8MB chunks (matches macOS buffer limit)
         chunk = sock.recv(chunk_size)
         if not chunk:
             raise ConnectionError("Socket connection broken while receiving message")
