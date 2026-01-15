@@ -669,7 +669,7 @@ def run_edp_server(
                     "lr": current_lr,
                     "batch_size": batch_size,
                     "throughput/tok_per_sec": tok_per_sec,
-                    "metrics/polyak_averaging_count": polyak_averaging_count,
+                  
                 }
             )
 
