@@ -433,6 +433,7 @@ def run_edp_server(
     train_iter = iter(train_loader)
     total_steps = num_epochs * len(train_loader)
     total_loss = 0.0
+    step_start_time = time.time()
 
     for step in range(total_steps):
         model.train()
@@ -576,6 +577,13 @@ def run_edp_server(
             f"Epoch {epoch + 1}, Step: {step}: Step loss = {leader_loss.item():.4f}"
         )
         
+        # Calculate tokens/sec throughput
+        step_end_time = time.time()
+        step_time = step_end_time - step_start_time
+        tokens_processed = batch_size * config['max_seq_len']
+        tok_per_sec = tokens_processed / step_time if step_time > 0 else 0
+        step_start_time = step_end_time  # Reset for next step
+        
         # Save checkpoint based on steps
         if save_checkpoints and checkpoint_steps > 0 and step > 0 and step % checkpoint_steps == 0:
             checkpoint_file = checkpoint_path / f"checkpoint_step_{step}.pt"
@@ -608,6 +616,7 @@ def run_edp_server(
                     "epoch": epoch + 1,
                     "lr": current_lr,
                     "batch_size": batch_size,
+                    "throughput/tok_per_sec": tok_per_sec,
                 }
             )
 

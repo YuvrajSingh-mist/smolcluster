@@ -30,7 +30,7 @@ from smolcluster.utils.quantization import (
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("[WORKER]")
+logger = logging.getLogger("[WORKER]")  # Will be updated in main() with rank
 
 # Global variables for model versioning
 model_version = 0
@@ -269,6 +269,8 @@ def run_edp_worker(
     # Main training loop
     model = model.to(device)
     
+    step_start_time = time.time()
+    
     for step in range(total_steps):
         model.train()
         epoch = step // len(train_loader)
@@ -407,6 +409,13 @@ def run_edp_worker(
             model_version = recv_model_version
             logger.info(f"Updated local model version to {model_version}.")
 
+        # Calculate tokens/sec throughput
+        step_end_time = time.time()
+        step_time = step_end_time - step_start_time
+        tokens_processed = batch_size * config['max_seq_len']
+        tok_per_sec = tokens_processed / step_time if step_time > 0 else 0
+        step_start_time = step_end_time  # Reset for next step
+
         # Run evaluation every eval_steps
         if step % eval_steps == 0:
             val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
@@ -417,6 +426,7 @@ def run_edp_worker(
                     "losses/val": val_loss,
                     "losses/train_batch": loss.item(),
                     "lr": current_lr,
+                    "throughput/tok_per_sec": tok_per_sec,
                 }
             )
             if decoder_type_ppl:
@@ -435,6 +445,7 @@ def run_edp_worker(
                     "epoch": epoch,
                     "losses/train_batch": loss.item(),
                     "lr": current_lr,
+                    "throughput/tok_per_sec": tok_per_sec,
                 }
             )
             if decoder_type_ppl:
@@ -454,7 +465,7 @@ def run_edp_worker(
 
 def main():
     """Legacy main function for backward compatibility."""
-    global model_version, recv_model_version
+    global model_version, recv_model_version, logger
     
     # Login to wandb using API key from environment variable
     if "WANDB_API_TOKEN" in os.environ:
@@ -478,20 +489,30 @@ def main():
     SEED = cluster_config.get("seed", 42)
     WORLD_SIZE = NUM_WORKERS + 1
 
-    # Get worker rank and hostname from command-line arguments
+    # Get worker name from command-line arguments (e.g., "worker1", "worker2")
     if len(sys.argv) > 1:
-        WORKER_RANK = sys.argv[1]
+        WORKER_NAME = sys.argv[1]
     else:
-        WORKER_RANK = input(f"Enter worker ID (1 to {NUM_WORKERS}): ")
+        WORKER_NAME = input(f"Enter worker name (e.g., worker1): ")
 
     if len(sys.argv) > 2:
         HOSTNAME = sys.argv[2]
     else:
         HOSTNAME = input("Enter worker hostname: ")
 
-    # Set parameters
-    local_rank = int(WORKER_RANK) - 1
-
+    # Extract rank from worker name (e.g., "worker1" -> 1)
+    import re
+    match = re.search(r'(\d+)', WORKER_NAME)
+    if match:
+        local_rank = int(match.group(1))
+    else:
+        # Fallback if no number found
+        local_rank = int(input(f"Could not parse rank from '{WORKER_NAME}'. Enter worker rank: "))
+    
+    # Update global logger with rank-specific name
+    logger = logging.getLogger(f"[WORKER-{local_rank}]")
+    logger.setLevel(logging.INFO)
+    
     # Workers connect to the server using the IP specified for this worker's hostname
     HOST_IP = cluster_config["host_ip"][HOSTNAME]
     PORT = cluster_config["port"]

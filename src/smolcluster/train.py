@@ -180,7 +180,7 @@ def run_server(hostname: str):
     rank = 0  # Server is rank 0
     
     # Load data
-    logger.info("Loading Wikitext-2 dataset...")
+    logger.info("Loading Wikitext dataset...")
     train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, rank)
     logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
     
