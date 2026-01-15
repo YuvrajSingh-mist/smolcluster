@@ -458,7 +458,7 @@ def run_edp_server(
         
        
        
-        if track_gradients:
+        if track_gradients and step % 200 == 0:
             logger.info("Tracking gradients in wandb...")
             for name, param in model.named_parameters():
                 if param.grad is not None:
@@ -528,19 +528,19 @@ def run_edp_server(
                             max_norm = config["grad_clip_norm"]
                             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-                    if scaler is not None:
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        optimizer.step()
-                    logger.info(
-                        f"Applied leader gradients with workers. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
-                    )
-                     # Calculate and log PPL for decoder models
-                    if decoder_type_ppl:
-                        train_ppl = math.exp(total_loss / (step + 1))
-                        if step % 50 == 0:
-                            wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+                    # if scaler is not None:
+                    #     scaler.step(optimizer)
+                    #     scaler.update()
+                    # else:
+                    #     optimizer.step()
+                    # logger.info(
+                    #     f"Applied leader gradients with workers. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
+                    # )
+                    #  # Calculate and log PPL for decoder models
+                    # if decoder_type_ppl:
+                    #     train_ppl = math.exp(total_loss / (step + 1))
+                    #     if step % 50 == 0:
+                    #         wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
 
                     with lock:
                         model_version += 1
@@ -554,7 +554,7 @@ def run_edp_server(
             model, leader_loss = compute_leader_loss(
                 model, data, target, criterion, optimizer, config, use_fp16, scaler
             )
-            logger.info(f"Epoch {epoch + 1}, Step: {step} +  '/' + {total_steps}: Computed leader loss.")
+            logger.info(f"Epoch {epoch + 1}, Step: {step} / {total_steps}: Computed leader loss.")
 
             total_loss += leader_loss.item()
             
@@ -581,11 +581,11 @@ def run_edp_server(
 
 
         logger.info(
-            f"Applied leader gradients. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
+            f"Applied leader gradients. Step {step} / {total_steps}: Updated to model version {model_version}"
         )
 
         logger.info(
-            f"Epoch {epoch + 1}, Step: {step} +  '/' + {total_steps}: Step loss = {leader_loss.item():.4f}"
+            f"Epoch {epoch + 1}, Step: {step} / {total_steps}: Step loss = {leader_loss.item():.4f}"
         )
         
         # Calculate tokens/sec throughput
