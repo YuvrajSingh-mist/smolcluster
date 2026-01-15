@@ -300,7 +300,7 @@ def run_edp_worker(
         loss.backward()
 
         # Gradient clipping to prevent exploding gradients
-        if config.get("grad_clip_norm",0.0) != 0:
+        if config.get("grad_clip_norm", 0.0) != 0.0:
             max_norm = config["grad_clip_norm"]
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
             
