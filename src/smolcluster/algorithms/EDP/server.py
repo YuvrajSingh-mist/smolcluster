@@ -241,7 +241,7 @@ def run_edp_server(
     
     #Defining the bounded queue
     bounded_queue = Queue(maxsize=cluster_config['queue_size'])
-    MAX_MSGS_PER_STEP = 100 #to how much messages from queue to process per step
+    MAX_MSGS_PER_STEP = 8 #to how much messages from queue to process per step
     
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
     scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
