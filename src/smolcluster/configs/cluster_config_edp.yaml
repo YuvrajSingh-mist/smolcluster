@@ -17,6 +17,8 @@ use_quantization: false  # Enable/disable weight quantization for communication
 
 track_gradients: true  # Whether server tracks gradient norms for each worker
 
+polyark_average_update: 20  # How often to perform Polyark averaging (in steps)
+
 # Randomness seed
 seed: 42
 

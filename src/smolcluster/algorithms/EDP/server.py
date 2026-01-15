@@ -528,19 +528,19 @@ def run_edp_server(
                             max_norm = config["grad_clip_norm"]
                             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-                    # if scaler is not None:
-                    #     scaler.step(optimizer)
-                    #     scaler.update()
-                    # else:
-                    #     optimizer.step()
-                    # logger.info(
-                    #     f"Applied leader gradients with workers. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
-                    # )
-                    #  # Calculate and log PPL for decoder models
-                    # if decoder_type_ppl:
-                    #     train_ppl = math.exp(total_loss / (step + 1))
-                    #     if step % 50 == 0:
-                    #         wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+                    if scaler is not None:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                    logger.info(
+                        f"Applied leader gradients with workers. Step {step} +  '/' + {total_steps}: Updated to model version {model_version}"
+                    )
+                     # Calculate and log PPL for decoder models
+                    if decoder_type_ppl:
+                        train_ppl = math.exp(total_loss / (step + 1))
+                        if step % 50 == 0:
+                            wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
 
                     with lock:
                         model_version += 1

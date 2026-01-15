@@ -213,6 +213,7 @@ def run_edp_worker(
     worker_update_interval = cluster_config.get("worker_update_interval", 5)
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     use_fp16 = config.get("use_fp16", False)
+    polyark_average_update = cluster_config["polyark_average_update"]
     
     # Initialize AMP scaler if fp16 enabled
     scaler = torch.cuda.amp.GradScaler() if use_fp16 and device.type == 'cuda' else None
@@ -344,50 +345,69 @@ def run_edp_worker(
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
 
-        if use_quantization:
-            quantized_weights = quantize_model_weights(weights)
+        if step % polyark_average_update == 0:
+            
+            logger.info(f"Performing Polyak averaging at step {step}.")
+            if use_quantization:
+                quantized_weights = quantize_model_weights(weights)
 
-            # Log compression ratio on first step
-            if step == 0:
-                comp_info = calculate_compression_ratio(weights, quantized_weights)
+                # Log compression ratio on first step
+                if step == 0:
+                    comp_info = calculate_compression_ratio(weights, quantized_weights)
+                    logger.info(
+                        f"Quantization: {comp_info['original_mb']:.2f}MB → {comp_info['compressed_mb']:.2f}MB (ratio: {comp_info['ratio']:.2f}x)"
+                    )
+
                 logger.info(
-                    f"Quantization: {comp_info['original_mb']:.2f}MB → {comp_info['compressed_mb']:.2f}MB (ratio: {comp_info['ratio']:.2f}x)"
+                    "Local forward and backward pass done. Sending quantized model weights to server."
                 )
-
-            logger.info(
-                "Local forward and backward pass done. Sending quantized model weights to server."
-            )
-            send_message(
-                sock,
-                (
-                    "polyark_averaging",
-                    {
-                        "step": step,
-                        "rank": worker_rank,
-                        "quantized_weights": quantized_weights,
-                        "model_version": model_version,
-                    },
-                ),
-            )
-            logger.info("Quantized model weights sent to server.")
-        else:
-            logger.info(
-                "Local forward and backward pass done. Sending model weights to server."
-            )
-            send_message(
-                sock,
-                (
-                    "polyark_averaging",
-                    {
-                        "step": step,
-                        "rank": worker_rank,
-                        "weights": weights,
-                        "model_version": model_version,
-                    },
-                ),
-            )
-            logger.info("Model weights sent to server.")
-
+                
+                send_message(
+                    sock,
+                    (
+                        "polyark_averaging",
+                        {
+                            "step": step,
+                            "rank": worker_rank,
+                            "quantized_weights": quantized_weights,
+                            "model_version": model_version,
+                        },
+                    ),
+                )
+                logger.info("Quantized model weights sent to server.")
+            else:
+                logger.info(
+                    "Local forward and backward pass done. Sending model weights to server."
+                )
+                
+                sock.setblocking(False)  # Set non-blocking to avoid hanging
+                try:
+                send_message(
+                    sock,
+                    (
+                        "polyark_averaging",
+                        {
+                            "step": step,
+                            "rank": worker_rank,
+                            "weights": weights,
+                            "model_version": model_version,
+                        },
+                    ),
+                )
+                logger.info("Model weights sent to server for polyark averaging.")
+                    
+                except BlockingIOError:
+                    logger.error(
+                        "non-blocking socket error while performing polyark averaging."
+                    )
+                    logger.info("Will retry polyark averaging in the next interval.")
+                    polyark_average_update = (polyark_average_update + step) % total_steps  # Backoff update interval
+                    
+                finally:
+                    sock.setblocking(True)  # Restore blocking socket
+                    
+                    
+            
         
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
@@ -404,7 +424,7 @@ def run_edp_worker(
                 logger.info("Will retry pulling weights in the next interval.")
                 
                 #applying backpressure by increasing the update interval
-                worker_update_interval = (worker_update_interval + 10) % total_steps  # Backoff update interval
+                worker_update_interval = (worker_update_interval +  step) % total_steps  # Backoff update interval
                 
             finally:
                 sock.setblocking(True)  # Restore blocking socket
