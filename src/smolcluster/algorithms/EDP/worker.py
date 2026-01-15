@@ -66,33 +66,6 @@ def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     return get_lr
 
 
-def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
-    # load MNIST
-    transforms = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize((0.5,), (0.5,)),
-        ]
-    )
-    DATA_DIR = Path(__file__).parent.parent.parent / "data"
-    data = torchvision.datasets.MNIST(
-        str(DATA_DIR), download=True, transform=transforms
-    )
-    lendata = len(data)
-    torch.manual_seed(SEED)
-    trainset, testset = torch.utils.data.random_split(
-        data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
-    )
-    val_loader = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
-    )
-    batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
-    train_data = torch.utils.data.Subset(trainset, batch_indices[local_rank])
-    train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
-    )
-    return train_loader, val_loader
-
 
 def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
     model.eval()
@@ -359,7 +332,7 @@ def run_edp_worker(
 
         if step % polyark_average_update == 0:
             
-            logger.info(f"Performing Polyak averaging at step {step}.")
+            logger.info(f"Sending for performing Polyak averaging at step {step}.")
             if use_quantization:
                 quantized_weights = quantize_model_weights(weights)
 
@@ -407,16 +380,20 @@ def run_edp_worker(
                         ),
                     )
                     logger.info("Model weights sent to server for polyark averaging.")
-                        
+                    
+                    backoff_interval = random.choice([10, 20, 30, 40, 50])
+                    polyark_average_update = backoff_interval
+                    
                 except Exception as e:
                     logger.error(
                         f"Error sending weights to server: {e}"
                     )
-                    logger.info("Will retry polyark averaging in the next interval.")
-                    # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
-                    backoff_interval = random.choice([10, 20, 30, 40, 50])
-                    polyark_average_update = backoff_interval
-                    logger.info(f"Backoff: next polyark averaging at interval {backoff_interval}")
+                    
+                    # logger.info("Will retry polyark averaging in the next interval.")
+                    # # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
+                    # backoff_interval = random.choice([10, 20, 30, 40, 50])
+                    # polyark_average_update = backoff_interval
+                    # logger.info(f"Backoff: next polyark averaging at interval {backoff_interval}")
                     
                     
 
@@ -427,16 +404,19 @@ def run_edp_worker(
                 send_message(sock, ("pull_weights", model_version))
                 logger.info("Requested weights from server.")
                 
+                backoff_interval = random.choice([10, 20, 30, 40, 50])
+                worker_update_interval = backoff_interval
+                    
             except Exception as e:
                 logger.error(
                     f"Error requesting weights from server: {e}"
                 )
-                logger.info("Will retry pulling weights in the next interval.")
+                # logger.info("Will retry pulling weights in the next interval.")
                 # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
-                backoff_interval = random.choice([10, 20, 30, 40, 50])
-                worker_update_interval = backoff_interval
-                logger.info(f"Backoff: next weight pull at interval {backoff_interval}")
-                continue
+                # backoff_interval = random.choice([10, 20, 30, 40, 50])
+                # worker_update_interval = backoff_interval
+                # logger.info(f"Backoff: next weight pull at interval {backoff_interval}")
+                # continue
                 
             sock.settimeout(1.0)  # Wait up to 1 second for weights
             
@@ -458,6 +438,7 @@ def run_edp_worker(
                 )
             except socket.timeout:
                 logger.warning("Timeout while pulling weights from server.")
+                
             except BlockingIOError:
                 logger.error(
                     "non-blocking socket error while pulling weights from server."
@@ -589,39 +570,7 @@ def main():
     logger = logging.getLogger(f"[WORKER-{local_rank}]")
     logger.setLevel(logging.INFO)
     
-    # Workers connect to the server using the IP specified for this worker's hostname
-    HOST_IP = cluster_config["host_ip"][HOSTNAME]
-    PORT = cluster_config["port"]
-    
-    criterion = torch.nn.CrossEntropyLoss()
-    
-    model = SimpleMNISTModel(
-        input_dim=nn_config["model"]["input_dim"],
-        hidden=nn_config["model"]["hidden"],
-        out=nn_config["model"]["out"],
-    )
-    model = model.to(get_device())
-    logger.info(f"Model initialized on device: {get_device()}")
-
-    train_loader, val_loader = load_data(nn_config["batch_size"], WORLD_SIZE, SEED, local_rank)
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
-    
-    run_edp_worker(
-        model=model,
-        optimizer=optimizer,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        config=nn_config,
-        cluster_config=cluster_config,
-        worker_rank=local_rank,
-        hostname=HOSTNAME,
-        device=get_device(),
-        criterion=criterion,
-        host_ip=HOST_IP,
-        port=PORT,
-    )
-
+   
 
 if __name__ == "__main__":
     main()

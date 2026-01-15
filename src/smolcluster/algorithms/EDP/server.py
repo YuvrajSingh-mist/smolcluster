@@ -28,6 +28,8 @@ from smolcluster.utils.quantization import (
     dequantize_model_weights,
     quantize_model_weights,
 )
+from queue import Queue
+
 
 # Setup logging
 logging.basicConfig(
@@ -35,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("[SERVER]")
 
-gradients_event = threading.Event()
+# gradients_event = threading.Event()
 lock = threading.Lock()
 
 model_version = 0  # Track global model version for elastic training
@@ -183,6 +185,22 @@ def polyak_average_weights(
 
     return blended, staleness_factor
 
+def enqeue_bounded_queue(bounded_queue: Queue, message):
+    
+    try:
+        bounded_queue.put_nowait(message)
+    
+    except Exception:
+        
+        try:
+            discarded = bounded_queue.get_nowait()
+            logger.warning("Bounded queue full, discarding oldest message.")
+            bounded_queue.put_nowait(message)
+    
+        except Exception:
+            logger.error("Failed to enqueue message after discarding oldest message.")
+            raise
+
 
 def run_edp_server(
     model,
@@ -220,6 +238,10 @@ def run_edp_server(
     use_quantization = cluster_config["use_quantization"]
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     use_fp16 = config.get("use_fp16", False)
+    
+    #Defining the bounded queue
+    bounded_queue = Queue(maxsize=cluster_config['queue_size'])
+    MAX_MSGS_PER_STEP = 8 #to how much messages from queue to process per step
     
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
     scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
@@ -259,7 +281,7 @@ def run_edp_server(
     logger.info(f"Server listening on {HOST_IP}:{PORT}")
     
     # Define handle_worker as nested function with access to model and use_quantization
-    def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
+    def handle_worker(conn: socket.SocketType, addr: tuple[str, int], bounded_queue: Queue) -> None:
         global model_version
         logger.info(f"Handling worker at {addr}")
 
@@ -270,78 +292,12 @@ def run_edp_server(
             if message is None:
                 logger.info(f"Worker {addr} closed connection")
                 break
-
+            
+            enqeue_bounded_queue(bounded_queue, (message, conn, addr))
+            
+            # gradients_event.set()
+            
             # Unpack the message tuple
-            command, payload = message
-
-            if command == "polyark_averaging":
-                recv_step = payload["step"]
-                rank = payload["rank"]
-                worker_version = payload["model_version"]
-
-                # Check if worker sent quantized weights, weights, or gradients
-                if "quantized_weights" in payload:
-                    # New approach: Dequantize and use Polyak averaging
-                    quantized_weights = payload["quantized_weights"]
-                    logger.info(
-                        f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                    )
-                    # Dequantize weights back to float32 on the server's device
-                    device_str = str(device)
-                    weights = dequantize_model_weights(quantized_weights, device=device_str)
-                    with lock:
-                        workers_grads_received[(rank, recv_step, worker_version)] = {
-                            "type": "weights",
-                            "data": weights,
-                        }
-                elif "weights" in payload:
-                    # Legacy: Full float32 weights (no compression)
-                    weights = payload["weights"]
-                    logger.info(
-                        f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                    )
-                    with lock:
-                        workers_grads_received[(rank, recv_step, worker_version)] = {
-                            "type": "weights",
-                            "data": weights,
-                        }
-                else:
-                    # Old approach: Gradient scaling (kept for reference)
-                    grads = payload["grads"]
-                    logger.info(
-                        f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
-                    )
-                    with lock:
-                        workers_grads_received[(rank, recv_step, worker_version)] = {
-                            "type": "grads",
-                            "data": grads,
-                        }
-
-                gradients_event.set()
-                logger.info(
-                    f"Data stored successfully for worker {rank} at step {recv_step}"
-                )
-
-            elif command == "pull_weights":
-                worker_version = payload  # payload is the worker's current model version
-                logger.info(
-                    f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
-                )
-
-                weights = get_weights(model)
-                if use_quantization:
-                    quantized_weights = quantize_model_weights(weights)
-                    send_message(conn, (quantized_weights, model_version))
-                    logger.info(f"Quantized weights sent to worker {addr}")
-                else:
-                    send_message(conn, (weights, model_version))
-                    logger.info(f"Weights sent to worker {addr}")
-
-            elif command == "disconnect":
-                logger.info(f"Worker {addr} requested disconnection.")
-                #  Remove disconnected worker
-                with lock:
-                    workers.pop(addr, None)
 
         conn.close()
 
@@ -400,7 +356,7 @@ def run_edp_server(
                     
                     threading.Thread(
                         target=handle_worker,
-                        args=(client_socket, client_address),
+                        args=(client_socket, client_address, bounded_queue),
                         daemon=True,
                     ).start()
                 else:
@@ -433,7 +389,7 @@ def run_edp_server(
     total_steps = num_epochs * len(train_loader)
     total_loss = 0.0
     step_start_time = time.time()
-
+  
     for step in range(total_steps):
         model.train()
         
@@ -472,9 +428,96 @@ def run_edp_server(
                     )
             logger.info("Gradient tracking complete.")
 
-        # Collect any available worker data (non-blocking with small timeout)
-        gradients_event.wait(timeout=0.01)  # Very short wait
-        gradients_event.clear()
+            
+
+            for _ in range(MAX_MSGS_PER_STEP):
+                
+                try:
+                    message, conn, addr = bounded_queue.get_nowait()
+                except Exception as e:
+                    logging.error(f"Error getting message from queue: {e}")
+                    break
+
+            message, conn, addr = bounded_queue.get_nowait() 
+            
+            command, payload = message
+
+            
+            if command == "polyark_averaging":
+                recv_step = payload["step"]
+                rank = payload["rank"]
+                worker_version = payload["model_version"]
+
+                # Check if worker sent quantized weights, weights, or gradients
+                if "quantized_weights" in payload:
+                    # New approach: Dequantize and use Polyak averaging
+                    quantized_weights = payload["quantized_weights"]
+                    logger.info(
+                        f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    # Dequantize weights back to float32 on the server's device
+                    device_str = str(device)
+                    weights = dequantize_model_weights(quantized_weights, device=device_str)
+                    
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                elif "weights" in payload:
+                    # Legacy: Full float32 weights (no compression)
+                    weights = payload["weights"]
+                    logger.info(
+                        f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                else:
+                    # Old approach: Gradient scaling (kept for reference)
+                    grads = payload["grads"]
+                    logger.info(
+                        f"Received gradients from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "grads",
+                            "data": grads,
+                        }
+
+                # gradients_event.set()
+                logger.info(
+                    f"Data stored successfully for worker {rank} at step {recv_step}"
+                )
+
+            elif command == "pull_weights":
+                worker_version = payload  # payload is the worker's current model version
+                logger.info(
+                    f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
+                )
+
+                weights = get_weights(model)
+                
+                
+                if use_quantization:
+                    quantized_weights = quantize_model_weights(weights)
+                    send_message(conn, (quantized_weights, model_version))
+                    logger.info(f"Quantized weights sent to worker {addr}")
+                else:
+                    send_message(conn, (weights, model_version))
+                    logger.info(f"Weights sent to worker {addr}")
+
+            elif command == "disconnect":
+                logger.info(f"Worker {addr} requested disconnection.")
+                #  Remove disconnected worker
+                with lock:
+                    workers.pop(addr, None)
+                    
+        # # Collect any available worker data (non-blocking with small timeout)
+        # gradients_event.wait(timeout=0.01)  # Very short wait
+        # gradients_event.clear()
 
         with lock:
             workers_copy = dict(workers_grads_received)
@@ -628,6 +671,7 @@ def run_edp_server(
                     "lr": current_lr,
                     "batch_size": batch_size,
                     "throughput/tok_per_sec": tok_per_sec,
+                    "metrics/polyak_averaging_count": polyak_averaging_count,
                 }
             )
 
@@ -651,12 +695,12 @@ def run_edp_server(
     )
     logger.info("Waiting for any remaining worker updates...")
 
-    gradients_event.wait(timeout=0.01)
-    gradients_event.clear()
+    # gradients_event.wait(timeout=0.01)
+    # gradients_event.clear()
 
     while len(workers) > 0:
-        gradients_event.wait(timeout=0.01)
-        gradients_event.clear()
+        # gradients_event.wait(timeout=0.01)
+        # gradients_event.clear()
 
         with lock:
             workers_copy = dict(workers_grads_received)
@@ -693,6 +737,7 @@ def run_edp_server(
 
                     # Update model with blended weights
                     model.load_state_dict(blended_weights, strict=False)
+                    
                     current_weights = blended_weights  # Update for next worker
 
                     with lock:
@@ -791,52 +836,7 @@ def main():
     else:
         logger_temp = logging.getLogger("[SERVER-INIT]")
         logger_temp.warning("⚠️  WANDB_API_TOKEN not set - wandb may prompt for login")
-
-    # Get hostname from command-line argument
-    if len(sys.argv) > 1:
-        HOSTNAME = sys.argv[1]
-    else:
-        HOSTNAME = input("Enter server hostname: ")
-
-    # Load configs
-    CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
-    with open(CONFIG_DIR / "nn_config.yaml") as f:
-        nn_config = yaml.safe_load(f)
-
-    with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
-        cluster_config = yaml.safe_load(f)
-
-    # Extract values with defaults
-    NUM_WORKERS = cluster_config["num_workers"]
-    SEED = cluster_config.get("seed", 42)
-    WORLD_SIZE = NUM_WORKERS + 1
-    RANK = 0
-
-    batch_size = nn_config["batch_size"]
-    criterion = torch.nn.CrossEntropyLoss()
-    
-    model = SimpleMNISTModel(
-        input_dim=nn_config["model"]["input_dim"],
-        hidden=nn_config["model"]["hidden"],
-        out=nn_config["model"]["out"],
-    )
-    model = model.to(get_device())
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
-    
-    train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, RANK)
-    
-    run_edp_server(
-        model=model,
-        optimizer=optimizer,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        config=nn_config,
-        cluster_config=cluster_config,
-        hostname=HOSTNAME,
-        device=get_device(),
-        criterion=criterion,
-    )
+   
 
 
 if __name__ == "__main__":

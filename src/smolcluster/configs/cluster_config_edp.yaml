@@ -22,6 +22,8 @@ polyark_average_update: 20  # How often to perform Polyark averaging (in steps)
 # Randomness seed
 seed: 42
 
+queue_size: 10
+
 # Cluster configuration
 num_workers: 2
 workers: [mini2, mini3]  # Worker hostnames
