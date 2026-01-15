@@ -38,8 +38,8 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
         return input_ids, labels
 
     # Load full datasets
-    dataset_name = config.get('dataset_name', 'wikitext')
-    dataset_config = config.get('dataset_config', 'wikitext-2-v1')
+    dataset_name = config['dataset_name']
+    dataset_config = config['dataset_config']
     
     train_dataset = load_dataset(dataset_name, dataset_config, split="train")
     train_texts = [item["text"] for item in train_dataset if item["text"].strip()]
