@@ -382,20 +382,20 @@ def run_edp_worker(
                 
                 sock.setblocking(False)  # Set non-blocking to avoid hanging
                 try:
-                send_message(
-                    sock,
-                    (
-                        "polyark_averaging",
-                        {
-                            "step": step,
-                            "rank": worker_rank,
-                            "weights": weights,
-                            "model_version": model_version,
-                        },
-                    ),
-                )
-                logger.info("Model weights sent to server for polyark averaging.")
-                    
+                    send_message(
+                        sock,
+                        (
+                            "polyark_averaging",
+                            {
+                                "step": step,
+                                "rank": worker_rank,
+                                "weights": weights,
+                                "model_version": model_version,
+                            },
+                        ),
+                    )
+                    logger.info("Model weights sent to server for polyark averaging.")
+                        
                 except BlockingIOError:
                     logger.error(
                         "non-blocking socket error while performing polyark averaging."
