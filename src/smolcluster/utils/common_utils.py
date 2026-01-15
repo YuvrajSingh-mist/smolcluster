@@ -35,7 +35,7 @@ def receive_message(sock: socket.SocketType) -> dict:
     data = b""
     remaining = msglen
     while remaining > 0:
-        chunk_size = min(8 * 1024 * 1024, remaining)  # 8MB chunks (matches macOS buffer limit)
+        chunk_size = min(1 * 1024 * 1024, remaining)  # 8MB chunks (matches macOS buffer limit)
         chunk = sock.recv(chunk_size)
         if not chunk:
             raise ConnectionError("Socket connection broken while receiving message")
