@@ -19,6 +19,7 @@ learning_rate: 0.0003       # Learning rate
 weight_decay: 0.01         # Weight decay for AdamW
 grad_clip_norm: 1.0        # Gradient clipping norm
 eval_steps: 200             # Evaluation steps interval
+use_fp16: false            # Enable mixed precision training (fp16) with PyTorch AMP
 
 # Learning Rate Schedule
 

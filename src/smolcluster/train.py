@@ -1,5 +1,5 @@
 """
-Wikitext-2 Training with EDP (Elastic Distributed Parameter Server)
+Training with EDP (Elastic Distributed Parameter Server)
 
 This script provides both server and worker entry points for distributed
 GPT training using the refactored EDP functions.
@@ -26,7 +26,7 @@ from tqdm import tqdm
 import yaml
 
 from smolcluster.models.gpt import BaseTransformer
-from smolcluster.data.wikitext import prepare_dataset
+from smolcluster.data.prepare_dataset import prepare_dataset
 
 from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
@@ -92,7 +92,7 @@ def run_server(hostname: str):
     rank = 0  # Server is rank 0
     
     # Load data
-    logger.info("Loading Wikitext dataset...")
+    logger.info(f"Loading {gpt_config.get('dataset_name', 'dataset')} dataset...")
     train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, rank)
     logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
     
@@ -141,7 +141,9 @@ def run_worker(worker_rank: int, hostname: str):
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    logger = logging.getLogger(f"[WORKER-{worker_rank}-MAIN]")
+    # Worker rank is 0-indexed internally but 1-indexed in command-line
+    local_rank = worker_rank - 1
+    logger = logging.getLogger(f"[WORKER-{local_rank}-MAIN]")
     
     setup_wandb()
     
@@ -153,8 +155,7 @@ def run_worker(worker_rank: int, hostname: str):
     seed = cluster_config.get("seed", 42)
     world_size = num_workers + 1
     
-    # Worker rank is 0-indexed internally but 1-indexed in command-line
-    local_rank = worker_rank - 1
+
     
     # Get server connection info
     host_ip = cluster_config["host_ip"][hostname]

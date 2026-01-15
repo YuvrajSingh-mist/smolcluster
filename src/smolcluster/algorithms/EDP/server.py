@@ -113,18 +113,41 @@ def compute_leader_loss(
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    
+    config: dict,
+    use_fp16: bool = False,
+    scaler = None,
 ) -> tuple[torch.nn.Module, torch.Tensor]:
     model.train()
-    
-    # data, target = data.to(device), target.to(device)
-    output = model(data)
-    B,T,C = output.shape
-    output = output.view(B*T, C)
-    target = target.view(B*T)
-    loss = criterion(output, target)
     optimizer.zero_grad()
-    loss.backward()
+    
+    # Use AMP if enabled
+    if use_fp16 and scaler is not None:
+        with torch.cuda.amp.autocast():
+            output = model(data)
+            B,T,C = output.shape
+            output = output.view(B*T, C)
+            target = target.view(B*T)
+            loss = criterion(output, target)
+        
+        scaler.scale(loss).backward()
+        
+        # Gradient clipping with scaler
+        if config.get("grad_clip_norm", 0.0) != 0.0:
+            scaler.unscale_(optimizer)
+            max_norm = config.get("grad_clip_norm")
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    else:
+        output = model(data)
+        B,T,C = output.shape
+        output = output.view(B*T, C)
+        target = target.view(B*T)
+        loss = criterion(output, target)
+        loss.backward()
+        
+        # Gradient clipping
+        if config.get("grad_clip_norm", 0.0) != 0.0:
+            max_norm = config.get("grad_clip_norm")
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
     return model, loss
 
@@ -195,6 +218,12 @@ def run_edp_server(
     learning_rate = config["learning_rate"]
     use_quantization = cluster_config["use_quantization"]
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
+    use_fp16 = config.get("use_fp16", False)
+    
+    # Initialize AMP scaler if fp16 enabled
+    scaler = torch.cuda.amp.GradScaler() if use_fp16 and device.type == 'cuda' else None
+    if use_fp16:
+        logger.info(f"Mixed precision training (fp16) enabled: {device.type == 'cuda'}")
     
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -487,18 +516,23 @@ def run_edp_server(
                     
                       # Compute leader gradients
                     model, leader_loss = compute_leader_loss(
-                        model, data, target, criterion, optimizer
+                        model, data, target, criterion, optimizer, config, use_fp16, scaler
                     )
-                    logger.info(f"Epoch {epoch + 1}, Step: {step / total_steps}: Computed leader loss.")
+                    logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader loss.")
 
                     total_loss += leader_loss.item()
                     
-                    # Gradient clipping
-                    if config.get("grad_clip_norm", 0.0) != 0.0:
-                        max_norm = config["grad_clip_norm"]
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+                    # Gradient clipping (only if not using AMP, since AMP handles it)
+                    if not use_fp16:
+                        if config.get("grad_clip_norm", 0.0) != 0.0:
+                            max_norm = config["grad_clip_norm"]
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-                    optimizer.step()
+                    if scaler is not None:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
                     logger.info(
                         f"Applied leader gradients with workers. Step {step / total_steps}: Updated to model version {model_version}"
                     )
@@ -513,27 +547,34 @@ def run_edp_server(
 
             del workers_copy
             gc.collect()
+            
+        else:
+            
+            # Compute leader gradients
+            model, leader_loss = compute_leader_loss(
+                model, data, target, criterion, optimizer, config, use_fp16, scaler
+            )
+            logger.info(f"Epoch {epoch + 1}, Step: {step / total_steps}: Computed leader loss.")
 
-         # Compute leader gradients
-        model, leader_loss = compute_leader_loss(
-            model, data, target, criterion, optimizer
-        )
-        logger.info(f"Epoch {epoch + 1}, Step: {step / total_steps}: Computed leader loss.")
-
-        total_loss += leader_loss.item()
-        
+            total_loss += leader_loss.item()
+            
          # Calculate and log PPL for decoder models
         if decoder_type_ppl:
             train_ppl = math.exp(total_loss / (step + 1))
             if step % 50 == 0:
                 wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
 
-        # Gradient clipping
-        if config.get("grad_clip_norm", 0.0) != 0.0:
-            max_norm = config["grad_clip_norm"]
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        # Gradient clipping (only if not using AMP, since AMP handles it)
+        if not use_fp16:
+            if config.get("grad_clip_norm", 0.0) != 0.0:
+                max_norm = config["grad_clip_norm"]
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-        optimizer.step()
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
 
         with lock:
             model_version += 1
@@ -673,11 +714,22 @@ def run_edp_server(
 
             data = data.to(device)
             target = target.to(device)
-            output = model(data)
-            B,T,C = output.shape
-            target = target.view(B*T)
-            output = output.view(B*T, C)
-            loss = criterion(output, target)
+            
+            # Use AMP if enabled (for consistency)
+            if use_fp16 and scaler is not None:
+                with torch.cuda.amp.autocast():
+                    output = model(data)
+                    B,T,C = output.shape
+                    target = target.view(B*T)
+                    output = output.view(B*T, C)
+                    loss = criterion(output, target)
+            else:
+                output = model(data)
+                B,T,C = output.shape
+                target = target.view(B*T)
+                output = output.view(B*T, C)
+                loss = criterion(output, target)
+            
             total_loss += loss.item()
 
             logger.info(f"Step: {step}: Step loss = {loss.item():.4f}")

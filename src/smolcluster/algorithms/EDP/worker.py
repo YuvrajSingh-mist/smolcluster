@@ -65,6 +65,33 @@ def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     return get_lr
 
 
+def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
+    # load MNIST
+    transforms = torchvision.transforms.Compose(
+        [
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize((0.5,), (0.5,)),
+        ]
+    )
+    DATA_DIR = Path(__file__).parent.parent.parent / "data"
+    data = torchvision.datasets.MNIST(
+        str(DATA_DIR), download=True, transform=transforms
+    )
+    lendata = len(data)
+    torch.manual_seed(SEED)
+    trainset, testset = torch.utils.data.random_split(
+        data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
+    )
+    val_loader = torch.utils.data.DataLoader(
+        testset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
+    )
+    batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
+    train_data = torch.utils.data.Subset(trainset, batch_indices[local_rank])
+    train_loader = torch.utils.data.DataLoader(
+        train_data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=False
+    )
+    return train_loader, val_loader
+
 
 def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
     model.eval()
@@ -171,7 +198,11 @@ def run_edp_worker(
         host_ip: Server IP address
         port: Server port
     """
-    global model_version, recv_model_version
+    global model_version, recv_model_version, logger
+    
+    # Update logger with worker rank
+    logger = logging.getLogger(f"[WORKER-{worker_rank}]")
+    logger.setLevel(logging.INFO)
     
     batch_size = config["batch_size"]
     num_epochs = config["num_epochs"]
@@ -181,6 +212,12 @@ def run_edp_worker(
     use_quantization = cluster_config.get("use_quantization", True)
     worker_update_interval = cluster_config.get("worker_update_interval", 5)
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
+    use_fp16 = config.get("use_fp16", False)
+    
+    # Initialize AMP scaler if fp16 enabled
+    scaler = torch.cuda.amp.GradScaler() if use_fp16 and device.type == 'cuda' else None
+    if use_fp16:
+        logger.info(f"Mixed precision training (fp16) enabled: {device.type == 'cuda'}")
     
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -269,21 +306,40 @@ def run_edp_worker(
         
         data, target = batch[0].to(device), batch[1].to(device)
 
-        output = model(data)
-        B,T,C = output.shape
-        output = output.view(B*T, C)
-        target = target.view(B*T)
-        
-        loss = criterion(output, target)
-
-        loss.backward()
-
-        # Gradient clipping to prevent exploding gradients
-        if config.get("grad_clip_norm", 0.0) != 0.0:
-            max_norm = config["grad_clip_norm"]
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        # Use AMP if enabled
+        if use_fp16 and scaler is not None:
+            with torch.cuda.amp.autocast():
+                output = model(data)
+                B,T,C = output.shape
+                output = output.view(B*T, C)
+                target = target.view(B*T)
+                loss = criterion(output, target)
             
-        optimizer.step()  # Local SGD: workers apply updates independently
+            scaler.scale(loss).backward()
+            
+            # Gradient clipping with scaler
+            if config.get("grad_clip_norm", 0.0) != 0.0:
+                scaler.unscale_(optimizer)
+                max_norm = config["grad_clip_norm"]
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            output = model(data)
+            B,T,C = output.shape
+            output = output.view(B*T, C)
+            target = target.view(B*T)
+            
+            loss = criterion(output, target)
+            loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            if config.get("grad_clip_norm", 0.0) != 0.0:
+                max_norm = config["grad_clip_norm"]
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+                
+            optimizer.step()  # Local SGD: workers apply updates independently
 
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
@@ -335,7 +391,24 @@ def run_edp_worker(
         
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
-            send_message(sock, ("pull_weights", model_version))
+            
+            sock.setblocking(False)  # Set non-blocking to avoid hanging
+            try:
+                send_message(sock, ("pull_weights", model_version))
+                logger.info("Requested weights from server.")
+                
+            except BlockingIOError:
+                logger.error(
+                    "non-blocking socket error while requesting weights from server."
+                )
+                logger.info("Will retry pulling weights in the next interval.")
+                
+                #applying backpressure by increasing the update interval
+                worker_update_interval = (worker_update_interval + 10) % total_steps  # Backoff update interval
+                
+            finally:
+                sock.setblocking(True)  # Restore blocking socket
+                
             sock.settimeout(1.0)  # Wait up to 1 second for weights
             try:
                 weights, new_version = receive_message(sock)
