@@ -393,7 +393,6 @@ def run_edp_worker(
                     "Local forward and backward pass done. Sending model weights to server."
                 )
                 
-                sock.setblocking(False)  # Set non-blocking to avoid hanging
                 try:
                     send_message(
                         sock,
@@ -409,9 +408,9 @@ def run_edp_worker(
                     )
                     logger.info("Model weights sent to server for polyark averaging.")
                         
-                except BlockingIOError:
+                except Exception as e:
                     logger.error(
-                        "non-blocking socket error while performing polyark averaging."
+                        f"Error sending weights to server: {e}"
                     )
                     logger.info("Will retry polyark averaging in the next interval.")
                     # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
@@ -419,31 +418,25 @@ def run_edp_worker(
                     polyark_average_update = backoff_interval
                     logger.info(f"Backoff: next polyark averaging at interval {backoff_interval}")
                     
-                finally:
-                    sock.setblocking(True)  # Restore blocking socket
-                    
                     
 
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             
-            sock.setblocking(False)  # Set non-blocking to avoid hanging
             try:
                 send_message(sock, ("pull_weights", model_version))
                 logger.info("Requested weights from server.")
                 
-            except BlockingIOError:
+            except Exception as e:
                 logger.error(
-                    "non-blocking socket error while requesting weights from server."
+                    f"Error requesting weights from server: {e}"
                 )
                 logger.info("Will retry pulling weights in the next interval.")
                 # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
                 backoff_interval = random.choice([10, 20, 30, 40, 50])
                 worker_update_interval = backoff_interval
                 logger.info(f"Backoff: next weight pull at interval {backoff_interval}")
-                
-            finally:
-                sock.setblocking(True)  # Restore blocking socket
+                continue
                 
             sock.settimeout(1.0)  # Wait up to 1 second for weights
             
