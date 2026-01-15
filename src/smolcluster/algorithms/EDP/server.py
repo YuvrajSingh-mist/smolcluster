@@ -103,7 +103,7 @@ def load_data(
 
 
 def evaluate(
-    device: torch.device, model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module
+    device: torch.device, model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module, decoder_type_ppl: bool = False
 ) -> tuple[float, float]:
     model.eval()
     total_val_loss = 0.0
@@ -131,9 +131,10 @@ def evaluate(
             # total += target.size(0)
             # correct += (predicted == target).sum().item()
     avg_loss = total_val_loss / len(val_loader)
+    ppl = math.exp(avg_loss) if decoder_type_ppl else None
     # accuracy = 100 * (correct / total)
     model.train()
-    return avg_loss
+    return avg_loss, ppl
 
 
 def compute_leader_gradients(
@@ -228,6 +229,7 @@ def run_edp_server(
     track_gradients = config["track_gradients"]
     learning_rate = config["learning_rate"]
     use_quantization = cluster_config["use_quantization"]
+    decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -245,16 +247,13 @@ def run_edp_server(
     save_checkpoints = config.get("save_checkpoints", False)
     checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
     checkpoint_steps = config.get("checkpoint_steps", 0)
-    checkpoint_epochs = config.get("checkpoint_epochs", 0)
-    keep_last_n = config.get("keep_last_n_checkpoints", 0)
-    
+   
     # Create checkpoint directory
     if save_checkpoints:
         checkpoint_path = Path(checkpoint_dir)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Checkpoints will be saved to: {checkpoint_path.absolute()}")
-        saved_checkpoints = []
-    
+       
     # Create and bind socket
     HOST_IP = "0.0.0.0"
     PORT = cluster_config["port"]
@@ -469,6 +468,12 @@ def run_edp_server(
         logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader gradients.")
 
         total_loss += leader_loss.item()
+        
+        # Calculate and log PPL for decoder models
+        if decoder_type_ppl:
+            train_ppl = math.exp(leader_loss.item())
+            if step % 50 == 0:
+                wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
 
         if track_gradients:
             logger.info("Tracking gradients in wandb...")
@@ -620,7 +625,7 @@ def run_edp_server(
         if step % eval_steps == 0:
             logger.info(f"Evaluating model at step {step}...")
 
-            val_loss = evaluate(device, model, val_loader, criterion)
+            val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
 
             wandb.log(
                 {
@@ -629,6 +634,8 @@ def run_edp_server(
                     "losses/val": val_loss,
                 }
             )
+            if decoder_type_ppl and val_ppl is not None:
+                wandb.log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
 
     logger.info(
         f"Training completed. Total steps: {step + 1}, Final model version: {model_version}"
@@ -753,16 +760,17 @@ def run_edp_server(
             if step % eval_steps == 0:
                 logger.info(f"Evaluating model at step {step}...")
 
-                val_loss = evaluate(device, model, val_loader, criterion)
+                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
 
                 wandb.log(
                     {
                         "step": step,
                         "epoch": epoch + 1,
                         "losses/val": val_loss,
-                    
                     }
                 )
+                if decoder_type_ppl and val_ppl is not None:
+                    wandb.log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
 
     shutdown_flag.set()
     sock.close()

@@ -37,6 +37,10 @@ project_name: "smolcluster-gpt-wikitext2"
 log_interval: 50           # Steps between logging
 track_gradients: true      # Whether to track gradient norms
 
+# Decoder-specific metrics
+decoder_type:
+  ppl: true                # If true, log Perplexity (PPL) metrics
+
 # Checkpoint Settings
 save_checkpoints: true     # Whether to save model checkpoints
 checkpoint_dir: "checkpoints"  # Directory to save checkpoints (relative to project root)

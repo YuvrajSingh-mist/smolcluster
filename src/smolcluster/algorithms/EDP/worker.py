@@ -93,7 +93,7 @@ def load_data(batch_size, WORLD_SIZE, SEED, local_rank):
     return train_loader, val_loader
 
 
-def evaluate(device, model, val_loader, criterion):
+def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
     model.eval()
     total_loss = 0.0
    
@@ -110,10 +110,11 @@ def evaluate(device, model, val_loader, criterion):
             # total += target.size(0)
             # correct += (predicted == target).sum().item()
     avg_loss = total_loss / len(val_loader)
+    ppl = math.exp(avg_loss) if decoder_type_ppl else None
     model.train()
     
     # accuracy = 100 * correct / total
-    return avg_loss
+    return avg_loss, ppl
 
 
 def connect_to_server(
@@ -206,6 +207,7 @@ def run_edp_worker(
     learning_rate = config["learning_rate"]
     use_quantization = cluster_config.get("use_quantization", True)
     worker_update_interval = cluster_config.get("worker_update_interval", 5)
+    decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -405,7 +407,7 @@ def run_edp_worker(
 
         # Run evaluation every eval_steps
         if step % eval_steps == 0:
-            val_loss = evaluate(device, model, val_loader, criterion)
+            val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
             wandb.log(
                 {
                     "step": step,
@@ -415,6 +417,11 @@ def run_edp_worker(
                     "lr": current_lr,
                 }
             )
+            if decoder_type_ppl:
+                train_ppl = math.exp(loss.item())
+                wandb.log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
+                if val_ppl is not None:
+                    wandb.log({"step": step, "epoch": epoch, "val/ppl": val_ppl})
             logger.info(
                 f"Evaluation at step {step}: Val Loss={val_loss:.4f}"
             )
@@ -428,6 +435,9 @@ def run_edp_worker(
                     "lr": current_lr,
                 }
             )
+            if decoder_type_ppl:
+                train_ppl = math.exp(loss.item())
+                wandb.log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
 
         logger.info(f"Epoch: {epoch} , Step {step}/{total_steps} completed.")
 
