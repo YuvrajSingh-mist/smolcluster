@@ -46,6 +46,30 @@ workers = {}
 workers_grads_received = {}  # Single dict for all worker gradients: {(rank, recv_step, worker_version): grads}
 
 
+def sender_loop(sock, send_queue):
+    """Non-blocking sender thread that processes messages from a queue."""
+    from smolcluster.utils.common_utils import serialize
+    
+    sock.setblocking(False)
+    buffer = b""
+
+    while True:
+        if not buffer:
+            try:
+                msg = send_queue.get(timeout=0.01)
+                buffer = serialize(msg)
+            except:
+                continue
+
+        try:
+            sent = sock.send(buffer)
+            buffer = buffer[sent:]
+        except BlockingIOError:
+            time.sleep(0.001)
+        except OSError:
+            break
+
+
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     """Create learning rate schedule with linear warmup and cosine decay.
     
@@ -344,15 +368,28 @@ def run_edp_server(
                 command, rank = message
                 if command == "register":
                     logger.info(f"Worker {rank} registered from {client_address}")
-                    with lock:
-                        workers[rank] = client_socket
                     
-                    # Send start signal immediately to this worker
+                    # Create send queue and sender thread for this worker
+                    send_queue = Queue(maxsize=8)
+                    
+                    threading.Thread(
+                        target=sender_loop,
+                        args=(client_socket, send_queue),
+                        daemon=True
+                    ).start()
+                    
+                    with lock:
+                        workers[rank] = {
+                            "conn": client_socket,
+                            "send_queue": send_queue
+                        }
+                    
+                    # Send start signal immediately to this worker via queue
                     try:
-                        send_message(client_socket, "start_training")
-                        logger.info(f"Sent start_training signal to worker {rank}")
+                        send_queue.put("start_training")
+                        logger.info(f"Queued start_training signal for worker {rank}")
                     except Exception as e:
-                        logger.error(f"Error sending start signal to worker {rank}: {e}")
+                        logger.error(f"Error queuing start signal for worker {rank}: {e}")
                     
                     threading.Thread(
                         target=handle_worker,
@@ -431,7 +468,7 @@ def run_edp_server(
             
         start_time = time.time()
         
-        while time.time() - start_time < 0.1:
+        while time.time() - start_time < 0.01:
             
         # for _ in range(MAX_MSGS_PER_STEP):
             
@@ -483,22 +520,24 @@ def run_edp_server(
                 )
 
             elif command == "pull_weights":
-                worker_version = payload  # payload is the worker's current model version
+                rank = payload.get("rank") if isinstance(payload, dict) else None
+                worker_version = payload.get("worker_version") if isinstance(payload, dict) else payload
                 logger.info(
-                    f"Worker {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
+                    f"Worker rank {rank} at {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
                 )
 
                 weights = get_weights(model)
                 
-                
-                if use_quantization:
-                    quantized_weights = quantize_model_weights(weights)
-                    threading.Thread(target=send_message, args=(conn, (quantized_weights, model_version)), daemon=True).start()
-                    logger.info(f"Quantized weights sent to worker {addr}")
+                if rank is not None and rank in workers:
+                    if use_quantization:
+                        quantized_weights = quantize_model_weights(weights)
+                        workers[rank]["send_queue"].put((quantized_weights, model_version))
+                        logger.info(f"Quantized weights queued for worker {rank}")
+                    else:
+                        workers[rank]["send_queue"].put((weights, model_version))
+                        logger.info(f"Weights queued for worker {rank}")
                 else:
-                    threading.Thread(target=send_message, args=(conn, (weights, model_version)), daemon=True).start()
-                    
-                    logger.info(f"Weights sent to worker {addr}")
+                    logger.warning(f"Worker rank {rank} not found in workers dict, cannot send weights")
 
             elif command == "disconnect":
                 logger.info(f"Worker {addr} requested disconnection.")
