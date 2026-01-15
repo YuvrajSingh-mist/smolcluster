@@ -392,22 +392,22 @@ def run_edp_worker(
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             
-            sock.setblocking(False)  # Set non-blocking to avoid hanging
-            try:
-                send_message(sock, ("pull_weights", model_version))
-                logger.info("Requested weights from server.")
+            # sock.setblocking(False)  # Set non-blocking to avoid hanging
+            # try:
+            send_message(sock, ("pull_weights", model_version))
+            logger.info("Requested weights from server.")
                 
-            except BlockingIOError:
-                logger.error(
-                    "non-blocking socket error while requesting weights from server."
-                )
-                logger.info("Will retry pulling weights in the next interval.")
+            # except BlockingIOError:
+            #     logger.error(
+            #         "non-blocking socket error while requesting weights from server."
+            #     )
+            #     logger.info("Will retry pulling weights in the next interval.")
                 
-                #applying backpressure by increasing the update interval
-                worker_update_interval = (worker_update_interval + 10) % total_steps  # Backoff update interval
+            #     #applying backpressure by increasing the update interval
+            #     worker_update_interval = (worker_update_interval + 10) % total_steps  # Backoff update interval
                 
-            finally:
-                sock.setblocking(True)  # Restore blocking socket
+            # finally:
+            #     sock.setblocking(True)  # Restore blocking socket
                 
             sock.settimeout(1.0)  # Wait up to 1 second for weights
             try:
