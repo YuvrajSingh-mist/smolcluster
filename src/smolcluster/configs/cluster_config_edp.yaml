@@ -10,19 +10,19 @@ host_ip:
 port: 65432
 
 # Worker update settings
-worker_update_interval: 50  # How often workers pull latest weights (in steps)
+worker_update_interval: 200  # How often workers pull latest weights (in steps)
 
 # Quantization settings
 use_quantization: false  # Enable/disable weight quantization for communication
 
 track_gradients: true  # Whether server tracks gradient norms for each worker
 
-polyark_average_update: 20  # How often to perform Polyark averaging (in steps)
+polyark_average_update: 100  # How often to perform Polyark averaging (in steps)
 
 # Randomness seed
 seed: 42
 
-queue_size: 1000  # Size of the gradient queue for each worker
+queue_size: 10  # Size of the gradient queue for each worker
 
 # Cluster configuration
 num_workers: 2

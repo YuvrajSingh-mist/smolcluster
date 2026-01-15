@@ -250,7 +250,7 @@ def run_edp_server(
     
     #Defining the bounded queue
     bounded_queue = Queue(maxsize=cluster_config['queue_size'])
-    MAX_MSGS_PER_STEP = 8 #to how much messages from queue to process per step
+    MAX_MSGS_PER_STEP = 2 #to how much messages from queue to process per step
     
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
     scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
@@ -436,24 +436,24 @@ def run_edp_server(
         
        
        
-        if track_gradients and step % 1000 == 0:
-            logger.info("Tracking gradients in wandb...")
-            for name, param in model.named_parameters():
-                if param.grad is not None:
+        # if track_gradients and step % 1000 == 0:
+        #     logger.info("Tracking gradients in wandb...")
+        #     for name, param in model.named_parameters():
+        #         if param.grad is not None:
                     
-                    grad_norm = torch.norm(param.grad.detach(), 2).item()
-                    wandb.log(
-                        {
-                            f"gradients/layer_{name}": grad_norm,
-                            "step": step,
-                        }
-                    )
-            logger.info("Gradient tracking complete.")
+        #             grad_norm = torch.norm(param.grad.detach(), 2).item()
+        #             wandb.log(
+        #                 {
+        #                     f"gradients/layer_{name}": grad_norm,
+        #                     "step": step,
+        #                 }
+        #             )
+        #     logger.info("Gradient tracking complete.")
 
             
         start_time = time.time()
-        
-        while time.time() - start_time < 0.01:
+        num_msgs_processed = 0
+        while time.time() - start_time < 0.01 and num_msgs_processed < MAX_MSGS_PER_STEP:
             
         # for _ in range(MAX_MSGS_PER_STEP):
             
@@ -529,7 +529,7 @@ def run_edp_server(
                 #  Remove disconnected worker
                 with lock:
                     workers.pop(addr, None)
-                    
+            num_msgs_processed += 1
       
         with lock:
             workers_copy = dict(workers_grads_received)
