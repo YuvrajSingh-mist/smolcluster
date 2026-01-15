@@ -211,7 +211,7 @@ def run_edp_worker(
     track_gradients = config.get("track_gradients", False)
     learning_rate = config["learning_rate"]
     use_quantization = cluster_config.get("use_quantization", True)
-    worker_update_interval = cluster_config.get("worker_update_interval", 5)
+    worker_update_interval = cluster_config["worker_update_interval"]
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     use_fp16 = config.get("use_fp16", False)
     polyark_average_update = cluster_config["polyark_average_update"]
