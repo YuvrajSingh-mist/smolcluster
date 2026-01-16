@@ -44,15 +44,22 @@ workers_grads_received = {}  # Single dict for all worker gradients: {(rank, rec
 def sender_loop(sock, send_queue):
     """Sender thread that processes messages from a queue using send_message."""
     while True:
+        # try:
         try:
-            msg = send_queue.get(timeout=0.01)
-            send_message(sock, msg)
-        except Exception as e:
-            # Queue timeout or socket error
-            if isinstance(e, OSError):
-                logger.error(f"Socket error in sender_loop: {e}")
-                break
-            continue
+            msg = send_queue.get_nowait()
+            
+        except Exception:
+            logger.error("Sender queue empty. Exiting the sender loop.")
+            break
+        
+        send_message(sock, msg)
+            
+        # except Exception as e:
+        #     # Queue timeout or socket error
+        #     if isinstance(e, OSError):
+        #         logger.error(f"Socket error in sender_loop: {e}")
+        #         break
+        #     continue
 
 
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
