@@ -449,19 +449,19 @@ def run_edp_server(
         
        
        
-        # if track_gradients and step % 1000 == 0:
-        #     logger.info("Tracking gradients in wandb...")
-        #     for name, param in model.named_parameters():
-        #         if param.grad is not None:
+        if track_gradients and step % 1000 == 0:
+            logger.info("Tracking gradients in wandb...")
+            for name, param in model.named_parameters():
+                if param.grad is not None:
                     
-        #             grad_norm = torch.norm(param.grad.detach(), 2).item()
-        #             wandb.log(
-        #                 {
-        #                     f"gradients/layer_{name}": grad_norm,
-        #                     "step": step,
-        #                 }
-        #             )
-        #     logger.info("Gradient tracking complete.")
+                    grad_norm = torch.norm(param.grad.detach(), 2).item()
+                    wandb.log(
+                        {
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                        }
+                    )
+            logger.info("Gradient tracking complete.")
 
             
         # start_time = time.time()
@@ -471,7 +471,7 @@ def run_edp_server(
         # for _ in range(MAX_MSGS_PER_STEP):
             
             try:
-                message, conn, addr = bounded_queue.get_nowait()
+                message, conn, addr = bounded_queue.get(timeout=0.01)
             except Exception as e:
                 logging.error(f"Error getting message from queue: {e}")
                 break

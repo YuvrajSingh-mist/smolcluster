@@ -372,7 +372,7 @@ def run_edp_worker(
                 logger.info(
                     "Local forward and backward pass done. Sending model weights to server."
                 )
-                sock.setblocking(False)
+                # sock.setblocking(False)
                 try:
                     send_message(
                         sock,
@@ -403,14 +403,14 @@ def run_edp_worker(
                     polyark_average_update = backoff_interval
                     logger.info(f"Backoff: next polyark averaging at interval {backoff_interval}")
     
-                finally:
-                    sock.setblocking(True)
+                # finally:
+                #     sock.setblocking(True)
                     
 
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
             
-            sock.setblocking(False)
+            # sock.setblocking(False)
             
             try:
                 
@@ -431,8 +431,8 @@ def run_edp_worker(
                 logger.info(f"Backoff: next weight pull at interval {backoff_interval}")
                 continue
             
-            finally:
-                sock.setblocking(True)
+            # finally:
+            #     sock.setblocking(True)
 
 
             sock.settimeout(1.0)  # Wait up to 1 second for weights
@@ -463,20 +463,20 @@ def run_edp_worker(
             finally:
                 sock.settimeout(None)  # Restore blocking socket
 
-            # if track_gradients and step % 1000 == 0:
-            #     logger.info("Tracking gradients in wandb...")
-            #     for name, param in model.named_parameters():
-            #         if param.grad is not None:
-            #             # logger.info(f"Logging gradients for layer: {name}")
-            #             grad_norm = torch.norm(param.grad.detach(), 2).item()
-            #             wandb.log(
-            #                 {
-            #                     f"gradients/layer_{name}": grad_norm,
-            #                     "step": step,
-            #                     "epoch": epoch,
-            #                 }
-            #             )
-            #     logger.info("Gradient tracking complete.")
+            if track_gradients and step % 1000 == 0:
+                logger.info("Tracking gradients in wandb...")
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        # logger.info(f"Logging gradients for layer: {name}")
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log(
+                            {
+                                f"gradients/layer_{name}": grad_norm,
+                                "step": step,
+                                "epoch": epoch,
+                            }
+                        )
+                logger.info("Gradient tracking complete.")
 
         # Update local model version if received new weights
         if recv_model_version != -1 and recv_model_version != model_version:
