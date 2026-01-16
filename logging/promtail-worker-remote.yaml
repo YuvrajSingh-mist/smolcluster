@@ -17,10 +17,18 @@ scrape_configs:
         labels:
           job: smolcluster-worker
           component: worker
-          host: ${HOSTNAME}
           __path__: /tmp/smolcluster-logs/worker-*.log
 
     pipeline_stages:
+      # Extract hostname from filename
+      - match:
+          selector: '{job="smolcluster-worker"}'
+          stages:
+            - regex:
+                source: filename
+                expression: '.*/(?P<host>[^/]+)\.log$'
+            - labels:
+                host:
       # Parse structured logs
       - regex:
           expression: '^(?P<timestamp>\S+\s+\S+) \| (?P<level>\S+) \| rank:(?P<rank>\w+) \| (?P<message>.+)$'

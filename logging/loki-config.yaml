@@ -34,3 +34,7 @@ limits_config:
   max_query_lookback: 720h
   ingestion_rate_mb: 50
   ingestion_burst_size_mb: 100
+  # Allow logs with timestamps up to 6 hours in the future (for timezone differences)
+  reject_old_samples: false
+  reject_old_samples_max_age: 168h
+  creation_grace_period: 6h

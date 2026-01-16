@@ -464,9 +464,9 @@ def run_edp_server(
             logger.info("Gradient tracking complete.")
 
             
-        # start_time = time.time()
+        start_time = time.time()
         num_msgs_processed = 0
-        while num_msgs_processed < MAX_MSGS_PER_STEP:
+        while time.time() - start_time < 0.01 and num_msgs_processed < MAX_MSGS_PER_STEP:
             
         # for _ in range(MAX_MSGS_PER_STEP):
             
