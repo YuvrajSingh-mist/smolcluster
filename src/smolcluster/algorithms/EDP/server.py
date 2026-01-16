@@ -47,7 +47,7 @@ def sender_loop(sock, send_queue):
     while True:
         # try:
         try:
-            msg = send_queue.get(timeout=0.01)
+            msg = send_queue.get(timeout=0.1)
             send_message(sock, msg)
             
         except Exception as e:
@@ -201,7 +201,7 @@ def enqeue_bounded_queue(bounded_queue: Queue, message):
     
     try:
         bounded_queue.put_nowait(message)
-    
+        logger.info("Message enqueued successfully.")   
     except Exception:
         
         try:

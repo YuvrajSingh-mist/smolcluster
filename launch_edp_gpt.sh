@@ -73,31 +73,35 @@ if [[ "$DRY_RUN" != "true" ]]; then
             exit 1
         fi
         
-        # Check Docker on server (controller) node
-        if [[ "$node" == "$SERVER" ]]; then
-            if ssh "$node" "docker --version" &>/dev/null; then
-                echo "✅ $node: Docker installed"
-                # Check if Loki/Grafana are running
-                if ssh "$node" "docker ps | grep -q loki"; then
-                    echo "✅ $node: Loki running"
+        # Check if Promtail is installed on remote node (cross-platform)
+        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe)" &>/dev/null; then
+            # Kill any existing Promtail processes (cleanup old/broken instances)
+            echo "🧹 $node: Cleaning up any existing Promtail processes..."
+            ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" &>/dev/null || true
+            sleep 1
+            
+            # Determine config file based on node type
+            if [[ "$node" == "$SERVER" ]]; then
+                config_file="logging/promtail-server-remote.yaml"
+            else
+                config_file="logging/promtail-worker-remote.yaml"
+            fi
+            
+            # Start Promtail in background
+            echo "🚀 $node: Starting Promtail..."
+            if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && nohup promtail -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 &"; then
+                sleep 1
+                if ssh "$node" "(pgrep -f promtail || tasklist /FI \"IMAGENAME eq promtail.exe\" 2>nul | findstr promtail)" &>/dev/null; then
+                    echo "✅ $node: Promtail started successfully"
                 else
-                    echo "⚠️  $node: Loki not running (will auto-start when server starts)"
+                    echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
                 fi
             else
-                echo "⚠️  Warning: Docker not found on controller $node. Centralized logging will be disabled."
-                echo "   Install Docker: https://docs.docker.com/get-docker/"
+                echo "⚠️  $node: Failed to start Promtail. Logs will be local only."
             fi
-        fi
-        
-        # Check Promtail on worker nodes
-        if [[ "$node" != "$SERVER" ]]; then
-            if ssh "$node" "pgrep -f promtail" &>/dev/null; then
-                echo "✅ $node: Promtail running"
-            else
-                echo "⚠️  $node: Promtail not running. Logs will be local only."
-                echo "   To enable centralized logging, install and start Promtail on $node"
-                echo "   See: logging/promtail-worker-remote.yaml"
-            fi
+        else
+            echo "⚠️  Warning: Promtail not found on $node. Centralized logging will not work."
+            echo "   Install: See logging/SETUP.md (macOS/Linux/Windows supported)"
         fi
         
         # Check that venv exists and sync dependencies
@@ -134,7 +138,7 @@ if [[ -f "$PROJECT_DIR/logging/docker-compose.yml" ]]; then
         sleep 3
         if curl -s http://localhost:3100/ready | grep -q "ready"; then
             echo "✅ Loki ready at http://localhost:3100"
-            echo "📈 Grafana UI at http://localhost:3000 (admin/admin)"
+            echo "� Grafana UI at http://localhost:3000 (admin/admin)"
         else
             echo "⚠️  Loki may not be ready yet, but continuing..."
         fi
