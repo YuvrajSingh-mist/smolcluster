@@ -368,7 +368,7 @@ def run_edp_server(
                     logger.info(f"Worker {rank} registered from {client_address}")
                     
                     # Create send queue and sender thread for this worker
-                    send_queue = Queue(maxsize=8)
+                    send_queue = Queue(maxsize=32)
                     
                     threading.Thread(
                         target=sender_loop,
@@ -464,9 +464,9 @@ def run_edp_server(
         #     logger.info("Gradient tracking complete.")
 
             
-        start_time = time.time()
+        # start_time = time.time()
         num_msgs_processed = 0
-        while time.time() - start_time < 0.01 and num_msgs_processed < MAX_MSGS_PER_STEP:
+        while num_msgs_processed < MAX_MSGS_PER_STEP:
             
         # for _ in range(MAX_MSGS_PER_STEP):
             
