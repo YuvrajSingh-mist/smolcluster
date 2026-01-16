@@ -1,0 +1,33 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/promtail-positions.yaml
+
+clients:
+  
+  - url: http://10.10.0.4:3100/loki/api/v1/push
+
+scrape_configs:
+  # Server logs on this machine
+  - job_name: smolcluster-server
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: smolcluster-server
+          component: server
+          host: ${HOSTNAME}
+          __path__: /tmp/smolcluster-logs/server-*.log
+
+    pipeline_stages:
+      # Parse structured logs
+      - regex:
+          expression: '^(?P<timestamp>\S+\s+\S+) \| (?P<level>\S+) \| rank:(?P<rank>\w+) \| (?P<message>.+)$'
+      - labels:
+          rank:
+          level:
+      - timestamp:
+          source: timestamp
+          format: '2006-01-02 15:04:05,000'

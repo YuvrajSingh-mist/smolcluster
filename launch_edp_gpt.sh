@@ -73,6 +73,33 @@ if [[ "$DRY_RUN" != "true" ]]; then
             exit 1
         fi
         
+        # Check Docker on server (controller) node
+        if [[ "$node" == "$SERVER" ]]; then
+            if ssh "$node" "docker --version" &>/dev/null; then
+                echo "✅ $node: Docker installed"
+                # Check if Loki/Grafana are running
+                if ssh "$node" "docker ps | grep -q loki"; then
+                    echo "✅ $node: Loki running"
+                else
+                    echo "⚠️  $node: Loki not running (will auto-start when server starts)"
+                fi
+            else
+                echo "⚠️  Warning: Docker not found on controller $node. Centralized logging will be disabled."
+                echo "   Install Docker: https://docs.docker.com/get-docker/"
+            fi
+        fi
+        
+        # Check Promtail on worker nodes
+        if [[ "$node" != "$SERVER" ]]; then
+            if ssh "$node" "pgrep -f promtail" &>/dev/null; then
+                echo "✅ $node: Promtail running"
+            else
+                echo "⚠️  $node: Promtail not running. Logs will be local only."
+                echo "   To enable centralized logging, install and start Promtail on $node"
+                echo "   See: logging/promtail-worker-remote.yaml"
+            fi
+        fi
+        
         # Check that venv exists and sync dependencies
         echo "📦 Checking venv on $node..."
         if ! ssh "$node" "test -f $REMOTE_PROJECT_DIR/.venv/bin/python"; then
@@ -94,6 +121,27 @@ fi
 echo "Server: $SERVER"
 echo "Workers: ${WORKERS[*]}"
 echo "All nodes: ${ALL_NODES[*]}"
+
+# Start logging infrastructure on controller (this machine)
+echo ""
+echo "📈 Starting logging infrastructure on controller..."
+if [[ -f "$PROJECT_DIR/logging/docker-compose.yml" ]]; then
+    if docker ps | grep -q loki; then
+        echo "✅ Logging infrastructure already running"
+    else
+        echo "🚀 Starting Loki + Grafana + Promtail..."
+        (cd "$PROJECT_DIR/logging" && docker-compose up -d)
+        sleep 3
+        if curl -s http://localhost:3100/ready | grep -q "ready"; then
+            echo "✅ Loki ready at http://localhost:3100"
+            echo "📈 Grafana UI at http://localhost:3000 (admin/admin)"
+        else
+            echo "⚠️  Loki may not be ready yet, but continuing..."
+        fi
+    fi
+else
+    echo "⚠️  Logging not configured (logging/docker-compose.yml not found)"
+fi
 
 # Function to launch on a node
 launch_on_node() {

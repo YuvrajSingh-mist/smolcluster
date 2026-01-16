@@ -26,8 +26,9 @@ from smolcluster.utils.quantization import (
     dequantize_model_weights,
     quantize_model_weights,
 )
+from smolcluster.utils.logging_utils import setup_cluster_logging
 
-# Setup logging
+# Setup logging (will be replaced by setup_cluster_logging in run_edp_worker)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -174,9 +175,15 @@ def run_edp_worker(
     """
     global model_version, recv_model_version, logger
     
-    # Update logger with worker rank
-    logger = logging.getLogger(f"[WORKER-{worker_rank}]")
-    logger.setLevel(logging.INFO)
+    # Configure centralized logging (adds file handler to existing module-level logger)
+    setup_cluster_logging(
+        logger=logger,
+        component="worker",
+        rank=worker_rank,
+        hostname=hostname,
+        log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
+    )
+    logger.info(f"🚀 EDP Worker {worker_rank} starting up")
     
     batch_size = config["batch_size"]
     num_epochs = config["num_epochs"]

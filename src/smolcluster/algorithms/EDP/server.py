@@ -23,10 +23,11 @@ from smolcluster.utils.quantization import (
     dequantize_model_weights,
     quantize_model_weights,
 )
+from smolcluster.utils.logging_utils import setup_cluster_logging
 from queue import Queue
 
 
-# Setup logging
+# Setup logging (will be replaced by setup_cluster_logging in run_edp_server)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -46,20 +47,15 @@ def sender_loop(sock, send_queue):
     while True:
         # try:
         try:
-            msg = send_queue.get_nowait()
+            msg = send_queue.get(timeout=0.01)
+            send_message(sock, msg)
             
-        except Exception:
-            logger.error("Sender queue empty. Exiting the sender loop.")
-            break
-        
-        send_message(sock, msg)
-            
-        # except Exception as e:
-        #     # Queue timeout or socket error
-        #     if isinstance(e, OSError):
-        #         logger.error(f"Socket error in sender_loop: {e}")
-        #         break
-        #     continue
+        except Exception as e:
+            # Queue timeout or socket error
+            if isinstance(e, OSError):
+                logger.error(f"Socket error in sender_loop: {e}")
+                break
+            continue
 
 
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
@@ -243,8 +239,18 @@ def run_edp_server(
         device: Device to run on
         criterion: Loss criterion
     """
-    global model_version
+    global model_version, logger
     shutdown_flag = threading.Event()
+    
+    # Configure centralized logging (adds file handler to existing module-level logger)
+    setup_cluster_logging(
+        logger=logger,
+        component="server",
+        rank=None,
+        hostname=hostname,
+        log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
+    )
+    logger.info("🚀 EDP Server starting up")
 
     batch_size = config["batch_size"]
     num_epochs = config["num_epochs"]
@@ -596,7 +602,7 @@ def run_edp_server(
                     else:
                         optimizer.step()
                     logger.info(
-                        f"Applied leader gradients with workers. Step {step} '/' {total_steps}: Updated to model version {model_version}"
+                        f"Applied leader gradients with workers. Step {step} / {total_steps}: Updated to model version {model_version}"
                     )
                      # Calculate and log PPL for decoder models
                     if decoder_type_ppl:
