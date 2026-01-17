@@ -279,7 +279,7 @@ def enqeue_bounded_queue(bounded_queue: Queue, message, control: bool = False):
   
         try:
             bounded_queue.put_nowait(message)
-        logger.info("Message enqueued successfully.")   
+            logger.info("Message enqueued successfully.")   
         
         except Exception:
             
