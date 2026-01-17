@@ -210,7 +210,7 @@ def run_syncps_worker(
         
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            logger.info(f"[Step {step}] Starting forward and backward pass")
+            logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Starting forward and backward pass")
             
             data, target = data.to(device), target.to(device)
             output = model(data.view(data.size(0), -1))
@@ -237,14 +237,14 @@ def run_syncps_worker(
                 max_norm = config["gradient_clipping"].get("max_norm", 1.0)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
                 logger.info(
-                    f"[Step {step}] Applied gradient clipping with max_norm={max_norm}"
+                    f"[Step {step} / {num_epochs * len(train_loader)}] Applied gradient clipping with max_norm={max_norm}"
                 )
             
             grads = get_gradients(model)
-            logger.info(f"[Step {step}] Computed local gradients")
+            logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Computed local gradients")
             
             # Send gradients to server
-            logger.info(f"[Step {step}] Sending gradients to server")
+            logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Sending gradients to server")
             send_message(sock, ("parameter_server_reduce", step, worker_rank, grads))
             
             # Receive updated weights from server
@@ -252,7 +252,7 @@ def run_syncps_worker(
             data_recv = receive_message(sock)
             command, recv_step, weights = data_recv
             logger.info(
-                f"[Step {step}] Received '{command}' from server for step {recv_step}"
+                f"[Step {step} / {num_epochs * len(train_loader)}] Received '{command}' from server for step {recv_step}"
             )
             
             assert recv_step == step, "Step mismatch in communication with server."
@@ -267,7 +267,7 @@ def run_syncps_worker(
                 )
             else:
                 logger.warning(
-                    f"[Step {step}] Expected 'model_weights' but got '{command}'"
+                    f"[Step {step} / {num_epochs * len(train_loader)}] Expected 'model_weights' but got '{command}'"
                 )
             
             # Log gradient norms if tracking enabled
@@ -294,7 +294,7 @@ def run_syncps_worker(
                         "ppl/val": val_ppl,
                     })
                     logger.info(
-                        f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
+                        f"Evaluation at step {step} / {num_epochs * len(train_loader)}`: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                     )
                 else:
                     wandb.log({
@@ -303,7 +303,7 @@ def run_syncps_worker(
                         "losses/val": val_loss,
                     })
                     logger.info(
-                        f"Evaluation at step {step}: Val Loss={val_loss:.4f}"
+                        f"Evaluation at step {step} / {num_epochs * len(train_loader)}: Val Loss={val_loss:.4f}"
                     )
                 model.train()
       
@@ -313,7 +313,7 @@ def run_syncps_worker(
                     "losses/train_batch": loss.item(),
                 })
            
-            logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
+            logger.info(f"Epoch {epoch + 1} / {num_epochs}, Step {step} / {num_epochs * len(train_loader)}: Loss={loss.item():.4f}")
         
         avg_loss = total_loss / len(train_loader)
  

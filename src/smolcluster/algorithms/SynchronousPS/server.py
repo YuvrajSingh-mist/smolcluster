@@ -244,13 +244,13 @@ def run_syncps_server(
 
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            logger.info(f"[Step {step}] Server computing leader gradients")
+            logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server computing leader gradients")
             leader_loss, leader_grads = compute_leader_gradients(
                 device, model, data, target, criterion, optimizer, config
             )
             grads_received[step][rank] = leader_grads
             total_loss += leader_loss.item()
-            logger.info(f"[Step {step}] Leader loss: {leader_loss.item():.4f}")
+            logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Leader loss: {leader_loss.item():.4f}")
 
            
             wandb.log({
@@ -267,7 +267,7 @@ def run_syncps_server(
                     curr_workers_len = len(grads_received[step])
 
                 logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len}/{world_size} participants."
+                    f"Epoch {epoch + 1} / {num_epochs}, Step: {step}  / {num_epochs * len(train_loader)}, Batch {batch_idx}: Received gradients from {curr_workers_len}/{world_size} participants."
                 )
                 if curr_workers_len < num_workers:
                     logger.info(f"Waiting for more gradients for step {step}...")
@@ -279,7 +279,7 @@ def run_syncps_server(
             # Average gradients and update model
             if len(grads_received[step]) != 0:
                 logger.info(
-                    f"[Step {step}] Averaging gradients from {len(grads_received[step])} participants"
+                    f"[Step {step}  / {num_epochs * len(train_loader)}] Averaging gradients from {len(grads_received[step])} participants"
                 )
                 grads_reduced = parameter_server_reduce(
                     grads_received[step], len(grads_received[step])
@@ -287,11 +287,11 @@ def run_syncps_server(
 
                
                 logger.info(
-                    f"[Step {step}] Applying averaged gradients to server model"
+                    f"[Step {step}  / {num_epochs * len(train_loader)}] Applying averaged gradients to server model"
                 )
                 set_gradients(grads_reduced, model)
                 optimizer.step()
-                logger.info(f"[Step {step}] Server model updated")
+                logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server model updated")
                 
                  # Send updated weights to workers
                 for _worker_addr, worker_socket in workers.items():
