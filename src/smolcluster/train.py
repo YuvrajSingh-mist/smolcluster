@@ -1,28 +1,22 @@
 """
-Training with EDP (Elastic Distributed Parameter Server)
+Training with SyncPS (Synchronous Parameter Server)
 
 This script provides both server and worker entry points for distributed
-GPT training using the refactored EDP functions.
+GPT training using the refactored SyncPS functions.
 
 Usage:
     Server: python train.py server <hostname>
     Worker: python train.py worker <rank> <hostname>
 """
-import json
-import time
-import math
-import argparse
+
 import logging
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
 import torchinfo
 import wandb
-from tqdm import tqdm
 import yaml
 
 from smolcluster.models.gpt import BaseTransformer
@@ -48,7 +42,8 @@ def load_configs():
     with open(CONFIG_DIR / "gpt_config.yaml") as f:
         gpt_config = yaml.safe_load(f)
     
-    with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
+    # with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
+    with open(CONFIG_DIR / "cluster_config_syncps.yaml") as f:
         cluster_config = yaml.safe_load(f)
     
     return gpt_config, cluster_config
@@ -76,7 +71,7 @@ def setup_wandb():
 
 
 def run_server(hostname: str):
-    """Run EDP server for GPT training."""
+    """Run SyncPS server for GPT training."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -123,8 +118,21 @@ def run_server(hostname: str):
     # Create criterion
     criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
+    # Initialize W&B
+    wandb.init(
+        project="smolcluster",
+        name=f"SyncPS-server-{hostname}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}_workers{num_workers}",
+        config={
+            **gpt_config,
+            "server_hostname": hostname,
+            "num_workers": num_workers,
+            "mode": "synchronous_ps",
+        },
+    )
+    
     # Run server
     logger.info("Starting SyncPS server...")
+    # run_edp_server(
     run_syncps_server(
         model=model,
         optimizer=optimizer,
@@ -136,10 +144,11 @@ def run_server(hostname: str):
         device=device,
         criterion=criterion,
     )
+    wandb.finish()
 
 
 def run_worker(worker_rank: int, hostname: str):
-    """Run EDP worker for GPT training."""
+    """Run SyncPS worker for GPT training."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -157,8 +166,6 @@ def run_worker(worker_rank: int, hostname: str):
     num_workers = cluster_config["num_workers"]
     seed = cluster_config.get("seed", 42)
     world_size = num_workers + 1
-    
-
     
     # Get server connection info
     host_ip = cluster_config["host_ip"][hostname]
@@ -203,8 +210,21 @@ def run_worker(worker_rank: int, hostname: str):
     # Create criterion
     criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
+    # Initialize W&B
+    wandb.init(
+        project="smolcluster",
+        name=f"SyncPS-worker-{hostname}_rank{local_rank}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}",
+        config={
+            **gpt_config,
+            "worker_rank": local_rank,
+            "worker_hostname": hostname,
+            "mode": "synchronous_ps",
+        },
+    )
+    
     # Run worker
     logger.info(f"Starting SyncPS worker {local_rank}...")
+    # run_edp_worker(
     run_syncps_worker(
         model=model,
         optimizer=optimizer,
@@ -219,10 +239,11 @@ def run_worker(worker_rank: int, hostname: str):
         host_ip=host_ip,
         port=port,
     )
+    wandb.finish()
 
 
 def main():
-    """Main entry point for EDP distributed training."""
+    """Main entry point for SyncPS distributed training."""
     if len(sys.argv) < 2:
         print("Usage:")
         print("  Server: python train.py server <hostname>")
