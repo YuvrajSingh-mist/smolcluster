@@ -7,6 +7,7 @@ import math
 import torch
 import torchinfo
 from torch.utils.data import DataLoader
+import wandb
 
 from smolcluster.utils.common_utils import (
     get_gradients,
@@ -189,16 +190,11 @@ def run_syncps_server(
     lock = threading.Lock()
     workers = {}
     grads_received = defaultdict(dict)
-    
-    # Log model summary
-    try:
-        import wandb
-        model_summary = str(torchinfo.summary(model, verbose=0, device=device))
-        logger.info("Model Summary:")
-        logger.info(model_summary)
-        wandb.log({"model_structure": model_summary})
-    except Exception as e:
-        logger.warning(f"Could not log model summary: {e}")
+
+    model_summary = str(torchinfo.summary(model, verbose=0, device=device))
+    logger.info("Model Summary:")
+    logger.info(model_summary)
+    wandb.log({"model_structure": model_summary})
 
     # Accept connections and wait for registration
     registered_workers = {}  # rank -> socket
@@ -317,18 +313,16 @@ def run_syncps_server(
 
             # Log gradient norms if tracking enabled
             if track_gradients:
-                try:
-                    import wandb
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            grad_norm = torch.norm(param.grad.detach(), 2).item()
-                            wandb.log({
-                                f"gradients/layer_{name}": grad_norm,
-                                "step": step,
-                                "epoch": epoch + 1,
-                            })
-                except:
-                    pass
+               
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log({
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                            "epoch": epoch + 1,
+                        })
+                
 
             # Log training metrics
             
