@@ -47,7 +47,7 @@ def sender_loop(sock, send_queue):
     while True:
         # try:
         try:
-            msg = send_queue.get(timeout=0.01)
+            msg = send_queue.get(timeout=0.1)
             send_message(sock, msg)
             
         except Exception as e:
@@ -401,7 +401,7 @@ def run_edp_server(
                 
                 logger.info(f"Enqueuing {command} to control queue")
                 enqeue_bounded_queue(control_messages_bounded_queue, (message, conn, addr))
-            elif command == 'disconnect':
+            elif command == 'polyark_averaging':
                 enqeue_bounded_queue(data_message_queue_size, (message, conn, addr))
          
 
