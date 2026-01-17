@@ -347,6 +347,7 @@ def run_edp_server(
     control_messages_bounded_queue = Queue(maxsize=cluster_config['control_message_queue_size'])
     
     MAX_DATA_MSGS_PER_STEP = 2 #to how much messages from queue to process per step
+    MAX_CTRL_MSGS_PER_STEP = 4 
     
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
     scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
@@ -552,7 +553,10 @@ def run_edp_server(
         #                 }
         #             )
         #     logger.info("Gradient tracking complete.")
-        while control_messages_bounded_queue.qsize() > 0:
+        num_ctrl_msgs_processed = 0
+        start_time = time.time()
+        
+        while time.time() - start_time < 0.01 and num_ctrl_msgs_processed < MAX_CTRL_MSGS_PER_STEP:
             
             try:
                 message, conn, addr = control_messages_bounded_queue.get_nowait()
@@ -562,6 +566,7 @@ def run_edp_server(
 
             command, payload = message
             process_message(command, payload, model, device, use_quantization, addr)
+            num_ctrl_msgs_processed += 1
             
         start_time = time.time()
         num_msgs_processed = 0
