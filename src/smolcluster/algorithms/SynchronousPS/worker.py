@@ -1,6 +1,5 @@
 import logging
 import math
-import math
 import socket
 import subprocess
 import time
@@ -181,6 +180,7 @@ def run_syncps_worker(
     eval_steps = config["eval_steps"]
     track_gradients = config.get("track_gradients", False)
     polyak_alpha = config.get("polyak_alpha", 0.5)
+    decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     
     # Connect to server
     sock = connect_to_server(host_ip, port)
@@ -281,18 +281,27 @@ def run_syncps_worker(
         
             # Evaluation
             if step % eval_steps == 0:
-                val_loss, val_ppl = evaluate(device, model, val_loader, criterion)
-               
-                wandb.log({
+                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
+                
+                if decoder_type_ppl:
+                    wandb.log({
                         "step": step,
                         "epoch": epoch + 1,
                         "losses/val": val_loss,
                         "ppl/val": val_ppl,
                     })
-                
-                logger.info(
-                    f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%"
-                )
+                    logger.info(
+                        f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
+                    )
+                else:
+                    wandb.log({
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                    })
+                    logger.info(
+                        f"Evaluation at step {step}: Val Loss={val_loss:.4f}"
+                    )
                 model.train()
             
             # Log to wandb

@@ -3,8 +3,7 @@ import logging
 import socket
 import threading
 from collections import defaultdict
-from pathlib import Path
-
+import math
 import torch
 import torchinfo
 from torch.utils.data import DataLoader
@@ -29,16 +28,16 @@ def evaluate(
     device: torch.device, 
     model: torch.nn.Module, 
     val_loader: DataLoader, 
-    criterion: torch.nn.Module
+    criterion: torch.nn.Module,
+    decoder_type_ppl: bool = False
 ) -> tuple[float, float]:
     """Evaluate model on validation set."""
     model.eval()
-    total_loss = 0.0
-    correct = 0
-    total = 0
+    total_val_loss = 0.0
+ 
     with torch.no_grad():
         for data, target in val_loader:
-            data, target = batch
+    
             data, target = data.to(device), target.to(device)
             output = model(data)
             B,T,C = output.shape
@@ -46,9 +45,6 @@ def evaluate(
             target = target.view(B*T)
             loss = criterion(output, target)
             total_val_loss += loss.item()
-            # _, predicted = torch.max(output.data, 1)
-            # total += target.size(0)
-            # correct += (predicted == target).sum().item()
     avg_loss = total_val_loss / len(val_loader)
     ppl = math.exp(avg_loss) if decoder_type_ppl else None
     
@@ -66,11 +62,12 @@ def compute_leader_gradients(
     """Compute gradients for leader/server node."""
     model.train()
     data, target = data.to(device), target.to(device)
-    output = model(data.view(data.size(0), -1))
+    output = model(data)
+    B,T,C = output.shape
+    output = output.view(B*T, C)
+    target = target.view(B*T)
     loss = criterion(output, target)
-    optimizer.zero_grad()
-    loss.backward()
-
+    
     # Gradient clipping
     if config.get("gradient_clipping", {}).get("enabled", False):
         max_norm = config["gradient_clipping"].get("max_norm", 1.0)
@@ -173,6 +170,7 @@ def run_syncps_server(
     num_epochs = config["num_epochs"]
     eval_steps = config["eval_steps"]
     track_gradients = config.get("track_gradients", False)
+    decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     num_workers = cluster_config["num_workers"]
     world_size = num_workers + 1
     rank = 0  # Server is rank 0
@@ -344,18 +342,27 @@ def run_syncps_server(
 
             # Evaluation
             if step % eval_steps == 0:
-                val_loss, val_ppl = evaluate(device, model, val_loader, criterion)
-               
-                wandb.log({
+                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
+                
+                if decoder_type_ppl:
+                    wandb.log({
                         "step": step,
                         "epoch": epoch + 1,
                         "losses/val": val_loss,
                         "ppl/val": val_ppl,
                     })
-            
-                logger.info(
-                    f"Step {step}: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
-                )
+                    logger.info(
+                        f"Step {step}: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
+                    )
+                else:
+                    wandb.log({
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                    })
+                    logger.info(
+                        f"Step {step}: Val Loss={val_loss:.4f}"
+                    )
 
         avg_loss = total_loss / len(train_loader)
        
