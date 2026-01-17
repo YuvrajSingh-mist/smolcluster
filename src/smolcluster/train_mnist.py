@@ -292,8 +292,8 @@ def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Distributed MNIST Training with EDP or SyncPS")
     parser.add_argument("mode", choices=["server", "worker"], help="Run as server or worker")
-    parser.add_argument("hostname", help="Hostname of this node")
-    parser.add_argument("rank", nargs="?", type=int, help="Worker rank (1-indexed, required for worker mode)")
+    parser.add_argument("arg1", help="Hostname (server mode) or rank (worker mode)")
+    parser.add_argument("arg2", nargs="?", help="Hostname (worker mode only)")
     parser.add_argument("-a", "--algorithm", choices=["edp", "syncps"], default="syncps",
                         help="Training algorithm to use (default: syncps)")
     
@@ -303,9 +303,19 @@ def main():
         if "--algorithm" in sys.argv or "-a" in sys.argv:
             args = parser.parse_args()
             mode = args.mode
-            hostname = args.hostname
             algorithm = args.algorithm
-            worker_rank = args.rank
+            
+            # Parse positional args based on mode
+            if mode == "server":
+                hostname = args.arg1
+                worker_rank = None
+            else:  # worker
+                worker_rank = int(args.arg1)
+                hostname = args.arg2
+                if hostname is None:
+                    print("Error: Worker mode requires both rank and hostname")
+                    parser.print_help()
+                    sys.exit(1)
         else:
             # Legacy format: mode hostname [rank]
             mode = sys.argv[1]
