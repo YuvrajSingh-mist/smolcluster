@@ -306,28 +306,22 @@ def run_syncps_worker(
                         f"Evaluation at step {step}: Val Loss={val_loss:.4f}"
                     )
                 model.train()
-            
-            # Log to wandb
-            try:
-                import wandb
-                wandb.log({
+      
+            wandb.log({
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/train_batch": loss.item(),
                 })
-            except:
-                pass
+           
             logger.info(f"Epoch {epoch + 1}, Step {step}: Loss={loss.item():.4f}")
         
         avg_loss = total_loss / len(train_loader)
-        try:
-            import wandb
-            wandb.log({
+ 
+        wandb.log({
                 "epoch": epoch + 1,
                 "losses/train_epoch": avg_loss,
             })
-        except:
-            pass
+        
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
         )
