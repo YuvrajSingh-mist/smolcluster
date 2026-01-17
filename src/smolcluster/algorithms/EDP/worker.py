@@ -463,20 +463,20 @@ def run_edp_worker(
             finally:
                 sock.settimeout(None)  # Restore blocking socket
 
-            if track_gradients and step % 1000 == 0:
-                logger.info("Tracking gradients in wandb...")
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        # logger.info(f"Logging gradients for layer: {name}")
-                        grad_norm = torch.norm(param.grad.detach(), 2).item()
-                        wandb.log(
-                            {
-                                f"gradients/layer_{name}": grad_norm,
-                                "step": step,
-                                "epoch": epoch,
-                            }
-                        )
-                logger.info("Gradient tracking complete.")
+            # if track_gradients and step % 1000 == 0:
+            #     logger.info("Tracking gradients in wandb...")
+            #     for name, param in model.named_parameters():
+            #         if param.grad is not None:
+            #             # logger.info(f"Logging gradients for layer: {name}")
+            #             grad_norm = torch.norm(param.grad.detach(), 2).item()
+            #             wandb.log(
+            #                 {
+            #                     f"gradients/layer_{name}": grad_norm,
+            #                     "step": step,
+            #                     "epoch": epoch,
+            #                 }
+            #             )
+            #     logger.info("Gradient tracking complete.")
 
         # Update local model version if received new weights
         if recv_model_version != -1 and recv_model_version != model_version:
