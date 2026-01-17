@@ -275,11 +275,9 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
     else:  # syncps
         run_syncps_worker(
             model=model,
-            optimizer=optimizer,
             train_loader=train_loader,
             val_loader=val_loader,
             config=gpt_config,
-            cluster_config=cluster_config,
             worker_rank=local_rank,
             hostname=hostname,
             device=device,
