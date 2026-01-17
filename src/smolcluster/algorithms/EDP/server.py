@@ -767,6 +767,19 @@ def run_edp_server(
         # gradients_event.clear()
 
         start_time = time.time()
+        while time.time() - start_time < 0.01:
+            
+            try:
+                message, conn, addr = control_messages_bounded_queue.get_nowait()
+            except Exception as e:
+                logging.error(f"Error getting message from control queue: {e}")
+                break
+
+            command, payload = message
+            process_message(command, payload, model, device, use_quantization, addr)
+            
+            
+        start_time = time.time()
         num_msgs_processed = 0
         
         while time.time() - start_time < 0.01 and num_msgs_processed < MAX_DATA_MSGS_PER_STEP:
