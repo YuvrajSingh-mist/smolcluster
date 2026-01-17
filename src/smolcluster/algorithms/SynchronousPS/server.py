@@ -38,17 +38,21 @@ def evaluate(
     total = 0
     with torch.no_grad():
         for data, target in val_loader:
+            data, target = batch
             data, target = data.to(device), target.to(device)
-            output = model(data.view(data.size(0), -1))
+            output = model(data)
+            B,T,C = output.shape
+            output = output.view(B*T, C)
+            target = target.view(B*T)
             loss = criterion(output, target)
-            total_loss += loss.item()
-            _, predicted = torch.max(output.data, 1)
-            total += target.size(0)
-            correct += (predicted == target).sum().item()
-    avg_loss = total_loss / len(val_loader)
-    accuracy = 100 * (correct / total)
-    return avg_loss, accuracy
-
+            total_val_loss += loss.item()
+            # _, predicted = torch.max(output.data, 1)
+            # total += target.size(0)
+            # correct += (predicted == target).sum().item()
+    avg_loss = total_val_loss / len(val_loader)
+    ppl = math.exp(avg_loss) if decoder_type_ppl else None
+    
+    return avg_loss, ppl
 
 def compute_leader_gradients(
     device: torch.device,
@@ -259,7 +263,7 @@ def run_syncps_server(
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/leader_step": leader_loss.item(),
-                    "losses/leader_loss": leader_loss.item() / (step + 1),
+                    "losses/leader_total_train": total_loss / (step + 1),
                 })
             
 
@@ -340,17 +344,17 @@ def run_syncps_server(
 
             # Evaluation
             if step % eval_steps == 0:
-                val_loss, val_acc = evaluate(device, model, val_loader, criterion)
+                val_loss, val_ppl = evaluate(device, model, val_loader, criterion)
                
                 wandb.log({
                         "step": step,
                         "epoch": epoch + 1,
                         "losses/val": val_loss,
-                        "accuracy/val": val_acc,
+                        "ppl/val": val_ppl,
                     })
             
                 logger.info(
-                    f"Step {step}: Val Loss={val_loss:.4f}, Val Acc={val_acc:.2f}%"
+                    f"Step {step}: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                 )
 
         avg_loss = total_loss / len(train_loader)

@@ -1,14 +1,18 @@
 """
-Training with SyncPS (Synchronous Parameter Server)
+Training with EDP or SyncPS for GPT
 
 This script provides both server and worker entry points for distributed
-GPT training using the refactored SyncPS functions.
+GPT training using either EDP or SyncPS algorithms.
 
 Usage:
-    Server: python train.py server <hostname>
-    Worker: python train.py worker <rank> <hostname>
+    Server: python train.py server <hostname> --algorithm <edp|syncps>
+    Worker: python train.py worker <rank> <hostname> --algorithm <edp|syncps>
+    
+Examples:
+    python train.py server mini1 --algorithm edp
+    python train.py worker 1 mini2 --algorithm syncps
 """
-
+import argparse
 import logging
 import os
 import sys
@@ -22,9 +26,8 @@ import yaml
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.data.prepare_dataset import prepare_dataset
 
-# from smolcluster.algorithms.EDP.server import run_edp_server
-# from smolcluster.algorithms.EDP.worker import run_edp_worker
-
+from smolcluster.algorithms.EDP.server import run_edp_server
+from smolcluster.algorithms.EDP.worker import run_edp_worker
 from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
 
@@ -35,15 +38,20 @@ from smolcluster.utils.device import get_device
 # Configuration and Data Loading
 # -----------------------------------------------------------------------------
 
-def load_configs():
-    """Load configuration files."""
+def load_configs(algorithm: str = "syncps"):
+    """Load configuration files.
+    
+    Args:
+        algorithm: Either 'edp' or 'syncps' to determine which cluster config to load
+    """
     CONFIG_DIR = Path(__file__).parent / "configs"
     
     with open(CONFIG_DIR / "gpt_config.yaml") as f:
         gpt_config = yaml.safe_load(f)
     
-    # with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
-    with open(CONFIG_DIR / "cluster_config_syncps.yaml") as f:
+    # Load appropriate cluster config based on algorithm
+    config_file = f"cluster_config_{algorithm}.yaml"
+    with open(CONFIG_DIR / config_file) as f:
         cluster_config = yaml.safe_load(f)
     
     return gpt_config, cluster_config
@@ -70,8 +78,13 @@ def setup_wandb():
 
 
 
-def run_server(hostname: str):
-    """Run SyncPS server for GPT training."""
+def run_server(hostname: str, algorithm: str = "syncps"):
+    """Run server for GPT training.
+    
+    Args:
+        hostname: Server hostname
+        algorithm: Either 'edp' or 'syncps'
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -81,7 +94,7 @@ def run_server(hostname: str):
     setup_wandb()
     
     # Load configs
-    gpt_config, cluster_config = load_configs()
+    gpt_config, cluster_config = load_configs(algorithm)
     
     # Setup parameters
     num_workers = cluster_config["num_workers"]
@@ -119,36 +132,55 @@ def run_server(hostname: str):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
     # Initialize W&B
+    algo_name = algorithm.upper()
     wandb.init(
         project="smolcluster",
-        name=f"SyncPS-server-{hostname}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}_workers{num_workers}",
+        name=f"{algo_name}-server-{hostname}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}_workers{num_workers}",
         config={
             **gpt_config,
             "server_hostname": hostname,
             "num_workers": num_workers,
-            "mode": "synchronous_ps",
+            "algorithm": algorithm,
         },
     )
     
-    # Run server
-    logger.info("Starting SyncPS server...")
-    # run_edp_server(
-    run_syncps_server(
-        model=model,
-        optimizer=optimizer,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        config=gpt_config,
-        cluster_config=cluster_config,
-        hostname=hostname,
-        device=device,
-        criterion=criterion,
-    )
+    # Run server with selected algorithm
+    logger.info(f"Starting {algo_name} server...")
+    if algorithm == "edp":
+        run_edp_server(
+            model=model,
+            optimizer=optimizer,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+        )
+    else:  # syncps
+        run_syncps_server(
+            model=model,
+            optimizer=optimizer,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+        )
     wandb.finish()
 
 
-def run_worker(worker_rank: int, hostname: str):
-    """Run SyncPS worker for GPT training."""
+def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
+    """Run worker for GPT training.
+    
+    Args:
+        worker_rank: Worker rank (1-indexed)
+        hostname: Worker hostname
+        algorithm: Either 'edp' or 'syncps'
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -160,7 +192,7 @@ def run_worker(worker_rank: int, hostname: str):
     setup_wandb()
     
     # Load configs
-    gpt_config, cluster_config = load_configs()
+    gpt_config, cluster_config = load_configs(algorithm)
     
     # Setup parameters
     num_workers = cluster_config["num_workers"]
@@ -211,68 +243,107 @@ def run_worker(worker_rank: int, hostname: str):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
     # Initialize W&B
+    algo_name = algorithm.upper()
     wandb.init(
         project="smolcluster",
-        name=f"SyncPS-worker-{hostname}_rank{local_rank}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}",
+        name=f"{algo_name}-worker-{hostname}_rank{local_rank}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}",
         config={
             **gpt_config,
             "worker_rank": local_rank,
             "worker_hostname": hostname,
-            "mode": "synchronous_ps",
+            "algorithm": algorithm,
         },
     )
     
-    # Run worker
-    logger.info(f"Starting SyncPS worker {local_rank}...")
-    # run_edp_worker(
-    run_syncps_worker(
-        model=model,
-        optimizer=optimizer,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        config=gpt_config,
-        cluster_config=cluster_config,
-        worker_rank=local_rank,
-        hostname=hostname,
-        device=device,
-        criterion=criterion,
-        host_ip=host_ip,
-        port=port,
-    )
+    # Run worker with selected algorithm
+    logger.info(f"Starting {algo_name} worker {local_rank}...")
+    if algorithm == "edp":
+        run_edp_worker(
+            model=model,
+            optimizer=optimizer,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            worker_rank=local_rank,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+            host_ip=host_ip,
+            port=port,
+        )
+    else:  # syncps
+        run_syncps_worker(
+            model=model,
+            optimizer=optimizer,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            worker_rank=local_rank,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+            host_ip=host_ip,
+            port=port,
+        )
     wandb.finish()
 
 
 def main():
-    """Main entry point for SyncPS distributed training."""
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  Server: python train.py server <hostname>")
-        print("  Worker: python train.py worker <rank> <hostname>")
-        sys.exit(1)
+    """Main entry point for distributed training."""
+    parser = argparse.ArgumentParser(description="Distributed GPT Training with EDP or SyncPS")
+    parser.add_argument("mode", choices=["server", "worker"], help="Run as server or worker")
+    parser.add_argument("hostname", help="Hostname of this node")
+    parser.add_argument("rank", nargs="?", type=int, help="Worker rank (1-indexed, required for worker mode)")
+    parser.add_argument("-a", "--algorithm", choices=["edp", "syncps"], default="syncps",
+                        help="Training algorithm to use (default: syncps)")
     
-    mode = sys.argv[1].lower()
-    
-    if mode == "server":
-        if len(sys.argv) < 3:
-            print("Error: Server mode requires hostname argument")
-            print("Usage: python train.py server <hostname>")
-            sys.exit(1)
-        hostname = sys.argv[2]
-        run_server(hostname)
-    
-    elif mode == "worker":
-        if len(sys.argv) < 4:
-            print("Error: Worker mode requires rank and hostname arguments")
-            print("Usage: python train.py worker <rank> <hostname>")
-            sys.exit(1)
-        worker_rank = int(sys.argv[2])
-        hostname = sys.argv[3]
-        run_worker(worker_rank, hostname)
-    
+    # Handle both new argparse format and legacy positional format
+    if len(sys.argv) >= 2 and sys.argv[1] in ["server", "worker"]:
+        # Try to parse with argparse first
+        if "--algorithm" in sys.argv or "-a" in sys.argv:
+            args = parser.parse_args()
+            mode = args.mode
+            hostname = args.hostname
+            algorithm = args.algorithm
+            worker_rank = args.rank
+        else:
+            # Legacy format: mode hostname [rank]
+            mode = sys.argv[1]
+            if len(sys.argv) < 3:
+                parser.print_help()
+                sys.exit(1)
+            
+            if mode == "server":
+                hostname = sys.argv[2]
+                algorithm = sys.argv[3] if len(sys.argv) > 3 else "syncps"
+                worker_rank = None
+            else:  # worker
+                if len(sys.argv) < 4:
+                    parser.print_help()
+                    sys.exit(1)
+                worker_rank = int(sys.argv[2])
+                hostname = sys.argv[3]
+                algorithm = sys.argv[4] if len(sys.argv) > 4 else "syncps"
     else:
-        print(f"Error: Unknown mode '{mode}'")
-        print("Mode must be 'server' or 'worker'")
+        parser.print_help()
         sys.exit(1)
+    
+    # Validate algorithm
+    if algorithm not in ["edp", "syncps"]:
+        print(f"Error: Invalid algorithm '{algorithm}'. Must be 'edp' or 'syncps'")
+        sys.exit(1)
+    
+    # Run appropriate mode
+    if mode == "server":
+        run_server(hostname, algorithm)
+    elif mode == "worker":
+        if worker_rank is None:
+            print("Error: Worker mode requires rank argument")
+            parser.print_help()
+            sys.exit(1)
+        run_worker(worker_rank, hostname, algorithm)
 
     
 if __name__ == "__main__":

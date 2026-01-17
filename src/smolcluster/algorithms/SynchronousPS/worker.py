@@ -1,4 +1,6 @@
 import logging
+import math
+import math
 import socket
 import subprocess
 import time
@@ -24,29 +26,37 @@ logger = logging.getLogger("[WORKER]")
 
 
 def evaluate(
-    device: torch.device,
-    model: torch.nn.Module,
-    val_loader,
-    criterion: torch.nn.Module
+    device: torch.device, model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module, decoder_type_ppl: bool = False
 ) -> tuple[float, float]:
-    """Evaluate model on validation set."""
     model.eval()
-    total_loss = 0.0
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for data, target in val_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data.view(data.size(0), -1))
-            loss = criterion(output, target)
-            total_loss += loss.item()
-            _, predicted = torch.max(output.data, 1)
-            total += target.size(0)
-            correct += (predicted == target).sum().item()
-    avg_loss = total_loss / len(val_loader)
-    accuracy = 100 * correct / total
-    return avg_loss, accuracy
+    total_val_loss = 0.0
+    
+    val_iter = iter(val_loader)
 
+    with torch.no_grad():
+        for _step in range(len(val_loader)):
+            try:
+                batch = next(val_iter)
+            except StopIteration:
+                val_iter = iter(val_loader)
+                batch = next(val_iter)
+
+            data, target = batch
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            B,T,C = output.shape
+            output = output.view(B*T, C)
+            target = target.view(B*T)
+            loss = criterion(output, target)
+            total_val_loss += loss.item()
+            # _, predicted = torch.max(output.data, 1)
+            # total += target.size(0)
+            # correct += (predicted == target).sum().item()
+    avg_loss = total_val_loss / len(val_loader)
+    ppl = math.exp(avg_loss) if decoder_type_ppl else None
+    # accuracy = 100 * (correct / total)
+    model.train()
+    return avg_loss, ppl
 
 def polyak_blend_weights(
     current_weights: dict[str, torch.Tensor],
@@ -125,11 +135,9 @@ def connect_to_server(
 
 def run_syncps_worker(
     model,
-    optimizer,
     train_loader,
     val_loader,
     config,
-    cluster_config,
     worker_rank,
     hostname,
     device,
@@ -167,7 +175,7 @@ def run_syncps_worker(
     logger.info(f"🚀 SyncPS Worker {worker_rank} starting up")
     
     # Extract configuration
-    batch_size = config["batch_size"]
+   
     num_epochs = config["num_epochs"]
     eval_steps = config["eval_steps"]
     track_gradients = config.get("track_gradients", False)
@@ -207,6 +215,15 @@ def run_syncps_worker(
             output = model(data.view(data.size(0), -1))
             loss = criterion(output, target)
             total_loss += loss.item()
+            train_ppl = math.exp(loss.item())
+            
+            wandb.log({
+                "step": step,
+                "epoch": epoch + 1,
+                "losses/train_step": loss.item(),
+                "losses/total_train": total_loss / (batch_idx + 1),
+                "ppl/train": train_ppl,
+            })
             
             model.zero_grad()
             loss.backward()
@@ -251,32 +268,27 @@ def run_syncps_worker(
             
             # Log gradient norms if tracking enabled
             if track_gradients:
-                try:
-                    import wandb
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            grad_norm = torch.norm(param.grad.detach(), 2).item()
-                            wandb.log({
-                                f"gradients/layer_{name}": grad_norm,
-                                "step": step,
-                                "epoch": epoch + 1,
-                            })
-                except:
-                    pass
-            
+              
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log({
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                            "epoch": epoch + 1,
+                        })
+        
             # Evaluation
             if step % eval_steps == 0:
-                val_loss, val_accuracy = evaluate(device, model, val_loader, criterion)
-                try:
-                    import wandb
-                    wandb.log({
+                val_loss, val_ppl = evaluate(device, model, val_loader, criterion)
+               
+                wandb.log({
                         "step": step,
                         "epoch": epoch + 1,
                         "losses/val": val_loss,
-                        "accuracy/val": val_accuracy,
+                        "ppl/val": val_ppl,
                     })
-                except:
-                    pass
+                
                 logger.info(
                     f"Evaluation at step {step}: Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.2f}%"
                 )
