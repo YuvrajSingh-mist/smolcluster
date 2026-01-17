@@ -15,7 +15,7 @@ worker_update_interval: 200  # How often workers pull latest weights (in steps)
 # Quantization settings
 use_quantization: false  # Enable/disable weight quantization for communication
 
-track_gradients: true  # Whether server tracks gradient norms for each worker
+track_gradients: false  # Whether server tracks gradient norms for each worker
 
 polyark_average_update: 100  # How often to perform Polyark averaging (in steps)
 

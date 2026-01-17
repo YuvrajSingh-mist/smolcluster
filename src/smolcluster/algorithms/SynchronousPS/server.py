@@ -254,16 +254,14 @@ def run_syncps_server(
             total_loss += leader_loss.item()
             logger.info(f"[Step {step}] Leader loss: {leader_loss.item():.4f}")
 
-            try:
-                import wandb
-                wandb.log({
+           
+            wandb.log({
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/leader_step": leader_loss.item(),
                     "losses/leader_loss": leader_loss.item() / (step + 1),
                 })
-            except:
-                pass
+            
 
             # Wait for all workers
             while True:
@@ -289,11 +287,7 @@ def run_syncps_server(
                     grads_received[step], len(grads_received[step])
                 )
 
-                # Send updated weights to workers
-                for _worker_addr, worker_socket in workers.items():
-                    weights = get_weights(model)
-                    send_message(worker_socket, ("model_weights", step, weights))
-
+               
                 logger.info(
                     f"[Step {step}] Applying averaged gradients to server model"
                 )
@@ -301,6 +295,14 @@ def run_syncps_server(
                 optimizer.step()
                 logger.info(f"[Step {step}] Server model updated")
                 
+                 # Send updated weights to workers
+                for _worker_addr, worker_socket in workers.items():
+                    weights = get_weights(model)
+                    send_message(worker_socket, ("model_weights", step, weights))
+                    logger.info(
+                        f"[Step {step}] Sent updated model weights to worker at {_worker_addr}"
+                    )
+                    
                 # Cleanup
                 grads_received.pop(step, None)
                 del grads_reduced, leader_grads
@@ -327,43 +329,37 @@ def run_syncps_server(
                     pass
 
             # Log training metrics
-            try:
-                import wandb
-                wandb.log({
+            
+            wandb.log({
                     "step": step,
                     "epoch": epoch + 1,
                     "lr": optimizer.param_groups[0]['lr'],
                     "batch_size": batch_size,
                 })
-            except:
-                pass
+           
 
             # Evaluation
             if step % eval_steps == 0:
                 val_loss, val_acc = evaluate(device, model, val_loader, criterion)
-                try:
-                    import wandb
-                    wandb.log({
+               
+                wandb.log({
                         "step": step,
                         "epoch": epoch + 1,
                         "losses/val": val_loss,
                         "accuracy/val": val_acc,
                     })
-                except:
-                    pass
+            
                 logger.info(
                     f"Step {step}: Val Loss={val_loss:.4f}, Val Acc={val_acc:.2f}%"
                 )
 
         avg_loss = total_loss / len(train_loader)
-        try:
-            import wandb
-            wandb.log({
+       
+        wandb.log({
                 "epoch": epoch + 1,
                 "losses/train_epoch": avg_loss,
             })
-        except:
-            pass
+       
 
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"

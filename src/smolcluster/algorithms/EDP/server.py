@@ -539,19 +539,19 @@ def run_edp_server(
         
        
        
-        # if track_gradients and step % 1000 == 0:
-        #     logger.info("Tracking gradients in wandb...")
-        #     for name, param in model.named_parameters():
-        #         if param.grad is not None:
+        if track_gradients and step % 1000 == 0:
+            logger.info("Tracking gradients in wandb...")
+            for name, param in model.named_parameters():
+                if param.grad is not None:
                     
-        #             grad_norm = torch.norm(param.grad.detach(), 2).item()
-        #             wandb.log(
-        #                 {
-        #                     f"gradients/layer_{name}": grad_norm,
-        #                     "step": step,
-        #                 }
-        #             )
-        #     logger.info("Gradient tracking complete.")
+                    grad_norm = torch.norm(param.grad.detach(), 2).item()
+                    wandb.log(
+                        {
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                        }
+                    )
+            logger.info("Gradient tracking complete.")
         start_time = time.time()
         while time.time() - start_time < 0.01:
             
