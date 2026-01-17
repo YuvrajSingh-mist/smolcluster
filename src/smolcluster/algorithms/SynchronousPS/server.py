@@ -69,7 +69,7 @@ def compute_leader_gradients(
     output = output.view(B*T, C)
     target = target.view(B*T)
     loss = criterion(output, target)
-    
+    loss.backward()
     # Gradient clipping
     if config.get("gradient_clipping", {}).get("enabled", False):
         max_norm = config["gradient_clipping"].get("max_norm", 1.0)
@@ -171,7 +171,7 @@ def run_syncps_server(
     batch_size = config["batch_size"]
     num_epochs = config["num_epochs"]
     eval_steps = config["eval_steps"]
-    track_gradients = config.get("track_gradients", False)
+    track_gradients = config["track_gradients"]
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     num_workers = cluster_config["num_workers"]
     world_size = num_workers + 1
@@ -292,6 +292,7 @@ def run_syncps_server(
                 )
                 set_gradients(grads_reduced, model)
                 optimizer.step()
+                
                 logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server model updated")
                 
                  # Send updated weights to workers
