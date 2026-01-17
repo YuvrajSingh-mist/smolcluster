@@ -16,6 +16,7 @@ from smolcluster.utils.common_utils import (
     set_weights,
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
+from torch.utils.data import DataLoader
 
 # Setup logging (will be replaced by setup_cluster_logging in run_syncps_worker)
 logging.basicConfig(
