@@ -4,7 +4,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-
+import wandb
 import torch
 
 from smolcluster.utils.common_utils import (
