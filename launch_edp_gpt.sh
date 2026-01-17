@@ -137,14 +137,29 @@ echo ""
 echo "📈 Starting logging infrastructure on controller..."
 if [[ -f "$PROJECT_DIR/logging/docker-compose.yml" ]]; then
     if docker ps | grep -q loki; then
-        echo "✅ Logging infrastructure already running"
+        echo "🧹 Cleaning up old logs from Loki..."
+        # Stop Loki, remove volumes (deletes old data), then restart
+        (cd "$PROJECT_DIR/logging" && docker-compose down loki && docker volume rm logging_loki-data 2>/dev/null || true)
+        (cd "$PROJECT_DIR/logging" && docker-compose up -d loki)
+        sleep 3
+        if curl -s http://localhost:3100/ready | grep -q "ready"; then
+            echo "✅ Loki restarted with fresh database"
+        else
+            echo "⚠️  Loki may not be ready yet, but continuing..."
+        fi
+        
+        # Ensure Grafana is also running
+        if ! docker ps | grep -q grafana; then
+            (cd "$PROJECT_DIR/logging" && docker-compose up -d grafana)
+            echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
+        fi
     else
-        echo "🚀 Starting Loki + Grafana + Promtail..."
+        echo "🚀 Starting Loki + Grafana..."
         (cd "$PROJECT_DIR/logging" && docker-compose up -d)
         sleep 3
         if curl -s http://localhost:3100/ready | grep -q "ready"; then
             echo "✅ Loki ready at http://localhost:3100"
-            echo "� Grafana UI at http://localhost:3000 (admin/admin)"
+            echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
         else
             echo "⚠️  Loki may not be ready yet, but continuing..."
         fi

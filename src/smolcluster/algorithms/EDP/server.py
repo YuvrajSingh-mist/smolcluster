@@ -47,7 +47,7 @@ def sender_loop(sock, send_queue):
     while True:
         # try:
         try:
-            msg = send_queue.get(timeout=0.1)
+            msg = send_queue.get(timeout=0.01)
             send_message(sock, msg)
             
         except Exception as e:
@@ -471,7 +471,7 @@ def run_edp_server(
         # for _ in range(MAX_MSGS_PER_STEP):
             
             try:
-                message, conn, addr = bounded_queue.get(timeout=0.01)
+                message, conn, addr = bounded_queue.get_nowait()
             except Exception as e:
                 logging.error(f"Error getting message from queue: {e}")
                 break
@@ -572,7 +572,7 @@ def run_edp_server(
                     )
 
                     logger.info(
-                        f"Applying worker {rank} model via Polyak averaging "
+                        f"Applied worker {rank} model via Polyak averaging "
                         f"(staleness: {staleness}, alpha: {staleness_factor:.3f})"
                     )
 
@@ -602,7 +602,7 @@ def run_edp_server(
                     else:
                         optimizer.step()
                     logger.info(
-                        f"Applied leader gradients with workers. Step {step} / {total_steps}: Updated to model version {model_version}"
+                        f"Applied leader gradients with worker {rank}. Step {step} / {total_steps}: Updated to model version {model_version}"
                     )
                      # Calculate and log PPL for decoder models
                     if decoder_type_ppl:
@@ -734,7 +734,7 @@ def run_edp_server(
         # for _ in range(MAX_MSGS_PER_STEP):
             
             try:
-                message, conn, addr = bounded_queue.get(timeout=0.01)
+                message, conn, addr = bounded_queue.get_nowait()
             except Exception as e:
                 logging.error(f"Error getting message from queue: {e}")
                 break
