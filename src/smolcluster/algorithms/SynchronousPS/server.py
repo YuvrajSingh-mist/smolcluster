@@ -61,6 +61,7 @@ def compute_leader_gradients(
     config: dict,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute gradients for leader/server node."""
+    optimizer.zero_grad()
     model.train()
     data, target = data.to(device), target.to(device)
     output = model(data)
