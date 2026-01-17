@@ -347,7 +347,6 @@ def run_edp_server(
     control_messages_bounded_queue = Queue(maxsize=cluster_config['control_message_queue_size'])
     
     MAX_DATA_MSGS_PER_STEP = 2 #to how much messages from queue to process per step
-    MAX_CTRL_MSGS_PER_STEP = 4 
     
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
     scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
@@ -406,7 +405,7 @@ def run_edp_server(
                 logger.info(f"Enqueuing {command} to control queue")
                 enqeue_bounded_queue(control_messages_bounded_queue, (message, conn, addr), control=True)
                 
-            elif command == 'pull_weights': #because it has a timeout and a few misses wont cause much trouble
+            elif command == 'pull_weights': #because it has a timeout 
                 logger.info(f"Enqueueing {command} to data queue")
                 enqeue_bounded_queue(data_message_queue_size, (message, conn, addr))
          
@@ -553,10 +552,7 @@ def run_edp_server(
         #                 }
         #             )
         #     logger.info("Gradient tracking complete.")
-        num_ctrl_msgs_processed = 0
-        start_time = time.time()
-        
-        while time.time() - start_time < 0.01 and num_ctrl_msgs_processed < MAX_CTRL_MSGS_PER_STEP:
+        while control_messages_bounded_queue.qsize() > 0:
             
             try:
                 message, conn, addr = control_messages_bounded_queue.get_nowait()
@@ -566,7 +562,6 @@ def run_edp_server(
 
             command, payload = message
             process_message(command, payload, model, device, use_quantization, addr)
-            num_ctrl_msgs_processed += 1
             
         start_time = time.time()
         num_msgs_processed = 0
