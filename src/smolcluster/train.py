@@ -28,9 +28,12 @@ import yaml
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.data.prepare_dataset import prepare_dataset
 
-from smolcluster.algorithms.EDP.server import run_edp_server
-from smolcluster.algorithms.EDP.worker import run_edp_worker
-from smolcluster.utils.data import get_data_indices
+# from smolcluster.algorithms.EDP.server import run_edp_server
+# from smolcluster.algorithms.EDP.worker import run_edp_worker
+
+from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
+from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
+
 from smolcluster.utils.device import get_device
 
 
@@ -121,8 +124,8 @@ def run_server(hostname: str):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
     # Run server
-    logger.info("Starting EDP server...")
-    run_edp_server(
+    logger.info("Starting SyncPS server...")
+    run_syncps_server(
         model=model,
         optimizer=optimizer,
         train_loader=train_loader,
@@ -201,8 +204,8 @@ def run_worker(worker_rank: int, hostname: str):
     criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
     
     # Run worker
-    logger.info(f"Starting EDP worker {local_rank}...")
-    run_edp_worker(
+    logger.info(f"Starting SyncPS worker {local_rank}...")
+    run_syncps_worker(
         model=model,
         optimizer=optimizer,
         train_loader=train_loader,
