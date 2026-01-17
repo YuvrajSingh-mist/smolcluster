@@ -268,27 +268,30 @@ def process_message(command : str, payload: dict, model: torch.nn.Module, device
             
 def enqeue_bounded_queue(bounded_queue: Queue, message, control: bool = False):
     
-    try:
-        if control:
-            bounded_queue.put(message)
-        else:
-            bounded_queue.put_nowait(message)
-        logger.info("Message enqueued successfully.")   
-    except Exception:
+    if control:
         
         try:
-            if control:
-                # discarded = bounded_queue.get(timeout=0.1)
-                logger.warning("Control queue full!!!!!!")
-                # bounded_queue.put(message)
-            else:
+            bounded_queue.put(message)
+        except Exception as e:
+            logger.error(f"Error while putting data into queue for control tasks: {e}")
+            raise
+    else:
+  
+        try:
+            bounded_queue.put_nowait(message)
+        logger.info("Message enqueued successfully.")   
+        
+        except Exception:
+            
+            try:
+            
                 discarded = bounded_queue.get_nowait()
                 logger.warning("Bounded queue full, discarding oldest message.")
                 bounded_queue.put_nowait(message)
-        
-        except Exception:
-            logger.error("Failed to enqueue message after discarding oldest message.")
-            raise
+    
+            except Exception:
+                logger.error("Failed to enqueue message after discarding oldest message.")
+                raise
 
 
 def run_edp_server(
@@ -400,8 +403,10 @@ def run_edp_server(
             if command in ["pull_weights", "disconnect"]:
                 
                 logger.info(f"Enqueuing {command} to control queue")
-                enqeue_bounded_queue(control_messages_bounded_queue, (message, conn, addr))
+                enqeue_bounded_queue(control_messages_bounded_queue, (message, conn, addr), control=True)
+                
             elif command == 'polyark_averaging':
+                logger.info(f"Enqueueing {command} to data queue")
                 enqeue_bounded_queue(data_message_queue_size, (message, conn, addr))
          
 
