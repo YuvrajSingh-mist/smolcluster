@@ -230,7 +230,8 @@ uv run worker.py <worker_id> <hostname>
 ### Monitor Training
 
 - **Console Logs**: View real-time training progress in each tmux pane
-- **Grafana Dashboard**: Visit [http://localhost:3000](http://localhost:3000) to view centralized logs (admin/admin)
+- **Grafana Dashboard**: Visit [http://localhost:3000](http://localhost:3000) for centralized log aggregation across all nodes (admin/admin)
+  - See [docs/logging.md](src/smolcluster/docs/logging.md) for detailed setup and usage
 - **W&B Dashboard**: Visit [wandb.ai](https://wandb.ai) to see detailed metrics:
   - Training/validation loss
   - Validation accuracy
@@ -239,111 +240,23 @@ uv run worker.py <worker_id> <hostname>
 - **Project Name**: `smolcluster`
 - **Run Names**: Automatically generated with format: `{Algorithm}-{role}-{hostname}_rank{X}_lr{Y}_bs{Z}`
 
-## Centralized Logging with Grafana + Loki
+## Centralized Logging
 
-SmolCluster includes a distributed logging system that aggregates logs from all training nodes in real-time.
+SmolCluster includes a distributed logging system (Grafana + Loki + Promtail) that aggregates logs from all training nodes in real-time.
 
-### Architecture
+**Quick Start:**
+1. Install Docker on your controller machine
+2. Install Promtail on all training nodes: `brew install promtail` (macOS)
+3. Launch training: `bash launch_edp_gpt.sh` (logging starts automatically)
+4. Access Grafana at http://localhost:3000 (admin/admin)
 
-- **Grafana** (http://localhost:3000): Web UI for log visualization
-- **Loki**: Log aggregation backend (receives logs from all nodes)
-- **Promtail**: Log shipper (runs on each training node, sends logs to Loki)
+**Query examples:**
+- `{job="smolcluster-worker"}` - All worker logs
+- `{job="smolcluster-server"}` - Server logs
+- `{host="worker-rank0-mini2"}` - Specific worker
+- `{level="ERROR"}` - Only errors
 
-### Quick Setup
-
-1. **Install Docker** on your controller machine (the machine running the launch script):
-   ```bash
-   # macOS
-   brew install --cask docker
-   
-   # Start Docker Desktop and ensure it's running
-   ```
-
-2. **Install Promtail** on all training nodes (minis, workers):
-   ```bash
-   # macOS (via Homebrew)
-   brew install promtail
-   
-   # Linux
-   curl -O -L "https://github.com/grafana/loki/releases/download/v2.9.0/promtail-linux-amd64.zip"
-   unzip promtail-linux-amd64.zip
-   chmod +x promtail-linux-amd64
-   sudo mv promtail-linux-amd64 /usr/local/bin/promtail
-   ```
-
-3. **Launch training** (logging infrastructure starts automatically):
-   ```bash
-   bash launch_edp_gpt.sh
-   ```
-   
-   The launch script automatically:
-   - Starts Grafana + Loki in Docker containers on your controller
-   - Detects and starts Promtail on each remote training node
-   - Configures timezone handling (IST → UTC conversion)
-
-4. **Access Grafana**:
-   - Open http://localhost:3000
-   - Login: `admin` / `admin`
-   - Navigate to **Explore** → Select **Loki** datasource
-   - Query examples:
-     ```
-     {job="smolcluster-worker"}              # All worker logs
-     {job="smolcluster-server"}              # Server logs
-     {host="worker-rank0-mini2"}             # Specific worker
-     {level="ERROR"}                         # Only errors
-     {job="smolcluster-worker"} |= "loss"    # Filter for "loss"
-     ```
-
-### Log Structure
-
-Logs are automatically structured with labels for easy filtering:
-- `job`: `smolcluster-server` or `smolcluster-worker`
-- `component`: `server` or `worker`
-- `host`: Extracted from filename (e.g., `worker-rank0-mini2`)
-- `rank`: Worker rank (e.g., `0`, `1`)
-- `level`: Log level (`INFO`, `ERROR`, `WARNING`)
-
-### Troubleshooting Logging
-
-If logs don't appear in Grafana:
-
-1. **Check Docker containers are running**:
-   ```bash
-   docker ps | grep -E "loki|grafana"
-   ```
-
-2. **Verify Promtail is running on training nodes**:
-   ```bash
-   ssh mini2 "ps aux | grep promtail"
-   ```
-
-3. **Check Promtail logs for errors**:
-   ```bash
-   ssh mini2 "cat /tmp/promtail.log"
-   ```
-
-4. **Restart logging infrastructure**:
-   ```bash
-   cd logging
-   docker-compose restart loki
-   ```
-
-### Manual Setup (Advanced)
-
-If you need to manually manage the logging stack:
-
-```bash
-# Start Loki + Grafana on controller
-cd logging
-docker-compose up -d
-
-# Start Promtail on server node
-ssh mini1 "promtail -config.file=~/Desktop/smolcluster/logging/promtail-server-remote.yaml &"
-
-# Start Promtail on worker nodes
-ssh mini2 "promtail -config.file=~/Desktop/smolcluster/logging/promtail-worker-remote.yaml &"
-ssh mini3 "promtail -config.file=~/Desktop/smolcluster/logging/promtail-worker-remote.yaml &"
-```
+📚 **Full documentation**: [docs/logging.md](src/smolcluster/docs/logging.md)
 
 ## Project Structure
 

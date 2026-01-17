@@ -471,7 +471,7 @@ def run_edp_server(
         # for _ in range(MAX_MSGS_PER_STEP):
             
             try:
-                message, conn, addr = bounded_queue.get(timeout=0.01)
+                message, conn, addr = bounded_queue.get_nowait()
             except Exception as e:
                 logging.error(f"Error getting message from queue: {e}")
                 break
@@ -727,6 +727,89 @@ def run_edp_server(
         # gradients_event.wait(timeout=0.01)
         # gradients_event.clear()
 
+        start_time = time.time()
+        num_msgs_processed = 0
+        
+        while time.time() - start_time < 0.01 and num_msgs_processed < MAX_MSGS_PER_STEP:
+            
+        # for _ in range(MAX_MSGS_PER_STEP):
+            
+            try:
+                message, conn, addr = bounded_queue.get_nowait(
+                    
+                )
+            except Exception as e:
+                logging.error(f"Error getting message from queue: {e}")
+                break
+
+            command, payload = message
+
+            
+            if command == "polyark_averaging":
+                recv_step = payload["step"]
+                rank = payload["rank"]
+                worker_version = payload["model_version"]
+
+                # Check if worker sent quantized weights, weights, or gradients
+                if "quantized_weights" in payload:
+                    # New approach: Dequantize and use Polyak averaging
+                    quantized_weights = payload["quantized_weights"]
+                    logger.info(
+                        f"Received quantized weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    # Dequantize weights back to float32 on the server's device
+                    device_str = str(device)
+                    weights = dequantize_model_weights(quantized_weights, device=device_str)
+                    
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                elif "weights" in payload:
+                    
+                    weights = payload["weights"]
+                    logger.info(
+                        f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
+                    )
+                    with lock:
+                        workers_grads_received[(rank, recv_step, worker_version)] = {
+                            "type": "weights",
+                            "data": weights,
+                        }
+                
+                
+                logger.info(
+                    f"Data stored successfully for worker {rank} at step {recv_step}"
+                )
+
+            elif command == "pull_weights":
+                rank = payload["rank"]
+                worker_version = payload["model_version"]
+                logger.info(
+                    f"Worker rank {rank} at {addr} requested weights (worker version: {worker_version}, server version: {model_version})"
+                )
+
+                weights = get_weights(model)
+                
+                if rank is not None and rank in workers:
+                    if use_quantization:
+                        quantized_weights = quantize_model_weights(weights)
+                        workers[rank]["send_queue"].put((quantized_weights, model_version))
+                        logger.info(f"Quantized weights queued for worker {rank}")
+                    else:
+                        workers[rank]["send_queue"].put((weights, model_version))
+                        logger.info(f"Weights queued for worker {rank}")
+                else:
+                    logger.warning(f"Worker rank {rank} not found in workers dict, cannot send weights")
+
+            elif command == "disconnect":
+                logger.info(f"Worker {addr} requested disconnection.")
+                #  Remove disconnected worker
+                with lock:
+                    workers.pop(addr, None)
+            num_msgs_processed += 1
+            
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()

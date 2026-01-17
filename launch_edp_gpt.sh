@@ -76,8 +76,14 @@ if [[ "$DRY_RUN" != "true" ]]; then
         # Check if Promtail is installed on remote node (cross-platform)
         if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe)" &>/dev/null; then
             # Kill any existing Promtail processes (cleanup old/broken instances)
-            echo "🧹 $node: Cleaning up any existing Promtail processes..."
+            echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
             ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" &>/dev/null || true
+            
+            # Delete old log files and position files for fresh start
+            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" &>/dev/null || true
+            
+            # Ensure log directory exists
+            ssh "$node" "mkdir -p /tmp/smolcluster-logs"
             sleep 1
             
             # Determine config file based on node type
