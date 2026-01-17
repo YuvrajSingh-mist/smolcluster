@@ -400,12 +400,12 @@ def run_edp_server(
             
             command , _ = message
             
-            if command in ["pull_weights", "disconnect"]:
+            if command in ["polyark_averaging", "disconnect"]:
                 
                 logger.info(f"Enqueuing {command} to control queue")
                 enqeue_bounded_queue(control_messages_bounded_queue, (message, conn, addr), control=True)
                 
-            elif command == 'polyark_averaging':
+            elif command == 'pull_weights': #because it has a timeout and a few misses wont cause much trouble
                 logger.info(f"Enqueueing {command} to data queue")
                 enqeue_bounded_queue(data_message_queue_size, (message, conn, addr))
          
