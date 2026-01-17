@@ -17,6 +17,6 @@ timeout: 0.1  # How long server waits for gradients (seconds)
 seed: 42
 
 # Cluster configuration
-num_workers: 3
-workers: [mini1, mini2, mini3]  # Worker hostnames
+num_workers: 2
+workers: [mini2, mini3]  # Worker hostnames
 server: mini1  # Server hostname
