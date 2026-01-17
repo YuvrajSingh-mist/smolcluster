@@ -471,7 +471,7 @@ def run_edp_server(
         # for _ in range(MAX_MSGS_PER_STEP):
             
             try:
-                message, conn, addr = bounded_queue.get_nowait()
+                message, conn, addr = bounded_queue.get(timeout=0.01)
             except Exception as e:
                 logging.error(f"Error getting message from queue: {e}")
                 break
@@ -729,15 +729,12 @@ def run_edp_server(
 
         start_time = time.time()
         num_msgs_processed = 0
-        
         while time.time() - start_time < 0.01 and num_msgs_processed < MAX_MSGS_PER_STEP:
             
         # for _ in range(MAX_MSGS_PER_STEP):
             
             try:
-                message, conn, addr = bounded_queue.get_nowait(
-                    
-                )
+                message, conn, addr = bounded_queue.get(timeout=0.01)
             except Exception as e:
                 logging.error(f"Error getting message from queue: {e}")
                 break
