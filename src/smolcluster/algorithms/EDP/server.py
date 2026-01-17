@@ -552,7 +552,8 @@ def run_edp_server(
         #                 }
         #             )
         #     logger.info("Gradient tracking complete.")
-        while control_messages_bounded_queue.qsize() > 0:
+        start_time = time.time()
+        while time.time() - start_time < 0.1:
             
             try:
                 message, conn, addr = control_messages_bounded_queue.get_nowait()
