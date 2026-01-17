@@ -560,8 +560,7 @@ def main():
 
     # Extract values with defaults
     NUM_WORKERS = cluster_config["num_workers"]
-    SEED = cluster_config.get("seed", 42)
-    WORLD_SIZE = NUM_WORKERS + 1
+  
 
     # Get worker name from command-line arguments (e.g., "worker1", "worker2")
     if len(sys.argv) > 1:

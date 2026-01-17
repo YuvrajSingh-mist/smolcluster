@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-MNIST Training with EDP (Elastic Distributed Parameter Server)
+MNIST Training with SyncPS (Synchronous Parameter Server)
 
 This script provides both server and worker entry points for distributed
-MNIST training using the refactored EDP functions.
+MNIST training using the refactored SyncPS functions.
 
 Usage:
     Server: python train_mnist.py server <hostname>
@@ -20,8 +20,10 @@ import torchinfo
 import wandb
 import yaml
 
-from smolcluster.algorithms.EDP.server import run_edp_server
-from smolcluster.algorithms.EDP.worker import run_edp_worker
+# from smolcluster.algorithms.EDP.server import run_edp_server
+# from smolcluster.algorithms.EDP.worker import run_edp_worker
+from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
+from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.device import get_device
 
@@ -33,7 +35,8 @@ def load_configs():
     with open(CONFIG_DIR / "nn_config.yaml") as f:
         nn_config = yaml.safe_load(f)
     
-    with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
+    # with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
+    with open(CONFIG_DIR / "cluster_config_syncps.yaml") as f:
         cluster_config = yaml.safe_load(f)
     
     return nn_config, cluster_config
@@ -83,7 +86,7 @@ def setup_wandb():
 
 
 def run_server(hostname: str):
-    """Run EDP server."""
+    """Run SyncPS server."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -123,9 +126,22 @@ def run_server(hostname: str):
     # Create criterion
     criterion = torch.nn.CrossEntropyLoss()
     
+    # Initialize W&B
+    wandb.init(
+        project="smolcluster",
+        name=f"SyncPS-server-{hostname}_lr{nn_config['learning_rate']}_bs{batch_size}_workers{num_workers}",
+        config={
+            **nn_config,
+            "server_hostname": hostname,
+            "num_workers": num_workers,
+            "mode": "synchronous_ps",
+        },
+    )
+    
     # Run server
-    logger.info("Starting EDP server...")
-    run_edp_server(
+    logger.info("Starting SyncPS server...")
+    # run_edp_server(
+    run_syncps_server(
         model=model,
         optimizer=optimizer,
         train_loader=train_loader,
@@ -136,10 +152,11 @@ def run_server(hostname: str):
         device=device,
         criterion=criterion,
     )
+    wandb.finish()
 
 
 def run_worker(worker_rank: int, hostname: str):
-    """Run EDP worker."""
+    """Run SyncPS worker."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -189,9 +206,22 @@ def run_worker(worker_rank: int, hostname: str):
     # Create criterion
     criterion = torch.nn.CrossEntropyLoss()
     
+    # Initialize W&B
+    wandb.init(
+        project="smolcluster",
+        name=f"SyncPS-worker-{hostname}_rank{local_rank}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}",
+        config={
+            **nn_config,
+            "worker_rank": local_rank,
+            "worker_hostname": hostname,
+            "mode": "synchronous_ps",
+        },
+    )
+    
     # Run worker
-    logger.info(f"Starting EDP worker {local_rank}...")
-    run_edp_worker(
+    logger.info(f"Starting SyncPS worker {local_rank}...")
+    # run_edp_worker(
+    run_syncps_worker(
         model=model,
         optimizer=optimizer,
         train_loader=train_loader,
@@ -205,6 +235,7 @@ def run_worker(worker_rank: int, hostname: str):
         host_ip=host_ip,
         port=port,
     )
+    wandb.finish()
 
 
 def main():
