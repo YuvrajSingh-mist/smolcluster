@@ -790,9 +790,7 @@ def run_edp_server(
         num_msgs_processed = 0
         
         while time.time() - start_time < 0.01 and num_msgs_processed < MAX_DATA_MSGS_PER_STEP:
-            
-        # for _ in range(MAX_MSGS_PER_STEP):
-            
+        
             
             try:
                 message, conn, addr = data_messages_bounded_queue.get_nowait()
