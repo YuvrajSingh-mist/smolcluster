@@ -57,10 +57,14 @@ def load_configs(algorithm: str = "syncps"):
     return gpt_config, cluster_config
 
 
-def load_data(config, world_size: int, seed: int, rank: int):
-    """dataset for the given rank."""
+def load_data(config, world_size: int, seed: int, rank: int, batch_size: int):
+    """dataset for the given rank with specified batch size."""
     
-    train_loader, val_loader, vocab_size, pad_token_id = prepare_dataset(config, world_size, seed, rank)
+    # Override config batch_size with the provided value
+    config_with_batch = config.copy()
+    config_with_batch['batch_size'] = batch_size
+    
+    train_loader, val_loader, vocab_size, pad_token_id = prepare_dataset(config_with_batch, world_size, seed, rank)
     
     return train_loader, val_loader, vocab_size, pad_token_id
    
@@ -96,15 +100,31 @@ def run_server(hostname: str, algorithm: str = "syncps"):
     # Load configs
     gpt_config, cluster_config = load_configs(algorithm)
     
+    # Validate batch_size configuration for EDP
+    if algorithm == "edp":
+        if "batch_size" not in cluster_config or not isinstance(cluster_config["batch_size"], dict):
+            logger.error("❌ FATAL: cluster_config_edp.yaml must have 'batch_size' as a dict mapping hostnames to batch sizes")
+            sys.exit(1)
+        
+        if hostname not in cluster_config["batch_size"]:
+            logger.error(f"❌ FATAL: No batch_size configured for hostname '{hostname}' in cluster_config_edp.yaml")
+            sys.exit(1)
+        
+        server_batch_size = cluster_config["batch_size"][hostname]
+        logger.info(f"✅ Server batch size: {server_batch_size}")
+    else:
+        # SyncPS uses global batch_size from gpt_config
+        server_batch_size = gpt_config['batch_size']
+    
     # Setup parameters
     num_workers = cluster_config["num_workers"]
     seed = cluster_config.get("seed", 42)
     world_size = num_workers + 1
     rank = 0  # Server is rank 0
     
-    # Load data
+    # Load data with server's batch size
     logger.info(f"Loading {gpt_config.get('dataset_name', 'dataset')} dataset...")
-    train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, rank)
+    train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, rank, server_batch_size)
     logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
     
     # Create model
@@ -135,12 +155,13 @@ def run_server(hostname: str, algorithm: str = "syncps"):
     algo_name = algorithm.upper()
     wandb.init(
         project="smolcluster",
-        name=f"{algo_name}-server-{hostname}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}_workers{num_workers}",
+        name=f"{algo_name}-server-{hostname}_lr{gpt_config['learning_rate']}_bs{server_batch_size}_workers{num_workers}",
         config={
             **gpt_config,
             "server_hostname": hostname,
             "num_workers": num_workers,
             "algorithm": algorithm,
+            "server_batch_size": server_batch_size,
         },
     )
     
@@ -194,6 +215,22 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
     # Load configs
     gpt_config, cluster_config = load_configs(algorithm)
     
+    # Validate batch_size configuration for EDP
+    if algorithm == "edp":
+        if "batch_size" not in cluster_config or not isinstance(cluster_config["batch_size"], dict):
+            logger.error("❌ FATAL: cluster_config_edp.yaml must have 'batch_size' as a dict mapping hostnames to batch sizes")
+            sys.exit(1)
+        
+        if hostname not in cluster_config["batch_size"]:
+            logger.error(f"❌ FATAL: No batch_size configured for hostname '{hostname}' in cluster_config_edp.yaml")
+            sys.exit(1)
+        
+        worker_batch_size = cluster_config["batch_size"][hostname]
+        logger.info(f"✅ Worker batch size: {worker_batch_size}")
+    else:
+        # SyncPS uses global batch_size from gpt_config
+        worker_batch_size = gpt_config['batch_size']
+    
     # Setup parameters
     num_workers = cluster_config["num_workers"]
     seed = cluster_config.get("seed", 42)
@@ -203,9 +240,9 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
     host_ip = cluster_config["host_ip"][hostname]
     port = cluster_config["port"]
     
-    # Load data
+    # Load data with worker's batch size
     logger.info(f"Loading {gpt_config.get('dataset_name', 'dataset')} dataset...")
-    train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, local_rank)
+    train_loader, val_loader, vocab_size, pad_token_id = load_data(gpt_config, world_size, seed, local_rank, worker_batch_size)
     logger.info(f"Data ready. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
     
     # Create model
@@ -226,7 +263,7 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
     logger.info("Model Summary:")
     summary = torchinfo.summary(
         model, 
-        input_size=(gpt_config['batch_size'], gpt_config['max_seq_len']),
+        input_size=(worker_batch_size, gpt_config['max_seq_len']),
         device=device,
         dtypes=[torch.long]
     )
@@ -246,12 +283,13 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
     algo_name = algorithm.upper()
     wandb.init(
         project="smolcluster",
-        name=f"{algo_name}-worker-{hostname}_rank{local_rank}_lr{gpt_config['learning_rate']}_bs{gpt_config['batch_size']}",
+        name=f"{algo_name}-worker-{hostname}_rank{local_rank}_lr{gpt_config['learning_rate']}_bs{worker_batch_size}",
         config={
             **gpt_config,
             "worker_rank": local_rank,
             "worker_hostname": hostname,
             "algorithm": algorithm,
+            "worker_batch_size": worker_batch_size,
         },
     )
     

@@ -455,7 +455,13 @@ def run_edp_server(
                 command, rank = message
                 
                 if command == "register":
-                    logger.info(f"Worker {rank} registered from {client_address}")
+                    worker_hostname = message[2] if len(message) > 2 else None
+                    logger.info(f"Worker {rank} (hostname: {worker_hostname}) registered from {client_address}")
+                    
+                    # Get worker-specific batch size from config
+                    batch_size_per_worker = cluster_config.get("batch_size_per_worker", {})
+                    worker_batch_size = batch_size_per_worker.get(worker_hostname, batch_size) if worker_hostname else batch_size
+                    logger.info(f"Assigning batch size {worker_batch_size} to worker {rank} ({worker_hostname})")
                     
                     # Create send queue and sender thread for this worker
                     send_queue = Queue(maxsize=32)
@@ -469,13 +475,14 @@ def run_edp_server(
                     with lock:
                         workers[rank] = {
                             "conn": client_socket,
-                            "send_queue": send_queue
+                            "send_queue": send_queue,
+                            "batch_size": worker_batch_size
                         }
                     
-                    # Send start signal immediately to this worker via queue
+                    # Send start signal with batch size to this worker via queue
                     try:
-                        send_queue.put("start_training")
-                        logger.info(f"Queued start_training signal for worker {rank}")
+                        send_queue.put(("start_training", worker_batch_size))
+                        logger.info(f"Queued start_training signal with batch_size={worker_batch_size} for worker {rank}")
                     except Exception as e:
                         logger.error(f"Error queuing start signal for worker {rank}: {e}")
                     

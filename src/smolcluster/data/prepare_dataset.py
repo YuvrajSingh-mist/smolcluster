@@ -20,7 +20,7 @@ tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 class ModelArgs:
     block_size = 128
 
-def prepare_dataset(config, world_size: int, seed: int, rank: int):
+def prepare_dataset(config, world_size: int, seed: int, rank: int, batch_size: int = None):
     def collate_fn(batch):
         # Extract text data
         texts = batch  # batch is list of strings
@@ -37,6 +37,9 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
       
         return input_ids, labels
 
+    # Use provided batch_size or fall back to config
+    effective_batch_size = batch_size if batch_size is not None else config['batch_size']
+    
     # Load full datasets
     dataset_name = config['dataset_name']
     dataset_config = config['dataset_config']
@@ -50,7 +53,7 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
 
     val_loader = DataLoader(
         val_texts, 
-        batch_size=config['batch_size'], 
+        batch_size=effective_batch_size, 
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=0
@@ -63,7 +66,7 @@ def prepare_dataset(config, world_size: int, seed: int, rank: int):
     train_data = [train_texts[i] for i in batch_indices[rank].tolist()]
     train_loader = DataLoader(
         train_data, 
-        batch_size=config['batch_size'], 
+        batch_size=effective_batch_size, 
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=0

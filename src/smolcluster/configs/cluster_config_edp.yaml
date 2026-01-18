@@ -7,6 +7,16 @@ host_ip:
   pi5: "192.168.50.1"
   win: "10.10.0.1"
 
+# Batch size per device (REQUIRED - no defaults)
+batch_size:
+  mini1: 16  # Server batch size
+  mini2: 16  # Worker 1 batch size
+  mini3: 16  # Worker 2 batch size
+  pi4: 8
+  macbook: 32
+  pi5: 8
+  win: 16
+
 port: 65432
 
 # Worker update settings
@@ -27,5 +37,5 @@ data_message_queue_size: 100  # Size of the data queue for each worker
 
 # Cluster configuration
 num_workers: 2
-workers: [mini2, mini3]  # Worker hostnames
+workers: [pi5, win]  # Worker hostnames
 server: mini1  # Server hostname
