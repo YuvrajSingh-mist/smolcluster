@@ -258,8 +258,8 @@ def run_edp_worker(
                         registration_successful = True
                         break
                     
-                except socket.timeout:
-                    logger.debug("No message received yet, continuing to wait...")
+                except Exception as e:
+                    logger.debug(f"No message received yet, continuing to wait... Exception: {e}")
             
             sock.settimeout(None)  # Reset to blocking
             
