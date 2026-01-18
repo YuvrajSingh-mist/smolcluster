@@ -452,10 +452,10 @@ def run_edp_server(
                     client_socket.close()
                     continue
 
-                command, rank = message
+                command, rank, hostname = message
                 
                 if command == "register":
-                    worker_hostname = message[2] if len(message) > 2 else None
+                    worker_hostname = hostname
                     logger.info(f"Worker {rank} (hostname: {worker_hostname}) registered from {client_address}")
                     
                     # Get worker-specific batch size from config
