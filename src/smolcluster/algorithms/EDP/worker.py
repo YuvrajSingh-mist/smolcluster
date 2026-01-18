@@ -250,19 +250,16 @@ def run_edp_worker(
                 sock.settimeout(0.1)
                 try:
                     recv_command = receive_message(sock)
+                    print(f"Received message from server: {recv_command}")
                     if isinstance(recv_command, tuple) and recv_command[0] == "start_training":
                         worker_batch_size = recv_command[1]
                         logger.info(f"✅ Received start_training command with batch_size={worker_batch_size} from server.")
                         received_start_signal = True
                         registration_successful = True
                         break
-                    elif recv_command == "start_training":  # Backward compatibility
-                        logger.info("✅ Received start_training command from server (using default batch size).")
-                        received_start_signal = True
-                        registration_successful = True
-                        break
+                    
                 except socket.timeout:
-                    pass
+                    logger.debug("No message received yet, continuing to wait...")
             
             sock.settimeout(None)  # Reset to blocking
             
