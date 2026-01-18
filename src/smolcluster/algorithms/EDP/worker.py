@@ -13,6 +13,7 @@ import torchvision
 import wandb
 import yaml
 
+from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.common_utils import (
     get_weights,
@@ -230,54 +231,74 @@ def run_edp_worker(
     # Connect to server with retry logic
     sock = connect_to_server(host_ip, port)
 
-    # Register with the server
-    logger.info(f"Registering as worker {worker_rank} (hostname: {hostname}) with server...")
-    send_message(sock, ("register", worker_rank, hostname))
+    # Register with the server with retry logic
+    MAX_REGISTRATION_RETRIES = 5
+    registration_successful = False
+    
+    for attempt in range(1, MAX_REGISTRATION_RETRIES + 1):
+        logger.info(f"Registration attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Registering as worker {worker_rank} (hostname: {hostname}) with server...")
+        try:
+            send_message(sock, ("register", worker_rank, hostname))
+            
+            # Wait for start signal from server
+            logger.info(f"Waiting for start_training signal with batch_size from server (attempt {attempt})...")
+            start_time = time.time()
+            received_start_signal = False
+            worker_batch_size = batch_size  # Default to config batch size
+            
+            while time.time() - start_time < 10:
+                sock.settimeout(0.1)
+                try:
+                    recv_command = receive_message(sock)
+                    if isinstance(recv_command, tuple) and recv_command[0] == "start_training":
+                        worker_batch_size = recv_command[1]
+                        logger.info(f"✅ Received start_training command with batch_size={worker_batch_size} from server.")
+                        received_start_signal = True
+                        registration_successful = True
+                        break
+                    elif recv_command == "start_training":  # Backward compatibility
+                        logger.info("✅ Received start_training command from server (using default batch size).")
+                        received_start_signal = True
+                        registration_successful = True
+                        break
+                except socket.timeout:
+                    pass
+            
+            sock.settimeout(None)  # Reset to blocking
+            
+            if received_start_signal:
+                break  # Successfully registered and received start signal
+            else:
+                logger.warning(f"❌ Attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Did not receive start signal within timeout")
+                if attempt < MAX_REGISTRATION_RETRIES:
+                    logger.info(f"Retrying registration in 2 seconds...")
+                    time.sleep(2)
+        except Exception as e:
+            logger.error(f"❌ Attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Registration error: {e}")
+            if attempt < MAX_REGISTRATION_RETRIES:
+                logger.info(f"Retrying registration in 2 seconds...")
+                time.sleep(2)
+    
+    if not registration_successful:
+        logger.error(f"❌ FATAL: Failed to register with server after {MAX_REGISTRATION_RETRIES} attempts!")
+        sock.close()
+        wandb.finish()
+        raise RuntimeError(f"Worker could not register with server after {MAX_REGISTRATION_RETRIES} attempts. Server may not be ready or connection issue.")
 
     logger.info(
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
 
     total_steps = num_epochs * len(train_loader)
-
-    # Wait for start signal from server (error if not received)
-    logger.info("Waiting for start_training signal with batch_size from server (max 10 seconds)...")
-    start_time = time.time()
-    received_start_signal = False
-    worker_batch_size = batch_size  # Default to config batch size
-    
-    while time.time() - start_time < 10:
-        sock.settimeout(0.1)
-        try:
-            recv_command = receive_message(sock)
-            if isinstance(recv_command, tuple) and recv_command[0] == "start_training":
-                worker_batch_size = recv_command[1]
-                logger.info(f"Received start_training command with batch_size={worker_batch_size} from server.")
-                received_start_signal = True
-                break
-            elif recv_command == "start_training":  # Backward compatibility
-                logger.info("Received start_training command from server (using default batch size).")
-                received_start_signal = True
-                break
-        except socket.timeout:
-            pass
-    
-    sock.settimeout(None)  # Reset to blocking
-    
-    if not received_start_signal:
-        logger.error("Failed to receive start_training signal from server within timeout!")
-        sock.close()
-        wandb.finish()
-        raise RuntimeError("Worker did not receive start signal from server. Server may not be ready or connection issue.")
     
     # Recreate data loaders with worker-specific batch size if different
     if worker_batch_size != batch_size:
         logger.info(f"Recreating data loaders with worker-specific batch_size={worker_batch_size}")
-        from smolcluster.data.prepare_dataset import prepare_dataset
+        
         train_loader, val_loader, _, _ = prepare_dataset(
             config, 
             world_size=1,  # Worker handles its own data
-            seed=seed, 
+            seed=cluster_config.get("seed", 42),
             rank=0,
             batch_size=worker_batch_size
         )

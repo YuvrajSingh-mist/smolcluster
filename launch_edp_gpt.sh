@@ -223,8 +223,8 @@ SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $RE
 launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
-echo "⏳ Waiting 5 seconds for server to initialize..."
-sleep 5
+echo "⏳ Waiting 2 seconds for server to initialize..."
+sleep 2
 
 # Launch workers
 echo ""
