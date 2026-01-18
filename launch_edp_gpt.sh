@@ -95,15 +95,16 @@ if [[ "$DRY_RUN" != "true" ]]; then
             
             # Start Promtail in background
             echo "🚀 $node: Starting Promtail..."
-            if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && nohup promtail -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 &"; then
+            if timeout 10 ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && nohup promtail -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 &" &>/dev/null; then
                 sleep 1
-                if ssh "$node" "(pgrep -f promtail || tasklist /FI \"IMAGENAME eq promtail.exe\" 2>nul | findstr promtail)" &>/dev/null; then
+                # Check with timeout to avoid hanging
+                if timeout 5 ssh "$node" "(pgrep -f promtail || tasklist /FI \"IMAGENAME eq promtail.exe\" 2>nul | findstr promtail)" &>/dev/null; then
                     echo "✅ $node: Promtail started successfully"
                 else
                     echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
                 fi
             else
-                echo "⚠️  $node: Failed to start Promtail. Logs will be local only."
+                echo "⚠️  $node: Failed to start Promtail (timeout or error). Logs will be local only."
             fi
         else
             echo "⚠️  Warning: Promtail not found on $node. Centralized logging will not work."
