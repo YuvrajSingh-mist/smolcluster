@@ -252,13 +252,14 @@ def run_syncps_server(
             grads_received[step][rank] = leader_grads
             total_loss += leader_loss.item()
             logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Leader loss: {leader_loss.item():.4f}")
-
+            train_ppl = math.exp(loss.item())
            
             wandb.log({
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/leader_step": leader_loss.item(),
-                    "losses/leader_total_train": total_loss / (step + 1),
+                    "losses/leader_total_train": total_loss / (batch_idx + 1),
+                    "ppl/train": train_ppl
                 })
             
 

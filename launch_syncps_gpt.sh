@@ -10,7 +10,7 @@ export WANDB_API_KEY="$WANDB_API_TOKEN"
 
 # Configuration
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_edp.yaml"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_syncps.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
@@ -32,7 +32,7 @@ if [[ "$1" == "--dry-run" ]]; then
     echo "🏃 Dry run mode - will show commands without executing"
 fi
 
-echo "🚀 SmolCluster Launch Script - EDP Version"
+echo "🚀 SmolCluster Launch Script - SyncPS GPT Version"
 echo "📁 Project dir: $PROJECT_DIR"
 echo "⚙️  Config file: $CONFIG_FILE"
 
@@ -218,7 +218,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching server on $SERVER..."
-SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py server $SERVER --algorithm edp"
+SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py server $SERVER --algorithm syncps"
 launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -230,7 +230,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm edp"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm syncps"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done
@@ -243,3 +243,4 @@ echo "   ssh $SERVER 'tmux ls'"
 echo "   ssh $SERVER 'tmux attach -t server'"
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"
+echo "📊 View centralized logs at: http://localhost:3000 (Grafana)"
