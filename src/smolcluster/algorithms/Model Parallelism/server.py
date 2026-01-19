@@ -27,8 +27,7 @@ from smolcluster.utils.common_utils import (
    
 )
 from smolcluster.utils.layers import (
-    set_layer_weights,
-    get_layers_per_node
+    get_model_per_node
 )
 from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
@@ -85,81 +84,6 @@ workers = {}
 grads_received = defaultdict(dict)
 
 
-def load_data(
-    batch_size: int, WORLD_SIZE: int, SEED: int, rank: int
-) -> tuple[DataLoader, DataLoader]:
-    # load MNIST
-    transforms = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize((0.5,), (0.5,)),
-        ]
-    )
-    DATA_DIR = Path(__file__).parent.parent.parent / "data"
-    data = torchvision.datasets.MNIST(
-        str(DATA_DIR), download=True, transform=transforms
-    )
-    lendata = len(data)
-
-    torch.manual_seed(SEED)
-
-    trainset, testset = torch.utils.data.random_split(
-        data, [int(0.9 * lendata), lendata - int(0.9 * lendata)]
-    )
-    val_loader = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False
-    )
-    batch_indices = get_data_indices(len(trainset), WORLD_SIZE, SEED)
-    train_data = torch.utils.data.Subset(trainset, batch_indices[rank])
-    train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=False
-    )
-    return train_loader, val_loader
-
-
-def evaluate(
-    model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module
-) -> tuple[float, float]:
-    model.eval()
-    total_loss = 0.0
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for data, target in val_loader:
-            data, target = data.to(get_device()), target.to(get_device())
-            output = model(data.view(data.size(0), -1))
-            loss = criterion(output, target)
-            total_loss += loss.item()
-            _, predicted = torch.max(output.data, 1)
-            total += target.size(0)
-            correct += (predicted == target).sum().item()
-    avg_loss = total_loss / len(val_loader)
-    accuracy = 100 * (correct / total)
-    return avg_loss, accuracy
-
-
-def compute_leader_gradients(
-    model: torch.nn.Module,
-    data: torch.Tensor,
-    target: torch.Tensor,
-    criterion: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    model.train()
-    data, target = data.to(get_device()), target.to(get_device())
-    output = model(data.view(data.size(0), -1))
-    loss = criterion(output, target)
-    optimizer.zero_grad()
-    loss.backward()
-
-    # Gradient clipping
-    if nn_config.get("gradient_clipping", {}).get("enabled", False):
-        max_norm = nn_config["gradient_clipping"].get("max_norm", 1.0)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        logger.debug(f"Applied gradient clipping with max_norm={max_norm}")
-
-    grads = get_gradients(model)
-    return loss, grads
 
 
 def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
@@ -175,62 +99,63 @@ def handle_worker(conn: socket.SocketType, addr: tuple[str, int]) -> None:
                 break
 
             # Unpack the message tuple
-            command, recv_step, rank, grads = message
+            command, payload = message
 
+            
             logger.info(
-                f"Received message '{command}' from worker {addr} (rank {rank}) for step {recv_step}"
+                f"Received message '{command}' from worker {addr} (rank {rank})"
             )
 
-            if command == "parameter_server_reduce":
-                logger.info(f"[Step {recv_step}] Storing gradients from worker {rank}")
-                with lock:
-                    curr_step = recv_step
-                    grads_received[curr_step][rank] = grads
-                    logger.info(
-                        f"[Step {recv_step}] Now have {len(grads_received[curr_step])} gradient sets"
-                    )
-                step_event.set()
-
+            if command == "get_model_layers":
+                # logger.info(f"[Step {recv_step}] Storing gradients from worker {rank}")
+                # with lock:
+                #     curr_step = recv_step
+                #     grads_received[curr_step][rank] = grads
+                #     logger.info(
+                #         f"[Step {recv_step}] Now have {len(grads_received[curr_step])} gradient sets"
+                #     )
+                # step_event.set()
+                rank, n_layers, n_nodes = payload['rank'], payload['n_layers'], payload['n_nodes']
+                
+                model_layers = get_model_per_node(
+                    model,
+                    num_nodes=n_nodes,
+                    local_rank=rank,
+                    model_name=model_name,
+                    total_layers=n_layers
+                )
+                
+                send_message(conn, ("model_layers", model_layers))
+            
+            elif command == "disconnect":
+                logger.info(f"Worker {addr} requested disconnection")
+                break
+            
+            elif command == 'forward_activations':
+                
+                from_rank, to_rank, sock, activations = payload['from_rank'], payload['to_rank'], payload['sock'], payload['activations']
+                    
+                send_message(conn, {'forward_activations', activations, 'next_sock': sock, 'from': from_rank, 'to', to_rank})
+                    
             # Add handling for other commands if needed, e.g., 'disconnect'
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
             break
 
+
     logger.info(f"Worker {addr} disconnected")
     conn.close()
 
 
-def parameter_server_reduce(
-    grads_dict: dict[int, dict[str, torch.Tensor]], num_workers_connected: int
-) -> dict[str, torch.Tensor]:
-    # worker_reduced = {}
-    grads_reduced = {}
-    # leader_reduced = {}
-    for worker_id in list(grads_dict):
-        # if worker_id == RANK:
-        #     continue
-
-        for name, worker_grads in grads_dict[worker_id].items():
-            grads_reduced[name] = grads_reduced.get(name, 0.0) + (
-                worker_grads / num_workers_connected
-            )
-
-    return grads_reduced
 
 
 config = AutoConfig.from_pretrained(nn_config["model_name"])
 
-model = GPT2LMHeadModel(config)
+if nn_config['model_name'] == 'causal_gpt2':
+    model = GPT2LMHeadModel(config)
+
 model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
-
-
-train_loader, val_loader = load_data(batch_size, WORLD_SIZE, SEED, rank=RANK)
-
-
-logger.info(
-    f"Data ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
-)
 
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -244,25 +169,7 @@ logger.info(f"Server listening on {HOST_IP}:{PORT}")
 
 
 def main():
-    # Initialize W&B
-    wandb.init(
-        project="smolcluster",
-        name=f"SyncPS-server-{HOSTNAME}_lr{nn_config['learning_rate']}_bs{nn_config['batch_size']}_workers{NUM_WORKERS}",
-        config={
-            **nn_config,
-            "server_hostname": HOSTNAME,
-            "num_workers": NUM_WORKERS,
-            "mode": "synchronous_ps",
-        },
-    )
-    layers = get_layers_per_node(config, model, num_nodes, RANK, 'causal_gpt2')
-    model = set_layer_weights(model, layers)
-    model_summary = str(
-        torchinfo.summary(model, input_size=(batch_size, 784), device=get_device())
-    )
-    logger.info("Model Summary:")
-    logger.info(model_summary)
-    wandb.log({"model_structure": model_summary})
+   
 
     # Accept connections and wait for registration
     registered_workers = {}  # rank -> socket
@@ -296,66 +203,44 @@ def main():
             client_socket.close()
             continue
 
-    logger.info("All workers connected. Starting training...")
+    logger.info(f"All workers connected. Starting inference on {model_name}...")
 
     for worker_socket in registered_workers.values():
-        send_message(worker_socket, "start_training")
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=nn_config["learning_rate"])
+        send_message(worker_socket, "start_inference")
 
     logger.info(f"Starting inference for {model_name}.")
     
-    
-    with torch.no_grad():
+    while True:
+        user_input = input("Enter text: ")
+        if user_input.lower() in {"exit", "quit"}:
+            logger.info("Exiting inference loop.")
+            break
+        prompt = user_input.strip()
+        max_new_tokens = nn_config.get("max_new_tokens", 20)
+        decoding_strategy = nn_config.get("decoding_strategy", "greedy")
+        # Send generation request to all workers
+        for rank, worker_socket in registered_workers.items():
+            
+            send_message(
+                worker_socket,
+                (
+                    "generate_text",
+                    {
+                        "prompt": prompt,
+                        "max_new_tokens": max_new_tokens,
+                        "decoding_strategy": decoding_strategy,
+                    },
+                ),
+            )
 
-                with lock:
-                    curr_workers_len = len(grads_received[step])
-
-                logger.info(
-                    f"Epoch {epoch + 1}, Step: {step}, Batch {batch_idx}: Received gradients from {curr_workers_len}/{WORLD_SIZE} participants."
-                )
-                if curr_workers_len < NUM_WORKERS:
-                    logger.info(f"Waiting for more gradients for step {step}...")
-                    step_event.wait()
-                    step_event.clear()
-
-                else:
-                    break
-
-            if len(grads_received[step]) != 0:
-                logger.info(
-                    f"[Step {step}] Averaging gradients from {len(grads_received[step])} participants"
-                )
-                grads_reduced = parameter_server_reduce(
-                    grads_received[step], len(grads_received[step])
-                )
-
-                # Send ACKs and server step to workers
-                for _worker_addr, worker_socket in workers.items():
-                    logger.info(f"[Step {step}] Worker {rank} requested model weights")
-                    weights = get_weights(model)
-                    send_message(worker_socket, ("model_weights", step, weights))
-
-                logger.info(
-                    f"[Step {step}] Applying averaged gradients to server model"
-                )
-                set_gradients(grads_reduced, model)
-
-                optimizer.step()
-                logger.info(f"[Step {step}] Server model updated")
-                grads_received.pop(step, None)
-                del grads_reduced, leader_grads
-                gc.collect()
-
-            else:
-                logger.warning(
-                    f"No gradients received for step {step}. Skipping grad update."
-                )
-                del leader_grads
-
+            ack = receive_message(worker_socket)
+            
+            if ack != "ack_generate":
+                logger.error(f"Unexpected ack from worker {rank}: {ack}. Cannot continue.")
+                break
         
-    logger.info("Training completed successfully!")
-    wandb.finish()
+    logger.info("Inference completed successfully!")
+       
     sock.close()
 
 

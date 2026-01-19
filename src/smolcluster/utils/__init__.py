@@ -8,7 +8,7 @@ from .common_utils import (
 )
 from .data import get_data_indices
 from .device import get_device
-from .layers import  get_layers_per_node, set_layer_weights
+from .layers import  get_model_per_node
 
 
 __all__ = [
@@ -18,8 +18,7 @@ __all__ = [
     "get_device",
     "get_gradients",
     "set_gradients",
-    "get_layers_per_node",
+    "get_model_per_node",
     "set_weights",
     "get_weights",
-    'set_layer_weights'
 ]
