@@ -35,6 +35,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("[WORKER]")  # Will be updated in main() with rank
 
+
+def safe_wandb_log(data, step=None, commit=True):
+    """Safely log to wandb with error handling to prevent asyncio crashes."""
+    try:
+        wandb.log(data, step=step, commit=commit)
+    except Exception as e:
+        logger.warning(f"WandB logging failed (non-fatal): {e}")
+
+
 # Global variables for model versioning
 model_version = 0
 recv_model_version = -1
@@ -225,6 +234,7 @@ def run_edp_worker(
             "server_hostname": cluster_config["server"],
             "worker_update_interval": worker_update_interval,
         },
+        settings=wandb.Settings(start_method="thread"),  # Prevent asyncio issues
     )
     logger.info(f"Worker {worker_rank} wandb initialized")
 
@@ -507,7 +517,7 @@ def run_edp_worker(
                     if param.grad is not None:
                         # logger.info(f"Logging gradients for layer: {name}")
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
-                        wandb.log(
+                        safe_wandb_log(
                             {
                                 f"gradients/layer_{name}": grad_norm,
                                 "step": step,
@@ -531,7 +541,7 @@ def run_edp_worker(
         # Run evaluation every eval_steps
         if step % eval_steps == 0:
             val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
-            wandb.log(
+            safe_wandb_log(
                 {
                     "step": step,
                     "epoch": epoch,
@@ -543,15 +553,15 @@ def run_edp_worker(
             )
             if decoder_type_ppl:
                 train_ppl = math.exp(loss.item())
-                wandb.log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
+                safe_wandb_log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
                 if val_ppl is not None:
-                    wandb.log({"step": step, "epoch": epoch, "val/ppl": val_ppl})
+                    safe_wandb_log({"step": step, "epoch": epoch, "val/ppl": val_ppl})
             logger.info(
                 f"Evaluation at step {step}: Val Loss={val_loss:.4f}"
             )
         else:
             # Log training loss only
-            wandb.log(
+            safe_wandb_log(
                 {
                     "step": step,
                     "epoch": epoch,
@@ -562,7 +572,7 @@ def run_edp_worker(
             )
             if decoder_type_ppl:
                 train_ppl = math.exp(loss.item())
-                wandb.log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
+                safe_wandb_log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
 
         logger.info(f"Epoch: {epoch} , Step {step}/{total_steps} completed.")
 

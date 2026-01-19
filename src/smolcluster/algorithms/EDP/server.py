@@ -33,6 +33,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("[SERVER]")
 
+
+def safe_wandb_log(data, step=None, commit=True):
+    """Safely log to wandb with error handling to prevent asyncio crashes."""
+    try:
+        wandb.log(data, step=step, commit=commit)
+    except Exception as e:
+        logger.warning(f"WandB logging failed (non-fatal): {e}")
+
+
 # gradients_event = threading.Event()
 lock = threading.Lock()
 
@@ -422,6 +431,7 @@ def run_edp_server(
             "worker_hostnames": cluster_config["workers"],
             "num_workers": len(cluster_config["workers"]),
         },
+        settings=wandb.Settings(start_method="thread"),  # Prevent asyncio issues
     )
 
     # Get input size from config (support both MNIST and GPT models)
@@ -434,7 +444,7 @@ def run_edp_server(
     )
     logger.info("Model Summary:")
     logger.info(model_summary)
-    wandb.log({"model_structure": model_summary})
+    safe_wandb_log({"model_structure": model_summary})
 
     # Start accepting worker connections in background
     def accept_workers():
@@ -552,7 +562,7 @@ def run_edp_server(
                 if param.grad is not None:
                     
                     grad_norm = torch.norm(param.grad.detach(), 2).item()
-                    wandb.log(
+                    safe_wandb_log(
                         {
                             f"gradients/layer_{name}": grad_norm,
                             "step": step,
@@ -654,7 +664,7 @@ def run_edp_server(
                     if decoder_type_ppl:
                         train_ppl = math.exp(total_loss / (step + 1))
                         if step % 50 == 0:
-                            wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+                            safe_wandb_log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
 
                     with lock:
                         model_version += 1
@@ -676,7 +686,7 @@ def run_edp_server(
         if decoder_type_ppl:
             train_ppl = math.exp(total_loss / (step + 1))
             if step % 50 == 0:
-                wandb.log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+                safe_wandb_log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
 
         # Gradient clipping (only if not using AMP, since AMP handles it)
         if not use_fp16:
@@ -726,7 +736,7 @@ def run_edp_server(
             
            
         if step % 50 == 0:
-            wandb.log(
+            safe_wandb_log(
                 {
                     "step": step,
                     "epoch": epoch + 1,
@@ -735,7 +745,7 @@ def run_edp_server(
                 }
             )
 
-            wandb.log(
+            safe_wandb_log(
                 {
                     "step": step,
                     "epoch": epoch + 1,
@@ -751,7 +761,7 @@ def run_edp_server(
 
             val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
 
-            wandb.log(
+            safe_wandb_log(
                 {
                     "step": step,
                     "epoch": epoch + 1,
@@ -759,7 +769,7 @@ def run_edp_server(
                 }
             )
             if decoder_type_ppl and val_ppl is not None:
-                wandb.log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
+                safe_wandb_log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
 
     logger.info(
         f"Training completed. Total steps: {step + 1}, Final model version: {model_version}"
@@ -881,7 +891,7 @@ def run_edp_server(
             logger.info(f"Step: {step}: Step loss = {loss.item():.4f}")
 
             if step % 50 == 0:
-                wandb.log(
+                safe_wandb_log(
                     {
                         "step": step,
                         "epoch": epoch + 1,
@@ -890,7 +900,7 @@ def run_edp_server(
                     }
                 )
 
-                wandb.log(
+                safe_wandb_log(
                     {
                         "step": step,
                         "epoch": epoch + 1,
@@ -904,7 +914,7 @@ def run_edp_server(
 
                 val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
 
-                wandb.log(
+                safe_wandb_log(
                     {
                         "step": step,
                         "epoch": epoch + 1,
@@ -912,7 +922,7 @@ def run_edp_server(
                     }
                 )
                 if decoder_type_ppl and val_ppl is not None:
-                    wandb.log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
+                    safe_wandb_log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
 
     shutdown_flag.set()
     sock.close()
