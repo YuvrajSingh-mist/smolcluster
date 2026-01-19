@@ -74,7 +74,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
         fi
         
         # Check if Promtail is installed on remote node (cross-platform)
-        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe)" &>/dev/null; then
+        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe || test -f /mnt/c/promtail/promtail.exe || test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" || test -f \"C:\\\\promtail\\\\promtail.exe\")" &>/dev/null; then
             # Kill any existing Promtail processes (cleanup old/broken instances)
             echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
             ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" &>/dev/null || true
@@ -93,17 +93,14 @@ if [[ "$DRY_RUN" != "true" ]]; then
                 config_file="logging/promtail-worker-remote.yaml"
             fi
             
-            # Start Promtail in background
+            # Start Promtail in background (auto-detect path)
             echo "🚀 $node: Starting Promtail..."
-            if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && nohup promtail -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 &"; then
-                sleep 1
-                if ssh "$node" "(pgrep -f promtail || tasklist /FI \"IMAGENAME eq promtail.exe\" 2>nul | findstr promtail)" &>/dev/null; then
-                    echo "✅ $node: Promtail started successfully"
-                else
-                    echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
-                fi
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
+            sleep 1
+            if ssh "$node" "(pgrep -f promtail || tasklist /FI \"IMAGENAME eq promtail.exe\" 2>nul | findstr promtail)" &>/dev/null; then
+                echo "✅ $node: Promtail started successfully"
             else
-                echo "⚠️  $node: Failed to start Promtail. Logs will be local only."
+                echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
             fi
         else
             echo "⚠️  Warning: Promtail not found on $node. Centralized logging will not work."

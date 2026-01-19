@@ -74,13 +74,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
         fi
         
         # Check if Promtail is installed on remote node (cross-platform)
-        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe)" &>/dev/null; then
+        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe || test -f /mnt/c/promtail/promtail.exe || test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" || test -f \"C:\\\\promtail\\\\promtail.exe\")" ; then
             # Kill any existing Promtail processes (cleanup old/broken instances)
             echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
-            ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" &>/dev/null || true
+            ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" || true
             
             # Delete old log files and position files for fresh start
-            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" &>/dev/null || true
+            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" || true
             
             # Ensure log directory exists
             ssh "$node" "mkdir -p /tmp/smolcluster-logs"
@@ -95,11 +95,11 @@ if [[ "$DRY_RUN" != "true" ]]; then
             
             # Start Promtail in background (auto-detect path)
             echo "🚀 $node: Starting Promtail..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || echo /c/promtail/promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
             sleep 2
             
             # Check if Promtail is running
-            if ssh "$node" "pgrep -f promtail || tasklist /FI 'IMAGENAME eq promtail.exe' 2>nul | findstr promtail" &>/dev/null; then
+            if ssh "$node" "pgrep -f promtail || tasklist /FI 'IMAGENAME eq promtail.exe' 2>nul | findstr promtail"; then
                 echo "✅ $node: Promtail started successfully"
             else
                 echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
@@ -138,7 +138,7 @@ if [[ -f "$PROJECT_DIR/logging/docker-compose.yml" ]]; then
     if docker ps | grep -q loki; then
         echo "🧹 Cleaning up old logs from Loki..."
         # Stop Loki, remove volumes (deletes old data), then restart
-        (cd "$PROJECT_DIR/logging" && docker-compose down loki && docker volume rm logging_loki-data 2>/dev/null || true)
+        (cd "$PROJECT_DIR/logging" && docker-compose down loki && docker volume rm logging_loki-data || true)
         (cd "$PROJECT_DIR/logging" && docker-compose up -d loki)
         sleep 3
         if curl -s http://localhost:3100/ready | grep -q "ready"; then
@@ -194,7 +194,7 @@ launch_on_node() {
     sleep 1
     
     # Verify session exists
-    if ! ssh "$node" "tmux has-session -t $session_name 2>/dev/null"; then
+    if ! ssh "$node" "tmux has-session -t $session_name"; then
         echo "⚠️  Warning: Session $session_name on $node may have exited. Check logs: ssh $node 'tail -20 $log_file'"
     fi
 }
@@ -204,10 +204,10 @@ launch_on_node() {
 echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    ssh "$SERVER" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux kill-session -t server 2>/dev/null || true"
+    ssh "$SERVER" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux kill-session -t server || true"
     for worker_node in "${WORKERS[@]}"; do
         # Kill any session that starts with "worker"
-        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^worker' | xargs -I {} tmux kill-session -t {} 2>/dev/null || true"
+        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}'| grep -E '^worker' | xargs -I {} tmux kill-session -t {} || true"
     done
     echo "✅ Cleanup complete"
 else
