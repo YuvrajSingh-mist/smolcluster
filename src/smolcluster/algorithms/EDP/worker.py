@@ -250,7 +250,7 @@ def run_edp_worker(
                 sock.settimeout(0.1)
                 try:
                     recv_command = receive_message(sock)
-                    print(f"Received message from server: {recv_command}")
+                    
                     if isinstance(recv_command, tuple) and recv_command[0] == "start_training":
                         worker_batch_size = recv_command[1]
                         logger.info(f"✅ Received start_training command with batch_size={worker_batch_size} from server.")

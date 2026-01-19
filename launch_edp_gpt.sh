@@ -95,11 +95,11 @@ if [[ "$DRY_RUN" != "true" ]]; then
             
             # Start Promtail in background (auto-detect path)
             echo "🚀 $node: Starting Promtail..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && nohup bash -c 'PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || echo /c/promtail/promtail.exe) && \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file' > /tmp/promtail.log 2>&1 &" &>/dev/null
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || echo /c/promtail/promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
             sleep 2
             
             # Check if Promtail is running
-            if ssh "$node" "(pgrep -f promtail || tasklist /FI \"IMAGENAME eq promtail.exe\" 2>nul | findstr promtail)" &>/dev/null; then
+            if ssh "$node" "pgrep -f promtail || tasklist /FI 'IMAGENAME eq promtail.exe' 2>nul | findstr promtail" &>/dev/null; then
                 echo "✅ $node: Promtail started successfully"
             else
                 echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"

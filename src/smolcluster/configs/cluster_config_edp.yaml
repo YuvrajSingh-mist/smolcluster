@@ -14,7 +14,7 @@ batch_size:
   mini3: 16  # Worker 2 batch size
   pi4: 8
   macbook: 32
-  pi5: 8
+  pi5: 16
   win: 16
 
 port: 65432
