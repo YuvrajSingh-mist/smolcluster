@@ -51,7 +51,7 @@ else:
     HOSTNAME = input("Enter worker hostname: ")
 
 # Set parameters
-local_rank = int(WORKER_RANK) - 1
+local_rank = int(WORKER_RANK)
 
 # Workers connect to the server using the IP specified for this worker's hostname
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
@@ -80,15 +80,6 @@ else:
 model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
 
-# Load model layers for this worker
-layer_mapping, out_layers, results = get_model_per_node(
-    model,
-    num_nodes=num_nodes,
-    local_rank=local_rank,
-    model_name=model_name,
-    total_layers=num_layers
-)
-
 # Get weights model name from config
 weights_model_name = model_config.get('weights_model_name', 'gpt2')
 weights_filename = f"{weights_model_name}.safetensors"
@@ -101,6 +92,17 @@ weights_path = ensure_model_weights(
     weights_path=weights_path
 )
 logger.info(f"Model weights ready at: {weights_path}")
+
+
+# Load model layers for this worker
+layer_mapping, out_layers, results = get_model_per_node(
+    model,
+    num_nodes=num_nodes,
+    local_rank=local_rank,
+    model_name=model_name,
+    total_layers=num_layers
+)
+
 
 model_layers = load_weights_per_node(
     model_name=model_name,
