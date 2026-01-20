@@ -1,0 +1,11 @@
+model_name: causal_gpt2
+
+hf_model_name: openai-community/gpt2
+
+num_nodes: 2
+
+num_layers: 12
+
+max_new_tokens: 50
+
+decoding_strategy: greedy  # Options: greedy, sampling, beam_search

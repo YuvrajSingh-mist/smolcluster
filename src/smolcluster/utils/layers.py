@@ -4,7 +4,7 @@ import torch
 from safetensors import safe_open
 from pathlib import Path
 
-model_weights = Path(__file__).parent.parent / "data" / "gpt2.safetensors"
+model_weights = Path(__file__).parent.parent.parent / "data" / "gpt2.safetensors"
 def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, total_layers: int, weights_path: str = model_weights) -> List:
     
     out_layers = {}
@@ -88,32 +88,40 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, 
             elif 'lm_head' in layer_name:
                 layer_mapping['lm_head'] = modulelist_idx
                 modulelist_idx += 1
+                
+        return layer_mapping, out_layers, results
+    
+    
+def load_weights_per_node(model_name: str, weights_path: str, out_layers: dict, layer_mapping: dict, local_rank: int, num_nodes: int, results: List[str]) -> torch.nn.ModuleList: 
+    
+    stage_sd = {}
+    
+    # Load weights with remapped keys
+    with safe_open(weights_path, framework="pt") as f:
+        for k in results:
+            for key in f.keys():
+                if k == key:
+                    # Remap the key to match ModuleList indexing
+                    if 'h.' in k:
+                        original_idx = int(k.split('h.')[1].split('.')[0])
+                        new_idx = layer_mapping[original_idx]
+                        # Replace h.9 with 0, h.10 with 1, etc.
+                        new_key = k.replace(f'h.{original_idx}', str(new_idx))
+                    elif 'ln_f' in k:
+                        new_key = k.replace('ln_f', str(layer_mapping['ln_f']))
+                    elif 'wpe' in k:
+                        new_key = k.replace('wpe', str(layer_mapping['wpe']))
+                    elif 'wte' in k:
+                        new_key = k.replace('wte', str(layer_mapping['wte']))
+                    elif 'lm_head' in k:
+                        new_key = k.replace('lm_head', str(layer_mapping['lm_head']))
+                    else:
+                        new_key = k
+                        
+                    print(f"Loaded weights for: {k}")
+                    stage_sd[new_key] = f.get_tensor(k)
         
-        # Load weights with remapped keys
-        with safe_open(weights_path, framework="pt") as f:
-            for k in results:
-                for key in f.keys():
-                    if k == key:
-                        # Remap the key to match ModuleList indexing
-                        if 'h.' in k:
-                            original_idx = int(k.split('h.')[1].split('.')[0])
-                            new_idx = layer_mapping[original_idx]
-                            # Replace h.9 with 0, h.10 with 1, etc.
-                            new_key = k.replace(f'h.{original_idx}', str(new_idx))
-                        elif 'ln_f' in k:
-                            new_key = k.replace('ln_f', str(layer_mapping['ln_f']))
-                        elif 'wpe' in k:
-                            new_key = k.replace('wpe', str(layer_mapping['wpe']))
-                        elif 'wte' in k:
-                            new_key = k.replace('wte', str(layer_mapping['wte']))
-                        elif 'lm_head' in k:
-                            new_key = k.replace('lm_head', str(layer_mapping['lm_head']))
-                        else:
-                            new_key = k
-                            
-                        print(f"Loaded weights for: {k}")
-                        stage_sd[new_key] = f.get_tensor(k)
-            
+        if model_name == 'causal_gpt2':
             # CRITICAL: For weight tying, load wte weights into lm_head
             # In GPT-2, lm_head.weight should be tied to wte.weight
             # Since they're on different nodes, we load the same weights to both
