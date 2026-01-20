@@ -22,6 +22,7 @@ from smolcluster.utils.layers import (
     get_model_per_node,
     load_weights_per_node
 )
+from smolcluster.utils.model_downloader import ensure_model_weights
 
 
 # Load configs
@@ -93,24 +94,13 @@ weights_model_name = model_config.get('weights_model_name', 'gpt2')
 weights_filename = f"{weights_model_name}.safetensors"
 weights_path = Path(__file__).parent.parent.parent.parent / "src" / "data" / weights_filename
 
-# Wait for server to download weights (retry loop)
-max_retries = 60  # 5 minutes total (60 * 5 seconds)
-retry_interval = 5  # seconds
-for attempt in range(max_retries):
-    if weights_path.exists():
-        logger.info(f"✅ Found model weights at: {weights_path}")
-        break
-    
-    if attempt == 0:
-        logger.info(f"⏳ Waiting for server to download weights ({weights_model_name})...")
-    else:
-        logger.info(f"⏳ Still waiting... (attempt {attempt + 1}/{max_retries})")
-    
-    time.sleep(retry_interval)
-else:
-    # Loop exhausted without finding weights
-    logger.error(f"❌ Timeout: Weights not found at {weights_path} after {max_retries * retry_interval} seconds")
-    raise FileNotFoundError(f"Model weights missing: {weights_path}")
+# Each worker downloads weights on their own machine before connecting to server
+logger.info(f"Checking for model weights ({weights_model_name})...")
+weights_path = ensure_model_weights(
+    model_identifier=weights_model_name,
+    weights_path=weights_path
+)
+logger.info(f"Model weights ready at: {weights_path}")
 
 model_layers = load_weights_per_node(
     model_name=model_name,
