@@ -6,6 +6,7 @@ import socket
 import threading
 from collections import defaultdict
 from pathlib import Path
+import torch
 import yaml
 
 from transformers import AutoConfig, GPT2LMHeadModel, AutoTokenizer
@@ -179,62 +180,83 @@ def main():
         top_p = model_config.get("top_p", 0.9)
         
         # Generate tokens one at a time by looping through all workers for each token
-        for token_idx in range(max_new_tokens):
+        for _ in range(max_new_tokens):
+            
             activations = None
-            # Send generation request to all workers in rank order (0, 1, 2, ...)
-            for rank, worker_socket, addr in sorted(worker_queue):
+            
+            if RANK == 0:
                 
-                send_message(
-                    worker_socket,
-                    (
-                        "generate_activations",
-                        {
-                            "prompt": prompt,
-                            "activations": activations,
-                            "input_ids": tokenized_prompt,
-                            "max_new_tokens": 1,  # Generate one token at a time
-                            "decoding_strategy": decoding_strategy,
-                        },
-                    ),
-                )
+                out = payload['input_ids'].to(get_device())
+            
+                logger.info(f"Generating activations for input IDs for rank 0")
 
-                message = receive_message(worker_socket)
+                with torch.no_grad():
+        
+                    out = model_layers[0](out)
                 
-                command, payload = message
-                
-                if command == 'forward_activations':
-                    activations = payload['activations'].to(get_device())
-                    from_rank = payload['from_rank']
-                    to_rank = payload['to_rank']
-                    logger.info(f"Received activations forwarded from worker {from_rank} to worker {to_rank}")
+                    pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
+                    out = out + model_layers[1](pos_ids)
                     
-                else:
-                    logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
+                    for layer in model_layers[2:]:
+                        output = layer(out)
+                        out = output[0] if isinstance(output, tuple) else output
+                
+                logger.info("Finsihed generating activations for local_rank 0")
+            else:    
+                # Send generation request to all workers in rank order (1, 2, ...)
+                for rank, worker_socket, addr in sorted(worker_queue):
+                    
+                    send_message(
+                        worker_socket,
+                        (
+                            "generate_activations",
+                            {
+                                "prompt": prompt,
+                                "activations": activations,
+                                "input_ids": tokenized_prompt,
+                                "max_new_tokens": 1,  # Generate one token at a time
+                                "decoding_strategy": decoding_strategy,
+                            },
+                        ),
+                    )
+
+                    message = receive_message(worker_socket)
+                    
+                    command, payload = message
+                    
+                    if command == 'forward_activations':
+                        activations = payload['activations'].to(get_device())
+                        from_rank = payload['from_rank']
+                        to_rank = payload['to_rank']
+                        logger.info(f"Received activations forwarded from worker {from_rank} to worker {to_rank}")
+                        
+                    else:
+                        logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
+                        break
+                
+                # After all workers process, sample next token from final activations
+                tokenized_prompt, should_stop = sample_next_token(
+                    activations, 
+                    tokenized_prompt, 
+                    temperature, 
+                    tokenizer,
+                    decoding_strategy=decoding_strategy,
+                    top_p=top_p
+                )
+                
+                if should_stop:
                     break
             
-            # After all workers process, sample next token from final activations
-            tokenized_prompt, should_stop = sample_next_token(
-                activations, 
-                tokenized_prompt, 
-                temperature, 
-                tokenizer,
-                decoding_strategy=decoding_strategy,
-                top_p=top_p
-            )
+            # Decode generated text
+            text = tokenizer.decode(tokenized_prompt[0], skip_special_tokens=True)
+        
+            print("Generated text is: ", prompt + ' ' + text)
             
-            if should_stop:
-                break
+            del activations 
+            
+            gc.collect()
+            activations = None
         
-        # Decode generated text
-        text = tokenizer.decode(tokenized_prompt[0], skip_special_tokens=True)
-       
-        print("Generated text is: ", prompt + ' ' + text)
-        
-        del activations 
-        
-        gc.collect()
-        activations = None
-    
     for rank, worker_socket, addr in sorted(worker_queue):
         
         send_message(worker_socket, "down")

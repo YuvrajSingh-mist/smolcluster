@@ -195,33 +195,14 @@ def main():
         
             logger.info(f"Received command to generate text for rank {local_rank}.")
             
-            if local_rank == 0:
-                
-                out = payload['input_ids'].to(get_device())
-            
-                logger.info(f"Generating activations for input IDs for rank 0")
-
-                with torch.no_grad():
+           
+            out = payload['activations'].to(get_device())
+            for layer in model_layers: 
+                output = layer(out)
+                out = output[0] if isinstance(output, tuple) else output
+    
+            logger.info(f"Finsihed generating activations for local_rank {local_rank}")
         
-                    out = model_layers[0](out)
-                
-                    pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
-                    out = out + model_layers[1](pos_ids)
-                    
-                    for layer in model_layers[2:]:
-                        output = layer(out)
-                        out = output[0] if isinstance(output, tuple) else output
-                
-                logger.info("Finsihed generating activations for local_rank 0")
-            
-            else:
-                out = payload['activations'].to(get_device())
-                for layer in model_layers: 
-                    output = layer(out)
-                    out = output[0] if isinstance(output, tuple) else output
-        
-                logger.info(f"Finsihed generating activations for local_rank {local_rank}")
-            
             logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1}")
             
             send_message(sock, ('forward_activations', {"from_rank": local_rank, "to_rank": local_rank + 1, "activations": out.cpu()}))
