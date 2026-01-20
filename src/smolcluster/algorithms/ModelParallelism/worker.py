@@ -16,7 +16,6 @@ from smolcluster.utils.common_utils import (
     send_message,
  
 )
-from smolcluster.utils.data import get_data_indices
 from smolcluster.utils.device import get_device
 from smolcluster.utils.layers import (
     get_model_per_node,
@@ -83,7 +82,9 @@ logger.info(f"Model initialized on device: {get_device()}")
 # Get weights model name from config
 weights_model_name = model_config.get('weights_model_name', 'gpt2')
 weights_filename = f"{weights_model_name}.safetensors"
-weights_path = Path(__file__).parent.parent.parent.parent / "src" / "data" / weights_filename
+# Go up 5 levels from worker.py to get project root: ModelParallelism -> algorithms -> smolcluster -> src -> project_root
+project_root = Path(__file__).parent.parent.parent.parent
+weights_path = project_root / "src" / "data" / weights_filename
 
 # Each worker downloads weights on their own machine before connecting to server
 logger.info(f"Checking for model weights ({weights_model_name})...")

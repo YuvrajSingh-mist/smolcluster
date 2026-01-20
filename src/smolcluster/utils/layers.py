@@ -8,7 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 model_weights = Path(__file__).parent.parent.parent / "data" / "gpt2.safetensors"
-def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, total_layers: int, weights_path: str = model_weights) -> List:
+def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, total_layers: int) -> List:
     
     out_layers = {}
     results = []
@@ -97,7 +97,7 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, 
         return layer_mapping, out_layers, results
     
     
-def load_weights_per_node(model_name: str, weights_path: str, out_layers: dict, layer_mapping: dict, local_rank: int, num_nodes: int, results: List[str]) -> torch.nn.ModuleList: 
+def load_weights_per_node(model_name: str = model_weights, weights_path: str, out_layers: dict, layer_mapping: dict, local_rank: int, num_nodes: int, results: List[str]) -> torch.nn.ModuleList: 
     
     stage_sd = {}
     
