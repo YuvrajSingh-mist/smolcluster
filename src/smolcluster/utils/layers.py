@@ -97,7 +97,7 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, 
         return layer_mapping, out_layers, results
     
     
-def load_weights_per_node(model_name: str = model_weights, weights_path: str, out_layers: dict, layer_mapping: dict, local_rank: int, num_nodes: int, results: List[str]) -> torch.nn.ModuleList: 
+def load_weights_per_node(model_name: str, out_layers: dict, layer_mapping: dict, local_rank: int, num_nodes: int, results: List[str], weights_path: str = model_weights) -> torch.nn.ModuleList: 
     
     stage_sd = {}
     
