@@ -1,5 +1,6 @@
 causal_gpt2:
   hf_model_name: openai-community/gpt2
+  weights_model_name: gpt2  # Key in model_weights.yaml for downloading safetensors
   num_nodes: 3
   num_layers: 12
   max_new_tokens: 50

@@ -1,0 +1,28 @@
+# Model weights download configuration
+# Maps model identifiers to their safetensors download URLs
+
+models:
+  gpt2:
+    url: "https://huggingface.co/openai-community/gpt2/resolve/main/model.safetensors?download=true"
+    filename: "gpt2.safetensors"
+    description: "GPT-2 base model (124M parameters)"
+    
+  gpt2-medium:
+    url: "https://huggingface.co/openai-community/gpt2-medium/resolve/main/model.safetensors?download=true"
+    filename: "gpt2-medium.safetensors"
+    description: "GPT-2 medium model (355M parameters)"
+    
+  gpt2-large:
+    url: "https://huggingface.co/openai-community/gpt2-large/resolve/main/model.safetensors?download=true"
+    filename: "gpt2-large.safetensors"
+    description: "GPT-2 large model (774M parameters)"
+    
+  gpt2-xl:
+    url: "https://huggingface.co/openai-community/gpt2-xl/resolve/main/model.safetensors?download=true"
+    filename: "gpt2-xl.safetensors"
+    description: "GPT-2 XL model (1.5B parameters)"
+
+# Default settings
+default_model: "gpt2"
+download_timeout: 600  # seconds
+chunk_size: 8192  # bytes for streaming download
