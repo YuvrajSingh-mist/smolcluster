@@ -17,6 +17,7 @@ from smolcluster.utils.common_utils import (
 )
 from smolcluster.utils.device import get_device
 from smolcluster.utils.decoding import sample_next_token
+from smolcluster.utils.model_downloader import ensure_model_weights
 
 
 # Load configs
@@ -47,6 +48,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("[LEADER]")
 logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
+
+# Ensure model weights are downloaded before workers connect
+weights_model_name = model_config.get('weights_model_name', 'gpt2')
+logger.info(f"Checking for model weights ({weights_model_name})...")
+weights_path = ensure_model_weights(model_identifier=weights_model_name)
+logger.info(f"Model weights ready at: {weights_path}")
 
 step_event = threading.Event()
 lock = threading.Lock()
