@@ -186,7 +186,7 @@ def main():
             
             if RANK == 0:
                 
-                out = payload['input_ids'].to(get_device())
+                out = tokenized_prompt
             
                 logger.info(f"Generating activations for input IDs for rank 0")
 
