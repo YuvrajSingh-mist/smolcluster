@@ -217,7 +217,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching Model Parallelism server on $SERVER..."
-SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR/src/smolcluster/algorithms/ModelParallelism && ../../../.venv/bin/python server.py $SERVER"
+SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/server.py $SERVER"
 launch_on_node "$SERVER" "$SERVER_CMD" "mp_server"
 
 # Wait a moment for server to start
@@ -229,7 +229,7 @@ echo ""
 echo "👷 Launching Model Parallelism workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR/src/smolcluster/algorithms/ModelParallelism && ../../../.venv/bin/python worker.py $i $node"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/worker.py $i $node"
     launch_on_node "$node" "$WORKER_CMD" "mp_worker$i"
     echo "   $node: mp_worker$i"
 done

@@ -22,6 +22,7 @@ from smolcluster.utils.layers import (
     get_model_per_node,
     load_weights_per_node
 )
+from smolcluster.utils.model_downloader import ensure_model_weights
 
 
 # Load configs
@@ -88,7 +89,18 @@ layer_mapping, out_layers, results = get_model_per_node(
     total_layers=num_layers
 )
 
-weights_path = Path(__file__).parent.parent.parent.parent / "data" / "gpt2.safetensors"
+# Get weights model name from config (for downloading safetensors)
+weights_model_name = model_config.get('weights_model_name', 'gpt2')
+weights_filename = f"{weights_model_name}.safetensors"
+weights_path = Path(__file__).parent.parent.parent.parent / "src" / "data" / weights_filename
+
+# Ensure weights exist, download if necessary
+logger.info(f"Checking for model weights ({weights_model_name})...")
+weights_path = ensure_model_weights(
+    model_identifier=weights_model_name,
+    weights_path=weights_path
+)
+
 model_layers = load_weights_per_node(
     model_name=model_name,
     weights_path=str(weights_path),
