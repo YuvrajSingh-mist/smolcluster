@@ -93,11 +93,24 @@ weights_model_name = model_config.get('weights_model_name', 'gpt2')
 weights_filename = f"{weights_model_name}.safetensors"
 weights_path = Path(__file__).parent.parent.parent.parent / "src" / "data" / weights_filename
 
-# Server has already downloaded weights, just verify path exists
-if not weights_path.exists():
-    logger.error(f"Weights not found at {weights_path}. Server should have downloaded them.")
+# Wait for server to download weights (retry loop)
+max_retries = 60  # 5 minutes total (60 * 5 seconds)
+retry_interval = 5  # seconds
+for attempt in range(max_retries):
+    if weights_path.exists():
+        logger.info(f"✅ Found model weights at: {weights_path}")
+        break
+    
+    if attempt == 0:
+        logger.info(f"⏳ Waiting for server to download weights ({weights_model_name})...")
+    else:
+        logger.info(f"⏳ Still waiting... (attempt {attempt + 1}/{max_retries})")
+    
+    time.sleep(retry_interval)
+else:
+    # Loop exhausted without finding weights
+    logger.error(f"❌ Timeout: Weights not found at {weights_path} after {max_retries * retry_interval} seconds")
     raise FileNotFoundError(f"Model weights missing: {weights_path}")
-logger.info(f"Using model weights from: {weights_path}")
 
 model_layers = load_weights_per_node(
     model_name=model_name,
