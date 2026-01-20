@@ -1,8 +1,11 @@
+import logging
 from transformers import AutoConfig
 from typing import List
 import torch
 from safetensors import safe_open
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 model_weights = Path(__file__).parent.parent.parent / "data" / "gpt2.safetensors"
 def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, total_layers: int, weights_path: str = model_weights) -> List:
@@ -21,7 +24,7 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, 
         # This handles uneven splits automatically
         layer_indices = torch.arange(total_layers)
         split_indices = torch.chunk(layer_indices, num_nodes)
-        print(f"Layer splits: {split_indices}")
+        logger.info(f"Layer splits: {split_indices}")
        
         assert len(split_indices) <= num_nodes
         
@@ -66,9 +69,11 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, model_name: str, 
                     results.append(layer_name.split('model.transformer.')[1] + '.' + param_name)
         
         # Build mapping for remapping keys to ModuleList indexing
-        stage_sd = {}
+        
         layer_mapping = {}
         modulelist_idx = 0
+        
+        logger.info(f"Loaded layers: {list(out_layers.keys())}")
         
         for layer_name, layer in out_layers.items():
             if 'h.' in layer_name:

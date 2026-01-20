@@ -18,6 +18,10 @@ from smolcluster.utils.common_utils import (
 from smolcluster.utils.device import get_device
 from smolcluster.utils.decoding import sample_next_token
 from smolcluster.utils.model_downloader import ensure_model_weights
+from smolcluster.utils.layers import (
+    get_model_per_node,
+    load_weights_per_node
+)
 
 
 # Load configs
@@ -65,9 +69,6 @@ model = None
 tokenizer = None
 
 
-
-
-
 config = AutoConfig.from_pretrained(model_config["hf_model_name"])
 
 if model_name == 'causal_gpt2':
@@ -76,6 +77,31 @@ if model_name == 'causal_gpt2':
 
 model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
+
+# Load model layers for server (rank 0)
+num_layers = model_config['num_layers']
+logger.info(f"Loading server's share of model layers (rank {RANK})...")
+
+layer_mapping, out_layers, results = get_model_per_node(
+    model,
+    num_nodes=num_nodes,
+    local_rank=RANK,
+    model_name=model_name,
+    total_layers=num_layers
+)
+
+model_layers = load_weights_per_node(
+    model_name=model_name,
+    weights_path=str(weights_path),
+    out_layers=out_layers,
+    layer_mapping=layer_mapping,
+    local_rank=RANK,
+    num_nodes=num_nodes,
+    results=results
+)
+
+model_layers = model_layers.to(get_device())
+logger.info(f"Server loaded {len(model_layers)} layers")
 
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
