@@ -4,7 +4,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-
+import sys
 import torch
 
 import yaml
@@ -64,10 +64,11 @@ logger = logging.getLogger(f"[WORKER-{local_rank}]")
 logger.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
 
 # Initialize model
-hf_model_name = nn_config['hf_model_name']
-model_name = nn_config['model_name']
-num_nodes = nn_config['num_nodes']
-num_layers = nn_config['num_layers']
+model_name = 'causal_gpt2'  # Set model name
+model_config = nn_config[model_name]  # Get nested config
+hf_model_name = model_config['hf_model_name']
+num_nodes = model_config['num_nodes']
+num_layers = model_config['num_layers']
 
 config = AutoConfig.from_pretrained(hf_model_name)
 if model_name == 'causal_gpt2':
@@ -169,48 +170,63 @@ def main():
 
     logger.info("Waiting for generation requests...")
     
-    message = receive_message(sock)
-    command, payload = message
-    
-    if command == 'generate_activations':
-       
-        logger.info(f"Received command to generate text from server for rank {local_rank}.")
+    while True:
+        message = receive_message(sock)
+        command, payload = message
         
-        if local_rank == 0:
-            
-            x = payload['input_ids'].to(get_device())
+        out = None
         
-            logger.info(f"Generating activations for input IDs: {x} for rank 0")
-
-            with torch.no_grad():
-       
-                x = model_layers[0](x)
+        if command == 'generate_activations':
+        
+            logger.info(f"Received command to generate text for rank {local_rank}.")
             
-                pos_ids = torch.arange(x.shape[1], dtype=torch.long, device=get_device())
-                x = x + model_layers[1](pos_ids)
+            if local_rank == 0:
                 
-                for layer in model_layers[2:]:
-                    output = layer(x)
-                    x = output[0] if isinstance(output, tuple) else output
+                out = payload['input_ids'].to(get_device())
             
-            logger.info("Finsihed generating activations for local_rank 0")
-        
-        else:
-            x = payload['activations'].to(get_device())
-            for layer in model_layers: 
-                output = layer(x)
-                x = output[0] if isinstance(output, tuple) else output
-    
-            logger.info(f"Finsihed generating activations for local_rank {local_rank}")
-        
-        send_message(sock, ('forward_activations', {"from_rank": local_rank, "to_rank": local_rank + 1, "activations": x.cpu()}))
-    
-    elif command == 'exit':
-        logger.info("Received exit command from server. Shutting down.")
+                logger.info(f"Generating activations for input IDs for rank 0")
 
-        sock.close()
-        logger.info(f"Worker rank {local_rank} inferencing completed and connection closed.")
-
+                with torch.no_grad():
+        
+                    out = model_layers[0](out)
+                
+                    pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
+                    out = out + model_layers[1](pos_ids)
+                    
+                    for layer in model_layers[2:]:
+                        output = layer(out)
+                        out = output[0] if isinstance(output, tuple) else output
+                
+                logger.info("Finsihed generating activations for local_rank 0")
+            
+            else:
+                out = payload['activations'].to(get_device())
+                for layer in model_layers: 
+                    output = layer(out)
+                    out = output[0] if isinstance(output, tuple) else output
+        
+                logger.info(f"Finsihed generating activations for local_rank {local_rank}")
+            
+            logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1}")
+            
+            send_message(sock, ('forward_activations', {"from_rank": local_rank, "to_rank": local_rank + 1, "activations": out.cpu()}))
+            
+            del out
+            # while True:
+                
+            #     command = receive_message(sock)
+                
+            #     if command == 'finished_inference':
+            #         break
+            
+            
+        elif command == 'down':
+            logger.info("Received exit command from server. Shutting down.")
+            break
+        
+        
+    sock.close()
+    logger.info(f"Worker rank {local_rank} inferencing completed and connection closed.")
 
 if __name__ == "__main__":
     main()
