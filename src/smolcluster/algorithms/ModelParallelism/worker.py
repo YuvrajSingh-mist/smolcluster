@@ -83,7 +83,7 @@ logger.info(f"Model initialized on device: {get_device()}")
 weights_model_name = model_config.get('weights_model_name', 'gpt2')
 weights_filename = f"{weights_model_name}.safetensors"
 # Go up 5 levels from worker.py to get project root: ModelParallelism -> algorithms -> smolcluster -> src -> project_root
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent.parent.parent
 weights_path = project_root / "src" / "data" / weights_filename
 
 # Each worker downloads weights on their own machine before connecting to server
