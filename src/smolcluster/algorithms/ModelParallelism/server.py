@@ -1,17 +1,20 @@
 import gc
 import heapq
 import logging
-import gc
+import math
 import socket
 import threading
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 import yaml
 import torch
+from torch.utils.data import DataLoader
 from transformers import AutoConfig, GPT2LMHeadModel, AutoTokenizer
 
 
 from smolcluster.utils.common_utils import (
+    get_gradients,
     receive_message,
     send_message,
 )
@@ -19,102 +22,167 @@ from smolcluster.utils.device import get_device
 from smolcluster.utils.decoding import sample_next_token
 from smolcluster.utils.model_downloader import ensure_model_weights
 from smolcluster.utils.layers import (
-    get_model_per_node,
-    load_weights_per_node
+    get_model_per_node
+    
 )
+from smolcluster.utils.logging_utils import setup_cluster_logging
 
 
-# Load configs
-CONFIG_DIR = Path(__file__).parent.parent.parent / "configs" 
-with open(CONFIG_DIR / "model_parallelism" / "model_config.yaml") as f:
-    nn_config = yaml.safe_load(f)
+def evaluate(
+    device: torch.device, 
+    model: torch.nn.Module, 
+    val_loader: DataLoader, 
+    criterion: torch.nn.Module,
+    decoder_type_ppl: bool = False
+) -> tuple[float, Optional[float]]:
+    """Evaluate model on validation set."""
+    model.eval()
+    total_val_loss = 0.0
+ 
+    with torch.no_grad():
+        for data, target in val_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            B, T, C = output.shape
+            output = output.view(B*T, C)
+            target = target.view(B*T)
+            loss = criterion(output, target)
+            total_val_loss += loss.item()
+    
+    avg_loss = total_val_loss / len(val_loader)
+    ppl = math.exp(avg_loss) if decoder_type_ppl else None
+    
+    return avg_loss, ppl
 
-with open(CONFIG_DIR / "cluster_config_syncps.yaml") as f:
-    cluster_config = yaml.safe_load(f)
 
-# Extract values with defaults
-HOST_IP = "0.0.0.0"
-PORT = cluster_config["port"]
-NUM_WORKERS = cluster_config["num_workers"]
-SEED = cluster_config.get("seed", 42)
-WORLD_SIZE = NUM_WORKERS + 1
-TIMEOUT = cluster_config["timeout"]
+def compute_leader_gradients(
+    device: torch.device,
+    model: torch.nn.Module,
+    data: torch.Tensor,
+    target: torch.Tensor,
+    criterion: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    config: dict,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute gradients for leader/server node."""
+    optimizer.zero_grad()
+    model.train()
+    data, target = data.to(device), target.to(device)
+    output = model(data)
+    B, T, C = output.shape
+    output = output.view(B*T, C)
+    target = target.view(B*T)
+    loss = criterion(output, target)
+    loss.backward()
+    
+    # Gradient clipping
+    if config.get("gradient_clipping", {}).get("enabled", False):
+        max_norm = config["gradient_clipping"].get("max_norm", 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-RANK = 0
-model_name = 'causal_gpt2'  # Set model name
-model_config = nn_config[model_name]  # Get nested config
-num_nodes = model_config['num_nodes']
+    grads = get_gradients(model)
+    return loss, grads
 
 
-# Setup logging
+# Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_server)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("[LEADER]")
-logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
-
-# Ensure model weights are downloaded before workers connect
-weights_model_name = model_config.get('weights_model_name', 'gpt2')
-logger.info(f"Checking for model weights ({weights_model_name})...")
-weights_path = ensure_model_weights(model_identifier=weights_model_name)
-logger.info(f"Model weights ready at: {weights_path}")
-
-step_event = threading.Event()
-lock = threading.Lock()
-
-workers = {}
-grads_received = defaultdict(dict)
-
-model = None
-tokenizer = None
 
 
-config = AutoConfig.from_pretrained(model_config["hf_model_name"])
-
-if model_name == 'causal_gpt2':
-    model = GPT2LMHeadModel(config)
-    tokenizer = AutoTokenizer.from_pretrained(model_config["hf_model_name"])
-
-model = model.to(get_device())
-logger.info(f"Model initialized on device: {get_device()}")
-
-# Load model layers for server (rank 0)
-num_layers = model_config['num_layers']
-logger.info(f"Loading server's share of model layers (rank {RANK})...")
-
-layer_mapping, out_layers, results = get_model_per_node(
+def run_modelparallelism_server(
     model,
-    num_nodes=num_nodes,
-    local_rank=RANK,
-    model_name=model_name,
-    total_layers=num_layers
-)
+    optimizer,
+    train_loader,
+    val_loader,
+    config,
+    cluster_config,
+    hostname,
+    device,
+    criterion,
+):
+    """
+    Run Synchronous Parameter Server training.
+    
+    Args:
+        model: PyTorch model to train
+        optimizer: Optimizer instance
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        config: Training configuration dict (nn_config)
+        cluster_config: Cluster configuration dict
+        hostname: Server hostname
+        device: Device to run on
+        criterion: Loss criterion
+    """
+    global logger
+    
+    # Configure centralized logging
+    setup_cluster_logging(
+        logger=logger,
+        component="server",
+        rank=None,
+        hostname=hostname,
+        log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
+    )
+    logger.info("🚀 ModelParallelism Server starting up")
+    
+    
+    # Extract configuration
+    batch_size = config["batch_size"]
+    num_epochs = config["num_epochs"]
+    eval_steps = config["eval_steps"]
+    track_gradients = config["track_gradients"]
+    decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
+    num_workers = cluster_config["num_workers"]
+    world_size = num_workers + 1
+    model_name = cluster_config['model_name']
+    
+    RANK = 0
+    num_nodes = cluster_config['num_nodes']
+    
+     # Create socket
+    HOST_IP = "0.0.0.0"
+    PORT = cluster_config["port"]
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind((HOST_IP, PORT))
+    sock.listen(5)
+    # logger.info(f"Server listening on {HOST_IP}:{PORT}")
+    
+    logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
+    workers = {}
 
-model_layers = load_weights_per_node(
-    model_name=model_name,
-    weights_path=str(weights_path),
-    out_layers=out_layers,
-    layer_mapping=layer_mapping,
-    local_rank=RANK,
-    num_nodes=num_nodes,
-    results=results
-)
-
-model_layers = model_layers.to(get_device())
-logger.info(f"Server loaded {len(model_layers)} layers")
-
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-# Bind the socket to the host and port
-sock.bind((HOST_IP, PORT))
-
-# Listen for incoming connections
-sock.listen(5)
-logger.info(f"Server listening on {HOST_IP}:{PORT}")
-
-
-def main():
+    # Load tokenizer
+    model = model.to(get_device())
+    logger.info(f"Model initialized on device: {get_device()}")
+    
+    # Load model layers for server (rank 0)
+    num_layers = cluster_config['num_layers']
+    logger.info(f"Loading server's share of model layers (rank {RANK})...")
+    
+    layer_mapping, out_layers, results = get_hfmodel_per_node(
+        model,
+        num_nodes=num_nodes,
+        local_rank=RANK,
+        model_name=model_name,
+        total_layers=num_layers
+    )
+    
+   
+    
+    model_layers = model_layers.to(get_device())
+    logger.info(f"Server loaded {len(model_layers)} layers")
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    # Bind the socket to the host and port
+    sock.bind((HOST_IP, PORT))
+    
+    # Listen for incoming connections
+    sock.listen(5)
+    logger.info(f"Server listening on {HOST_IP}:{PORT}")
    
     logger.info(f"Server is running at {HOST_IP}:{PORT}")
     
@@ -308,6 +376,11 @@ def main():
     logger.info("Inference completed successfully!")
        
     sock.close()
+
+
+def main():
+    """Main entry point for standalone script execution."""
+    run_modelparallelism_server()
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from smolcluster.utils.device import get_device
 from smolcluster.utils.decoding import sample_next_token
 from smolcluster.utils.model_downloader import ensure_model_weights
 from smolcluster.utils.layers import (
-    get_model_per_node,
+    get_hfmodel_per_node,
     load_weights_per_node
 )
 
@@ -82,7 +82,7 @@ logger.info(f"Model initialized on device: {get_device()}")
 num_layers = model_config['num_layers']
 logger.info(f"Loading server's share of model layers (rank {RANK})...")
 
-layer_mapping, out_layers, results = get_model_per_node(
+layer_mapping, out_layers, results = get_hfmodel_per_node(
     model,
     num_nodes=num_nodes,
     local_rank=RANK,

@@ -18,7 +18,7 @@ from smolcluster.utils.common_utils import (
 )
 from smolcluster.utils.device import get_device
 from smolcluster.utils.layers import (
-    get_model_per_node,
+    get_hfmodel_per_node,
     load_weights_per_node
 )
 from smolcluster.utils.model_downloader import ensure_model_weights
@@ -96,7 +96,7 @@ logger.info(f"Model weights ready at: {weights_path}")
 
 
 # Load model layers for this worker
-layer_mapping, out_layers, results = get_model_per_node(
+layer_mapping, out_layers, results = get_hfmodel_per_node(
     model,
     num_nodes=num_nodes,
     local_rank=local_rank,

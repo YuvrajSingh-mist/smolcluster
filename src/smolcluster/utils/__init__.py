@@ -8,7 +8,7 @@ from .common_utils import (
 )
 from .data import get_data_indices
 from .device import get_device
-from .layers import  get_model_per_node, load_weights_per_node
+from .layers import  get_hfmodel_per_node, load_weights_per_node
 from .model_downloader import download_and_convert_model, ensure_model_weights
 
 
@@ -20,7 +20,7 @@ __all__ = [
     "get_gradients",
     "set_gradients",
     "load_weights_per_node",
-    "get_model_per_node",
+    "get_hfmodel_per_node",
     "set_weights",
     "get_weights",
     "download_and_convert_model",

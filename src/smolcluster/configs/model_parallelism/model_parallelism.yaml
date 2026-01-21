@@ -1,0 +1,27 @@
+host_ip:
+  mini1: "10.10.0.1"
+  mini2: "10.10.0.1"
+  mini3: "10.10.0.1"
+  pi4: "10.10.0.1"
+  macbook: "10.10.0.1"
+  pi5: "192.168.50.1"
+  win: "10.10.0.1"
+
+port: 65432
+
+
+# Timeout for gradient collection
+timeout: 0.1  # How long server waits for gradients (seconds)
+
+# Randomness seed
+seed: 42
+
+# Cluster configuration
+num_workers: 2
+workers: [mini2, mini3]  # Worker hostnames
+server: mini1  # Server hostname
+
+#Model parallelism specific configs
+num_nodes: 3
+num_layers: 12
+model_name: causal_gpt2 
