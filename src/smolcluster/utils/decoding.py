@@ -14,6 +14,30 @@ def greedy_decode(activations: torch.Tensor, temperature: float = 1.0) -> str:
     return next_token_id
 
 
+def top_k_sampling(logits: torch.Tensor, top_k: int = 50) -> torch.Tensor:
+    """
+    Perform top-k sampling on logits.
+    
+    Args:
+        logits: Token logits of shape (batch_size, vocab_size)
+        top_k: Number of top tokens to consider
+        
+    Returns:
+        Sampled token indices of shape (batch_size, 1)
+    """
+    # Get top-k logits and indices
+    top_k_logits, top_k_indices = torch.topk(logits, k=top_k, dim=-1)
+    
+    # Sample from the top-k distribution
+    probs = torch.nn.functional.softmax(top_k_logits, dim=-1)
+    next_token_top_k_idx = torch.multinomial(probs, num_samples=1)
+    
+    # Map back to original indices
+    next_token_id = torch.gather(top_k_indices, -1, next_token_top_k_idx)
+    
+    return next_token_id
+
+
 def top_p_sampling(logits: torch.Tensor, top_p: float = 0.9) -> torch.Tensor:
     """
     Perform top-p (nucleus) sampling on logits.
@@ -60,7 +84,8 @@ def sample_next_token(
     temperature: float, 
     tokenizer: AutoTokenizer,
     decoding_strategy: str = "greedy",
-    top_p: float = 0.9
+    top_p: float = 0.9,
+    top_k: int = 50
 ) -> tuple[torch.Tensor, bool]:
     """
     Sample next token from final activations and append to prompt.
@@ -70,8 +95,9 @@ def sample_next_token(
         tokenized_prompt: Current tokenized prompt
         temperature: Sampling temperature
         tokenizer: Tokenizer for EOS token check
-        decoding_strategy: "greedy", "sampling", or "top_p"
+        decoding_strategy: "greedy", "sampling", "top_p", or "top_k"
         top_p: Nucleus sampling threshold (only used if decoding_strategy="top_p")
+        top_k: Number of top tokens (only used if decoding_strategy="top_k")
         
     Returns:
         (updated_prompt, should_stop)
@@ -83,6 +109,9 @@ def sample_next_token(
         
     elif decoding_strategy == "top_p":
         next_token_id = top_p_sampling(next_token_logits, top_p=top_p)
+        
+    elif decoding_strategy == "top_k":
+        next_token_id = top_k_sampling(next_token_logits, top_k=top_k)
         
     elif decoding_strategy == "sampling":
         next_token_probs = torch.nn.functional.softmax(next_token_logits, dim=-1)

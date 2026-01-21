@@ -205,6 +205,7 @@ def main():
         decoding_strategy = payload.get("decoding_strategy", model_config.get("decoding_strategy", "greedy"))
         temperature = payload.get("temperature", model_config.get("temperature", 0.6))
         top_p = payload.get("top_p", model_config.get("top_p", 0.9))
+        top_k = payload.get("top_k", model_config.get("top_k", 50))
         
         # Generate tokens one at a time by looping through all workers for each token
         for token_idx in range(max_new_tokens):
@@ -268,7 +269,8 @@ def main():
                 temperature, 
                 tokenizer,
                 decoding_strategy=decoding_strategy,
-                top_p=top_p
+                top_p=top_p,
+                top_k=top_k
             )
             
             if should_stop:

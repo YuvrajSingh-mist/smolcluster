@@ -4,8 +4,10 @@ Handles user input and communicates with the distributed inference server.
 """
 import logging
 import socket
+from pathlib import Path
 from typing import Optional
 import uvicorn
+import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -15,6 +17,15 @@ from smolcluster.utils.common_utils import send_message, receive_message
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Load model config
+CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
+with open(CONFIG_DIR / "model_parallelism" / "model_config.yaml") as f:
+    model_configs = yaml.safe_load(f)
+
+# Get active model config (default to causal_gpt2)
+MODEL_NAME = 'causal_gpt2'
+model_config = model_configs[MODEL_NAME]
 
 app = FastAPI(title="SmolCluster Chat API")
 
@@ -35,9 +46,10 @@ SERVER_PORT = 65432  # Update with your server port
 
 class ChatRequest(BaseModel):
     text: str
-    max_tokens: Optional[int] = 50
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 0.9
+    max_tokens: Optional[int] = None  # Will use model config default
+    temperature: Optional[float] = None  # Will use model config default
+    top_p: Optional[float] = None  # Will use model config default
+    top_k: Optional[int] = None  # Will use model config default
 
 
 class ChatResponse(BaseModel):
@@ -117,6 +129,19 @@ async def health():
         return {"status": "error", "healthy": False, "error": str(e)}
 
 
+@app.get("/config")
+async def get_config():
+    """Get model configuration values for frontend."""
+    return {
+        "model_name": MODEL_NAME,
+        "max_new_tokens": model_config.get("max_new_tokens", 50),
+        "temperature": model_config.get("temperature", 1.0),
+        "top_p": model_config.get("top_p", 0.9),
+        "top_k": model_config.get("top_k", 50),
+        "decoding_strategy": model_config.get("decoding_strategy", "top_p")
+    }
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
@@ -136,9 +161,10 @@ async def chat(request: ChatRequest):
         inference_request = {
             "command": "inference",
             "prompt": request.text,
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
-            "top_p": request.top_p
+            "max_tokens": request.max_tokens or model_config.get("max_new_tokens", 50),
+            "temperature": request.temperature or model_config.get("temperature", 0.7),
+            "top_p": request.top_p or model_config.get("top_p", 0.9),
+            "top_k": request.top_k or model_config.get("top_k", 50)
         }
         
         logger.info(f"Sending inference request: {request.text[:50]}...")

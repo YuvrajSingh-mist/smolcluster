@@ -64,7 +64,6 @@
         }
         
         .message-content {
-            max-width: 70%;
             padding: 12px 18px;
             border-radius: 18px;
             word-wrap: break-word;
@@ -73,6 +72,7 @@
         .message.user .message-content {
             background: #667eea;
             color: white;
+            max-width: 70%;
         }
         
         .message.assistant .message-content {
@@ -84,6 +84,30 @@
         .message.error .message-content {
             background: #ff6b6b;
             color: white;
+        }
+        
+        .message-wrapper {
+            max-width: 70%;
+        }
+        
+        .params-info {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .param-badge {
+            font-size: 10px;
+            padding: 3px 8px;
+            background: #e9ecef;
+            color: #495057;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+        
+        .param-badge strong {
+            color: #667eea;
         }
         
         .chat-input-container {
@@ -188,6 +212,26 @@
         const statusDiv = document.getElementById('status');
         
         let isProcessing = false;
+        let modelConfig = {
+            max_new_tokens: 50,
+            temperature: 0.9,
+            top_p: 0.9,
+            top_k: 50,
+            decoding_strategy: 'top_p'
+        };
+        
+        // Fetch model config from API
+        async function fetchConfig() {
+            try {
+                const response = await fetch(`${API_URL}/config`);
+                if (response.ok) {
+                    modelConfig = await response.json();
+                    console.log('Loaded model config:', modelConfig);
+                }
+            } catch (error) {
+                console.warn('Failed to fetch config, using defaults');
+            }
+        }
         
         // Check server health on load
         async function checkHealth() {
@@ -208,15 +252,63 @@
             }
         }
         
-        function addMessage(text, type = 'user') {
+        function addMessage(text, type = 'user', params = null) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}`;
+            
+            const wrapperDiv = document.createElement('div');
+            wrapperDiv.className = 'message-wrapper';
             
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
             contentDiv.textContent = text;
             
-            messageDiv.appendChild(contentDiv);
+            wrapperDiv.appendChild(contentDiv);
+            
+            // Add parameter badges for assistant messages
+            if (type === 'assistant' && params) {
+                const paramsDiv = document.createElement('div');
+                paramsDiv.className = 'params-info';
+                
+                if (params.max_tokens !== undefined) {
+                    const badge = document.createElement('span');
+                    badge.className = 'param-badge';
+                    badge.innerHTML = `<strong>Tokens:</strong> ${params.max_tokens}`;
+                    paramsDiv.appendChild(badge);
+                }
+                
+                if (params.temperature !== undefined) {
+                    const badge = document.createElement('span');
+                    badge.className = 'param-badge';
+                    badge.innerHTML = `<strong>Temp:</strong> ${params.temperature}`;
+                    paramsDiv.appendChild(badge);
+                }
+                
+                if (params.top_p !== undefined) {
+                    const badge = document.createElement('span');
+                    badge.className = 'param-badge';
+                    badge.innerHTML = `<strong>Top-p:</strong> ${params.top_p}`;
+                    paramsDiv.appendChild(badge);
+                }
+                
+                if (params.top_k !== undefined) {
+                    const badge = document.createElement('span');
+                    badge.className = 'param-badge';
+                    badge.innerHTML = `<strong>Top-k:</strong> ${params.top_k}`;
+                    paramsDiv.appendChild(badge);
+                }
+                
+                if (params.decoding_strategy !== undefined) {
+                    const badge = document.createElement('span');
+                    badge.className = 'param-badge';
+                    badge.innerHTML = `<strong>Strategy:</strong> ${params.decoding_strategy}`;
+                    paramsDiv.appendChild(badge);
+                }
+                
+                wrapperDiv.appendChild(paramsDiv);
+            }
+            
+            messageDiv.appendChild(wrapperDiv);
             chatMessages.appendChild(messageDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
@@ -265,9 +357,9 @@
                     },
                     body: JSON.stringify({
                         text: text,
-                        max_tokens: 50,
-                        temperature: 0.7,
-                        top_p: 0.9
+                        max_tokens: modelConfig.max_new_tokens,
+                        temperature: modelConfig.temperature,
+                        top_p: modelConfig.top_p
                     })
                 });
                 
@@ -280,7 +372,13 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    addMessage(data.generated_text, 'assistant');
+                    addMessage(data.generated_text, 'assistant', {
+                        max_tokens: modelConfig.max_new_tokens,
+                        temperature: modelConfig.temperature,
+                        top_p: modelConfig.top_p,
+                        top_k: modelConfig.top_k,
+                        decoding_strategy: modelConfig.decoding_strategy
+                    });
                 } else {
                     addMessage(`Error: ${data.error}`, 'error');
                 }
@@ -307,6 +405,7 @@
         });
         
         // Check health on load and periodically
+        fetchConfig();
         checkHealth();
         setInterval(checkHealth, 5000);
         

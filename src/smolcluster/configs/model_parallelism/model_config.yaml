@@ -4,6 +4,7 @@ causal_gpt2:
   num_nodes: 3
   num_layers: 12
   max_new_tokens: 50
-  decoding_strategy: top_p  # Options: greedy, sampling, top_p
+  decoding_strategy: top_p  # Options: greedy, sampling, top_p, top_k
   temperature: 1.0  # Sampling temperature (higher = more random)
   top_p: 0.9  # Nucleus sampling threshold (only used when decoding_strategy=top_p)
+  top_k: 50  # Number of top tokens to consider (only used when decoding_strategy=top_k)
