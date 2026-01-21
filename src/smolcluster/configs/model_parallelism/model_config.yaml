@@ -18,8 +18,8 @@ causal_gpt2:
     
     top_p:
       temperature: 1.0
-      top_p: 0.9
+      p: 0.9
     
     top_k:
       temperature: 1.0
-      top_k: 40
+      k: 40

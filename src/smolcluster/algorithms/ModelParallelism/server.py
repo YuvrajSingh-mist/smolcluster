@@ -211,8 +211,8 @@ def main():
         max_new_tokens = payload.get("max_tokens", model_config.get("max_new_tokens", 20))
         decoding_strategy = payload.get("decoding_strategy", active_strategy)
         temperature = payload.get("temperature", strategy_params.get("temperature", 1.0))
-        top_p = payload.get("top_p", strategy_params.get("top_p", 0.9))
-        top_k = payload.get("top_k", strategy_params.get("top_k", 50))
+        top_p = payload.get("top_p", strategy_params.get("p", 0.9))
+        top_k = payload.get("top_k", strategy_params.get("k", 50))
         
         # Generate tokens one at a time by looping through all workers for each token
         for token_idx in range(max_new_tokens):

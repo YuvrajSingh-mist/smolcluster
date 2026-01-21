@@ -141,8 +141,8 @@ async def get_config():
         "max_new_tokens": model_config.get("max_new_tokens", 50),
         "decoding_strategy": active_strategy,
         "temperature": strategy_params.get("temperature", 1.0),
-        "top_p": strategy_params.get("top_p", 0.9),
-        "top_k": strategy_params.get("top_k", 50)
+        "top_p": strategy_params.get("p", 0.9),
+        "top_k": strategy_params.get("k", 50)
     }
 
 
