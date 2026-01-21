@@ -150,63 +150,56 @@ def load_weights_per_node(model_name: str, out_layers: dict, layer_mapping: dict
 def get_model_per_node(model, num_nodes: int, local_rank: int, total_layers: int) -> List:
     
     out_layers = {}
-    results = []
-    
+   
     assert local_rank < num_nodes, "Local rank must be less than number of nodes"
          
     # if model_name == 'causal_gpt2':
         
-        # Collect all transformer layers
-        layers = list(model.transformer.h)
-        
-        # Create indices for all layers and split them across nodes using torch.chunk
-        # This handles uneven splits automatically
-        layer_indices = torch.arange(total_layers)
-        split_indices = torch.chunk(layer_indices, num_nodes)
-        logger.info(f"Layer splits: {split_indices}")
-       
-        assert len(split_indices) <= num_nodes
-        
-        # Add embeddings for first node
-        if local_rank == 0:
-            out_layers['model.transformer.wte'] = model.transformer.wte
-            out_layers['model.transformer.wpe'] = model.transformer.wpe
+    # Collect all transformer layers
+    layers = list(model.blocks)
+    
+    # Create indices for all layers and split them across nodes using torch.chunk
+    # This handles uneven splits automatically
+    layer_indices = torch.arange(total_layers)
+    split_indices = torch.chunk(layer_indices, num_nodes)
+    logger.info(f"Layer splits: {split_indices}")
+    
+    assert len(split_indices) <= num_nodes
+    
+    # Add embeddings for first node
+    if local_rank == 0:
+        out_layers['model.token_embedding'] = model.token_embedding
+        out_layers['model.position_embedding'] = model.position_embedding
 
-            # Get the indices for this node's layers
-            node_layer_indices = split_indices[local_rank].tolist()
-            
-            # Add transformer layers for this node
-            for layer_idx in node_layer_indices:
-                out_layers[f'model.transformer.h.{layer_idx}'] = layers[layer_idx]
+        # Get the indices for this node's layers
+        node_layer_indices = split_indices[local_rank].tolist()
         
-        # Add final layers for last node
-        elif local_rank == num_nodes - 1:
-            # Get the indices for this node's layers
-            node_layer_indices = split_indices[local_rank].tolist()
-            
-            # Add transformer layers for this node
-            for layer_idx in node_layer_indices:
-                out_layers[f'model.transformer.h.{layer_idx}'] = layers[layer_idx]
-            
-            out_layers['model.transformer.ln_f'] = model.transformer.ln_f   
-            out_layers['model.lm_head'] = model.lm_head
+        # Add transformer layers for this node
+        for layer_idx in node_layer_indices:
+            out_layers[f'model.blocks.{layer_idx}'] = layers[layer_idx]
+    
+    # Add final layers for last node
+    elif local_rank == num_nodes - 1:
+        # Get the indices for this node's layers
+        node_layer_indices = split_indices[local_rank].tolist()
         
-        else:
-            # Get the indices for this node's layers
-            node_layer_indices = split_indices[local_rank].tolist()
-            
-            # Add transformer layers for this node
-            for layer_idx in node_layer_indices:
-                out_layers[f'model.transformer.h.{layer_idx}'] = layers[layer_idx]
-                
-        # Collect parameter names for loading from safetensors
-        for layer_name, layer in out_layers.items():
-            for param_name, param in layer.named_parameters():
-                if layer_name == 'model.lm_head':
-                    results.append(layer_name.split('model.')[1] + '.' + param_name)
-                else:
-                    results.append(layer_name.split('model.transformer.')[1] + '.' + param_name)
+        # Add transformer layers for this node
+        for layer_idx in node_layer_indices:
+            out_layers[f'model.blocks.{layer_idx}'] = layers[layer_idx]
         
+        out_layers['model.ln_f'] = model.ln_f   
+        out_layers['model.lm_head'] = model.lm_head
+    
+    else:
+        # Get the indices for this node's layers
+        node_layer_indices = split_indices[local_rank].tolist()
+        
+        # Add transformer layers for this node
+        for layer_idx in node_layer_indices:
+            out_layers[f'model.blocks.{layer_idx}'] = layers[layer_idx]
+   
+    
+    final_model = torch.nn.ModuleList(list(out_layers.values()))
        
-        return layer_mapping
+    return final_model, out_layers
     

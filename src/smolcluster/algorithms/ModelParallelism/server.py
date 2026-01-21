@@ -28,6 +28,22 @@ from smolcluster.utils.layers import (
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
 
+def compute_loss(
+    model: torch.nn.Module,
+    data: torch.Tensor,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    """Compute loss for given data and target."""
+    model.eval()
+    data, target = data.to(get_device()), target.to(get_device())
+    output = model(data)
+    B, T, C = output.shape
+    output = output.view(B*T, C)
+    target = target.view(B*T)
+    criterion = torch.nn.CrossEntropyLoss()
+    loss = criterion(output, target)
+    return loss
+
 def evaluate(
     device: torch.device, 
     model: torch.nn.Module, 
@@ -55,33 +71,30 @@ def evaluate(
     return avg_loss, ppl
 
 
-def compute_leader_gradients(
+def compute_leader_activations(
     device: torch.device,
     model: torch.nn.Module,
     data: torch.Tensor,
-    target: torch.Tensor,
-    criterion: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
     config: dict,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute gradients for leader/server node."""
     optimizer.zero_grad()
     model.train()
-    data, target = data.to(device), target.to(device)
-    output = model(data)
-    B, T, C = output.shape
-    output = output.view(B*T, C)
-    target = target.view(B*T)
-    loss = criterion(output, target)
-    loss.backward()
+    data = data.to(device)
+    hidden = model(data)
+    # B, T, C = output.shape
+    # output = output.view(B*T, C)
+    # target = target.view(B*T)
+    # loss = criterion(output, target)
+    # loss.backward()
     
     # Gradient clipping
-    if config.get("gradient_clipping", {}).get("enabled", False):
-        max_norm = config["gradient_clipping"].get("max_norm", 1.0)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    # if config.get("gradient_clipping", {}).get("enabled", False):
+    #     max_norm = config["gradient_clipping"].get("max_norm", 1.0)
+    #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-    grads = get_gradients(model)
-    return loss, grads
+    # grads = get_gradients(model)
+    return hidden
 
 
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_server)
@@ -137,9 +150,11 @@ def run_modelparallelism_server(
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     num_workers = cluster_config["num_workers"]
     world_size = num_workers + 1
-    model_name = cluster_config['model_name']
-    
+    model_name = cluster_config["model_name"]
+     
     RANK = 0
+    NUM_WORKERS = cluster_config['num_workers']    
+    
     num_nodes = cluster_config['num_nodes']
     
      # Create socket
@@ -162,11 +177,10 @@ def run_modelparallelism_server(
     num_layers = cluster_config['num_layers']
     logger.info(f"Loading server's share of model layers (rank {RANK})...")
     
-    layer_mapping, out_layers, results = get_hfmodel_per_node(
+    model_layers, out_layers = get_model_per_node(
         model,
         num_nodes=num_nodes,
         local_rank=RANK,
-        model_name=model_name,
         total_layers=num_layers
     )
     
@@ -215,10 +229,7 @@ def run_modelparallelism_server(
                 # Add to priority queue sorted by rank
                 heapq.heappush(worker_queue, (rank, conn, address))
                 logger.info(f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})")
-            elif command == "register_client":
-                logger.info(f"API client registered from {address}")
-                client_socket = conn
-                send_message(client_socket, ("client_registered", None))
+            
             else:
                 logger.warning(f"Unexpected message from {address}: {command}")
                 conn.close()
@@ -233,68 +244,31 @@ def run_modelparallelism_server(
     # Send start_inference to workers in rank order
     for rank, worker_socket, addr in sorted(worker_queue):
         logger.info(f"Sending start_inference to worker rank {rank} at {addr}")
-        send_message(worker_socket, "start_inference")
+        send_message(worker_socket, "start_training")
 
     logger.info(f"Starting inference for {model_name}.")
     logger.info("Waiting for inference requests from API client...")
     
-    while True:
-        # Wait for inference request from API client
-        try:
-            message = receive_message(client_socket)
-            if message is None:
-                logger.warning("Client disconnected")
-                break
-            
-            command, payload = message
-            
-            if command == "disconnect":
-                logger.info("Client requested disconnect")
-                break
-            elif command != "inference":
-                logger.warning(f"Unexpected command: {command}")
-                send_message(client_socket, ("error", {"message": f"Unknown command: {command}"}))
-                continue
-                
-            # Extract inference parameters
-            prompt = payload.get("prompt", "").strip()
-            if not prompt:
-                send_message(client_socket, ("error", {"message": "Empty prompt"}))
-                continue
-                
-            logger.info(f"Received inference request: {prompt[:50]}...")
-            
-        except Exception as e:
-            logger.error(f"Error receiving request: {e}")
-            break
+    logger.info(f"Starting training for {num_epochs} epochs.")
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0.0
+        logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
         
-        tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids.to(get_device())
-        original_prompt_length = tokenized_prompt.shape[1]  # Track prompt length
-        
-        # Get active decoding strategy and its parameters
-        active_strategy = model_config.get("active_decoding_strategy", "top_p")
-        strategies = model_config.get("decoding_strategies", {})
-        strategy_params = strategies.get(active_strategy, {})
-        
-        max_new_tokens = payload.get("max_tokens", model_config.get("max_new_tokens", 20))
-        decoding_strategy = payload.get("decoding_strategy", active_strategy)
-        temperature = payload.get("temperature", strategy_params.get("temperature", 1.0))
-        top_p = payload.get("top_p", strategy_params.get("p", 0.9))
-        top_k = payload.get("top_k", strategy_params.get("k", 50))
-        
-        # Generate tokens one at a time by looping through all workers for each token
-        for token_idx in range(max_new_tokens):
-            
-            activations = None
-        
-            
-            out = tokenized_prompt
-        
+        for batch_idx, (data, target) in enumerate(train_loader):
+            step = epoch * len(train_loader) + batch_idx
+            logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server computing leader activations")
+            leader_activations = compute_leader_activations(
+                device, model, data, target, config
+            )
+            total_loss += leader_activations.item()
+            logger.info(f"[Step {step}] Leader activations: {leader_activations.item():.4f}")
+       
             logger.info(f"Generating activations for input IDs for rank 0")
 
             with torch.no_grad():
     
-                out = model_layers[0](out)
+                out = model_layers[0](leader_activations)
             
                 pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
                 out = out + model_layers[1](pos_ids)
@@ -312,13 +286,11 @@ def run_modelparallelism_server(
                 send_message(
                     worker_socket,
                     (
-                        "generate_activations",
+                        "generate_activations_train",
                         {
-                            "prompt": prompt,
+                          
                             "activations": activations,
-                            "input_ids": tokenized_prompt,
-                            "max_new_tokens": 1,  # Generate one token at a time
-                            "decoding_strategy": decoding_strategy,
+
                         },
                     ),
                 )
@@ -337,43 +309,41 @@ def run_modelparallelism_server(
                     logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
                     break
             
-            # After all workers process, sample next token from final activations
-            tokenized_prompt, should_stop = sample_next_token(
-                activations, 
-                tokenized_prompt, 
-                temperature, 
-                tokenizer,
-                decoding_strategy=decoding_strategy,
-                top_p=top_p,
-                top_k=top_k
-            )
+            for rank, worker_socket, addr in sorted(worker_queue, reverse=True):
+                
+                
+                send_message(
+                    worker_socket,
+                    (
+                        "generate_gradients"
+                    ),
+                )
+                
+                #Receiving the last worker nodes activations
+                message = receive_message(sock)
+
+                command, payload = message
+                if command == 'forward_gradients':
+                    grads = payload['gradients'].to(get_device())
+                    logger.info(f"Received gradients from last worker node.")
+                    if rank == RANK:
+                        loss = compute_loss(model, data, target)
+                        loss.backward(grads)
+                    
+                    send_message(worker_socket, ("forward_gradients", grads))
             
-            if should_stop:
-                break
-        
-        # Extract only the generated tokens (exclude original prompt)
-        generated_tokens = tokenized_prompt[0, original_prompt_length:]
-        generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-       
-        logger.info(f"Generated: {generated_text[:100]}...")
-        
-        # Send result back to API client
-        try:
-            send_message(client_socket, ("inference_result", {"text": generated_text}))
-            logger.info("Sent result to client")
-        except Exception as e:
-            logger.error(f"Failed to send result to client: {e}")
-        
-        del activations 
-        
-        gc.collect()
-        activations = None
+            optimizer.step()    
+            
+            del activations 
+            
+            gc.collect()
+            activations = None
     
     for rank, worker_socket, addr in sorted(worker_queue):
         
         send_message(worker_socket, "down")
         
-    logger.info("Inference completed successfully!")
+    logger.info("Training completed successfully!")
        
     sock.close()
 

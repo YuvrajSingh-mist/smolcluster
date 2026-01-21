@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Load model config
 CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
-with open(CONFIG_DIR / "model_parallelism" / "model_config.yaml") as f:
+with open(CONFIG_DIR / "model_parallelism" / "model_config_inference.yaml") as f:
     model_configs = yaml.safe_load(f)
 
 # Get active model config (default to causal_gpt2)
