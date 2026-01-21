@@ -201,11 +201,18 @@ def main():
             break
         
         tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids.to(get_device())
+        original_prompt_length = tokenized_prompt.shape[1]  # Track prompt length
+        
+        # Get active decoding strategy and its parameters
+        active_strategy = model_config.get("active_decoding_strategy", "top_p")
+        strategies = model_config.get("decoding_strategies", {})
+        strategy_params = strategies.get(active_strategy, {})
+        
         max_new_tokens = payload.get("max_tokens", model_config.get("max_new_tokens", 20))
-        decoding_strategy = payload.get("decoding_strategy", model_config.get("decoding_strategy", "greedy"))
-        temperature = payload.get("temperature", model_config.get("temperature", 0.6))
-        top_p = payload.get("top_p", model_config.get("top_p", 0.9))
-        top_k = payload.get("top_k", model_config.get("top_k", 50))
+        decoding_strategy = payload.get("decoding_strategy", active_strategy)
+        temperature = payload.get("temperature", strategy_params.get("temperature", 1.0))
+        top_p = payload.get("top_p", strategy_params.get("top_p", 0.9))
+        top_k = payload.get("top_k", strategy_params.get("top_k", 50))
         
         # Generate tokens one at a time by looping through all workers for each token
         for token_idx in range(max_new_tokens):
@@ -276,8 +283,9 @@ def main():
             if should_stop:
                 break
         
-        # Decode generated text
-        generated_text = tokenizer.decode(tokenized_prompt[0], skip_special_tokens=True)
+        # Extract only the generated tokens (exclude original prompt)
+        generated_tokens = tokenized_prompt[0, original_prompt_length:]
+        generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
        
         logger.info(f"Generated: {generated_text[:100]}...")
         

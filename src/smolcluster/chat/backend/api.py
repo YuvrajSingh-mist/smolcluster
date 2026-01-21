@@ -132,13 +132,17 @@ async def health():
 @app.get("/config")
 async def get_config():
     """Get model configuration values for frontend."""
+    active_strategy = model_config.get("active_decoding_strategy", "top_p")
+    strategies = model_config.get("decoding_strategies", {})
+    strategy_params = strategies.get(active_strategy, {})
+    
     return {
         "model_name": MODEL_NAME,
         "max_new_tokens": model_config.get("max_new_tokens", 50),
-        "temperature": model_config.get("temperature", 1.0),
-        "top_p": model_config.get("top_p", 0.9),
-        "top_k": model_config.get("top_k", 50),
-        "decoding_strategy": model_config.get("decoding_strategy", "top_p")
+        "decoding_strategy": active_strategy,
+        "temperature": strategy_params.get("temperature", 1.0),
+        "top_p": strategy_params.get("top_p", 0.9),
+        "top_k": strategy_params.get("top_k", 50)
     }
 
 
