@@ -25,7 +25,7 @@ from smolcluster.utils.model_downloader import ensure_model_weights
 
 
 # Load configs
-CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
+CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
 with open(CONFIG_DIR / "model_parallelism" / "model_config.yaml") as f:
     nn_config = yaml.safe_load(f)
 
