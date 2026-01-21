@@ -6,7 +6,7 @@ causal_gpt2:
   max_new_tokens: 50
   
   # Active decoding strategy to use
-  active_decoding_strategy: top_p
+  active_decoding_strategy: top_k
   
   # Decoding strategies with their hyperparameters
   decoding_strategies:
@@ -22,4 +22,4 @@ causal_gpt2:
     
     top_k:
       temperature: 1.0
-      top_k: 50
+      top_k: 40
