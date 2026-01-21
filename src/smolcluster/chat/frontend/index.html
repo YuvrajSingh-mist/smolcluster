@@ -256,59 +256,69 @@
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}`;
             
-            const wrapperDiv = document.createElement('div');
-            wrapperDiv.className = 'message-wrapper';
-            
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'message-content';
-            contentDiv.textContent = text;
-            
-            wrapperDiv.appendChild(contentDiv);
-            
-            // Add parameter badges for assistant messages
-            if (type === 'assistant' && params) {
-                const paramsDiv = document.createElement('div');
-                paramsDiv.className = 'params-info';
+            if (type === 'user') {
+                // User messages: just add message-content directly
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                contentDiv.textContent = text;
+                messageDiv.appendChild(contentDiv);
+            } else {
+                // Assistant messages: use wrapper for params
+                const wrapperDiv = document.createElement('div');
+                wrapperDiv.className = 'message-wrapper';
                 
-                if (params.max_tokens !== undefined) {
-                    const badge = document.createElement('span');
-                    badge.className = 'param-badge';
-                    badge.innerHTML = `<strong>Tokens:</strong> ${params.max_tokens}`;
-                    paramsDiv.appendChild(badge);
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                contentDiv.textContent = text;
+                
+                wrapperDiv.appendChild(contentDiv);
+                
+                // Add parameter badges for assistant messages
+                if (params) {
+                    const paramsDiv = document.createElement('div');
+                    paramsDiv.className = 'params-info';
+                    
+                    if (params.max_tokens !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Tokens:</strong> ${params.max_tokens}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.temperature !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Temp:</strong> ${params.temperature}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.top_p !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Top-p:</strong> ${params.top_p}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.top_k !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Top-k:</strong> ${params.top_k}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.decoding_strategy !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Strategy:</strong> ${params.decoding_strategy}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    wrapperDiv.appendChild(paramsDiv);
                 }
                 
-                if (params.temperature !== undefined) {
-                    const badge = document.createElement('span');
-                    badge.className = 'param-badge';
-                    badge.innerHTML = `<strong>Temp:</strong> ${params.temperature}`;
-                    paramsDiv.appendChild(badge);
-                }
-                
-                if (params.top_p !== undefined) {
-                    const badge = document.createElement('span');
-                    badge.className = 'param-badge';
-                    badge.innerHTML = `<strong>Top-p:</strong> ${params.top_p}`;
-                    paramsDiv.appendChild(badge);
-                }
-                
-                if (params.top_k !== undefined) {
-                    const badge = document.createElement('span');
-                    badge.className = 'param-badge';
-                    badge.innerHTML = `<strong>Top-k:</strong> ${params.top_k}`;
-                    paramsDiv.appendChild(badge);
-                }
-                
-                if (params.decoding_strategy !== undefined) {
-                    const badge = document.createElement('span');
-                    badge.className = 'param-badge';
-                    badge.innerHTML = `<strong>Strategy:</strong> ${params.decoding_strategy}`;
-                    paramsDiv.appendChild(badge);
-                }
-                
-                wrapperDiv.appendChild(paramsDiv);
+                messageDiv.appendChild(wrapperDiv);
             }
             
-            messageDiv.appendChild(wrapperDiv);
             chatMessages.appendChild(messageDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
