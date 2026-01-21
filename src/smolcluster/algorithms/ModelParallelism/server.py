@@ -122,36 +122,41 @@ def main():
     # Use priority queue to maintain workers sorted by rank
     worker_queue = []  # Priority queue: [(rank, socket, address)]
     registered_workers = {}  # rank -> socket (for quick lookup)
+    client_socket = None  # API client socket
     
-    while len(registered_workers) < NUM_WORKERS:
-        client_socket, client_address = sock.accept()
-        logger.info(f"Accepted connection from {client_address}")
+    # Accept all connections (workers + API client)
+    while len(registered_workers) < NUM_WORKERS or client_socket is None:
+        conn, address = sock.accept()
+        logger.info(f"Accepted connection from {address}")
 
         # Wait for registration message
         try:
-            message = receive_message(client_socket)
+            message = receive_message(conn)
             if message is None:
                 logger.warning(
-                    f"Connection from {client_address} closed before registration"
+                    f"Connection from {address} closed before registration"
                 )
-                client_socket.close()
+                conn.close()
                 continue
 
             command, rank = message
             if command == "register":
-                logger.info(f"Worker rank {rank} registered from {client_address}")
-                registered_workers[rank] = client_socket
-                workers[client_address] = client_socket
+                logger.info(f"Worker rank {rank} registered from {address}")
+                registered_workers[rank] = conn
+                workers[address] = conn
                 # Add to priority queue sorted by rank
-                heapq.heappush(worker_queue, (rank, client_socket, client_address))
+                heapq.heappush(worker_queue, (rank, conn, address))
                 logger.info(f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})")
-                
+            elif command == "register_client":
+                logger.info(f"API client registered from {address}")
+                client_socket = conn
+                send_message(client_socket, ("client_registered", None))
             else:
-                logger.warning(f"Unexpected message from {client_address}: {command}")
-                client_socket.close()
+                logger.warning(f"Unexpected message from {address}: {command}")
+                conn.close()
         except Exception as e:
-            logger.error(f"Error during registration from {client_address}: {e}")
-            client_socket.close()
+            logger.error(f"Error during registration from {address}: {e}")
+            conn.close()
             continue
 
     logger.info(f"All workers connected. Starting inference on {model_name}...")
@@ -163,20 +168,43 @@ def main():
         send_message(worker_socket, "start_inference")
 
     logger.info(f"Starting inference for {model_name}.")
+    logger.info("Waiting for inference requests from API client...")
     
     while True:
-        user_input = input("Enter text: ")
-        if user_input.lower() in {"exit", "quit"}:
-            logger.info("Exiting inference loop.")
+        # Wait for inference request from API client
+        try:
+            message = receive_message(client_socket)
+            if message is None:
+                logger.warning("Client disconnected")
+                break
+            
+            command, payload = message
+            
+            if command == "disconnect":
+                logger.info("Client requested disconnect")
+                break
+            elif command != "inference":
+                logger.warning(f"Unexpected command: {command}")
+                send_message(client_socket, ("error", {"message": f"Unknown command: {command}"}))
+                continue
+                
+            # Extract inference parameters
+            prompt = payload.get("prompt", "").strip()
+            if not prompt:
+                send_message(client_socket, ("error", {"message": "Empty prompt"}))
+                continue
+                
+            logger.info(f"Received inference request: {prompt[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"Error receiving request: {e}")
             break
         
-        prompt = user_input.strip()
-        
         tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids.to(get_device())
-        max_new_tokens = model_config.get("max_new_tokens", 20)
-        decoding_strategy = model_config.get("decoding_strategy", "greedy")
-        temperature = model_config.get("temperature", 0.6)
-        top_p = model_config.get("top_p", 0.9)
+        max_new_tokens = payload.get("max_tokens", model_config.get("max_new_tokens", 20))
+        decoding_strategy = payload.get("decoding_strategy", model_config.get("decoding_strategy", "greedy"))
+        temperature = payload.get("temperature", model_config.get("temperature", 0.6))
+        top_p = payload.get("top_p", model_config.get("top_p", 0.9))
         
         # Generate tokens one at a time by looping through all workers for each token
         for token_idx in range(max_new_tokens):
@@ -247,9 +275,16 @@ def main():
                 break
         
         # Decode generated text
-        text = tokenizer.decode(tokenized_prompt[0], skip_special_tokens=True)
+        generated_text = tokenizer.decode(tokenized_prompt[0], skip_special_tokens=True)
        
-        print("Generated text is: ", prompt + ' ' + text)
+        logger.info(f"Generated: {generated_text[:100]}...")
+        
+        # Send result back to API client
+        try:
+            send_message(client_socket, ("inference_result", {"text": generated_text}))
+            logger.info("Sent result to client")
+        except Exception as e:
+            logger.error(f"Failed to send result to client: {e}")
         
         del activations 
         

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmolCluster Chat</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .chat-container {
+            width: 90%;
+            max-width: 800px;
+            height: 90vh;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .chat-header {
+            background: #667eea;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f5f5f5;
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+            animation: fadeIn 0.3s;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-content {
+            max-width: 70%;
+            padding: 12px 18px;
+            border-radius: 18px;
+            word-wrap: break-word;
+        }
+        
+        .message.user .message-content {
+            background: #667eea;
+            color: white;
+        }
+        
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .message.error .message-content {
+            background: #ff6b6b;
+            color: white;
+        }
+        
+        .chat-input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+        
+        #chatInput {
+            flex: 1;
+            padding: 12px 18px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        
+        #chatInput:focus {
+            border-color: #667eea;
+        }
+        
+        #sendButton {
+            padding: 12px 30px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        #sendButton:hover {
+            background: #5568d3;
+        }
+        
+        #sendButton:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #667eea;
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+        
+        .status {
+            padding: 10px;
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .status.connected { color: #51cf66; }
+        .status.disconnected { color: #ff6b6b; }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            🤖 SmolCluster Chat
+            <div class="status" id="status">Connecting...</div>
+        </div>
+        
+        <div class="chat-messages" id="chatMessages">
+            <div class="message assistant">
+                <div class="message-content">
+                    Hi! I'm powered by a distributed GPT model. Ask me anything!
+                </div>
+            </div>
+        </div>
+        
+        <div class="chat-input-container">
+            <input 
+                type="text" 
+                id="chatInput" 
+                placeholder="Type your message..." 
+                autocomplete="off"
+            />
+            <button id="sendButton">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        const chatMessages = document.getElementById('chatMessages');
+        const chatInput = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendButton');
+        const statusDiv = document.getElementById('status');
+        
+        let isProcessing = false;
+        
+        // Check server health on load
+        async function checkHealth() {
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                
+                if (data.healthy) {
+                    statusDiv.textContent = '● Connected';
+                    statusDiv.className = 'status connected';
+                } else {
+                    statusDiv.textContent = '● Disconnected';
+                    statusDiv.className = 'status disconnected';
+                }
+            } catch (error) {
+                statusDiv.textContent = '● Server Offline';
+                statusDiv.className = 'status disconnected';
+            }
+        }
+        
+        function addMessage(text, type = 'user') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = text;
+            
+            messageDiv.appendChild(contentDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        function showLoading() {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            messageDiv.id = 'loadingMessage';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.innerHTML = '<span class="loading"></span> Generating...';
+            
+            messageDiv.appendChild(contentDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        function removeLoading() {
+            const loadingMsg = document.getElementById('loadingMessage');
+            if (loadingMsg) {
+                loadingMsg.remove();
+            }
+        }
+        
+        async function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text || isProcessing) return;
+            
+            isProcessing = true;
+            sendButton.disabled = true;
+            chatInput.disabled = true;
+            
+            // Add user message
+            addMessage(text, 'user');
+            chatInput.value = '';
+            
+            // Show loading
+            showLoading();
+            
+            try {
+                const response = await fetch(`${API_URL}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        max_tokens: 50,
+                        temperature: 0.7,
+                        top_p: 0.9
+                    })
+                });
+                
+                removeLoading();
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    addMessage(data.generated_text, 'assistant');
+                } else {
+                    addMessage(`Error: ${data.error}`, 'error');
+                }
+                
+            } catch (error) {
+                removeLoading();
+                addMessage(`Failed to get response: ${error.message}`, 'error');
+                console.error('Error:', error);
+            } finally {
+                isProcessing = false;
+                sendButton.disabled = false;
+                chatInput.disabled = false;
+                chatInput.focus();
+            }
+        }
+        
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        // Check health on load and periodically
+        checkHealth();
+        setInterval(checkHealth, 5000);
+        
+        // Focus input on load
+        chatInput.focus();
+    </script>
+</body>
+</html>

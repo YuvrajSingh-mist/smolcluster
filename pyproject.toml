@@ -21,6 +21,8 @@ dependencies = [
     "dotenv>=0.9.9",
     "safetensors>=0.7.0",
     "prometheus-client>=0.24.1",
+    "fastapi>=0.128.0",
+    "uvicorn>=0.39.0",
 ]
 
 [project.optional-dependencies]
