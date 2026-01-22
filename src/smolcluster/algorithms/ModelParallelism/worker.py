@@ -9,6 +9,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
 import yaml
+import wandb
 
 from transformers import AutoConfig, GPT2LMHeadModel
 
@@ -141,6 +142,7 @@ def connect_to_server(
 
 def run_modelparallelism_worker(
     model,
+    optimizer,
     train_loader,
     val_loader,
     config,
@@ -149,13 +151,15 @@ def run_modelparallelism_worker(
     hostname,
     device,
     criterion,
-    optimizer,
+    host_ip,
+    port,
 ):
     """
     Run Model Parallelism worker for distributed GPT training.
     
     Args:
         model: PyTorch model to train
+        optimizer: Optimizer instance
         train_loader: Training data loader
         val_loader: Validation data loader
         config: Training configuration dict (nn_config)
@@ -164,7 +168,8 @@ def run_modelparallelism_worker(
         hostname: Worker hostname
         device: Device to run on
         criterion: Loss criterion
-        optimizer: optimizer
+        host_ip: Server IP address
+        port: Server port
     """
     global logger
     
@@ -176,7 +181,7 @@ def run_modelparallelism_worker(
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
     )
-    logger.info(f"ModelParallelism Worker {worker_rank} starting up")
+    logger.info(f"🚀 ModelParallelism Worker {worker_rank} starting up")
     
     # Extract configuration
     batch_size = config["batch_size"]
@@ -191,9 +196,9 @@ def run_modelparallelism_worker(
     num_nodes = cluster_config["num_nodes"]
     model_name = cluster_config["model_name"]
     
-    # Workers connect to the server using the IP specified for this worker's hostname
-    HOST_IP = cluster_config["host_ip"][hostname]
-    PORT = cluster_config["port"]
+    # Use provided host_ip and port (from train.py)
+    HOST_IP = host_ip
+    PORT = port
     
     # Update logger with rank
     logger = logging.getLogger(f"[WORKER-{local_rank}]")
@@ -302,17 +307,40 @@ def run_modelparallelism_worker(
             
             optimizer.step()
             optimizer.zero_grad()
+            
+            # Log gradient norms if tracking enabled
+            if track_gradients:
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log({
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                            "epoch": epoch + 1,
+                        })
+            
             # Evaluation
             if step % eval_steps == 0:
                 val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
                 
                 if decoder_type_ppl:
+                    wandb.log({
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                        "ppl/val": val_ppl,
+                    })
                     logger.info(
-                        f"Evaluation at step {step} / {num_epochs * len(train_loader)}: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
+                        f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                     )
                 else:
+                    wandb.log({
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                    })
                     logger.info(
-                        f"Evaluation at step {step} / {num_epochs * len(train_loader)}: Val Loss={val_loss:.4f}"
+                        f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     )
                 model.train()
         

@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Optional
 import yaml
 import torch
+import torchinfo
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, GPT2LMHeadModel, AutoTokenizer
+import wandb
 
 
 from smolcluster.utils.common_utils import (
@@ -162,6 +164,12 @@ def run_modelparallelism_server(
     # Load tokenizer
     model = model.to(get_device())
     logger.info(f"Model initialized on device: {get_device()}")
+    
+    # Log model summary
+    model_summary = str(torchinfo.summary(model, verbose=0, device=device))
+    logger.info("Model Summary:")
+    logger.info(model_summary)
+    wandb.log({"model_structure": model_summary})
     
     # Load model layers for server (rank 0)
     num_layers = cluster_config['num_layers']
@@ -351,6 +359,51 @@ def run_modelparallelism_server(
             
             optimizer.step()    
             optimizer.zero_grad()
+            
+            # Log training metrics
+            wandb.log({
+                "step": step,
+                "epoch": epoch + 1,
+                "lr": optimizer.param_groups[0]['lr'],
+                "batch_size": batch_size,
+                "losses/train_step": loss.item() if loss is not None else 0.0,
+            })
+            
+            # Log gradient norms if tracking enabled
+            if track_gradients:
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = torch.norm(param.grad.detach(), 2).item()
+                        wandb.log({
+                            f"gradients/layer_{name}": grad_norm,
+                            "step": step,
+                            "epoch": epoch + 1,
+                        })
+            
+            # Evaluation
+            if step % eval_steps == 0:
+                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
+                
+                if decoder_type_ppl:
+                    wandb.log({
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                        "ppl/val": val_ppl,
+                    })
+                    logger.info(
+                        f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
+                    )
+                else:
+                    wandb.log({
+                        "step": step,
+                        "epoch": epoch + 1,
+                        "losses/val": val_loss,
+                    })
+                    logger.info(
+                        f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
+                    )
+                model.train()
             
             del activations 
             
