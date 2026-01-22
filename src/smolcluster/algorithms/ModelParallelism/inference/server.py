@@ -223,7 +223,7 @@ def main():
             # Move tokenized_prompt to device for computation
             out = tokenized_prompt.to(get_device())
         
-            logger.info(f"Generating activations for input IDs for rank 0")
+            logger.info(f"Generating activations for input IDs for rank 0 on device: {out.device}")
 
             with torch.no_grad():
     
@@ -236,7 +236,7 @@ def main():
                     output = layer(out)
                     out = output[0] if isinstance(output, tuple) else output
             
-            logger.info("Finsihed generating activations for local_rank 0")
+            logger.info(f"Finsihed generating activations for local_rank 0 on device: (out.device())")
             
             
             # Send generation request to all workers in rank order (1, 2, ...)

@@ -202,9 +202,9 @@ def main():
                 output = layer(out)
                 out = output[0] if isinstance(output, tuple) else output
     
-            logger.info(f"Finsihed generating activations for local_rank {local_rank}")
+            logger.info(f"Finsihed generating activations for local_rank {local_rank} on device {out.device}")
         
-            logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1}")
+            logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1 on devicd {out.device}}")
             
             send_message(sock, ('forward_activations', {"from_rank": local_rank, "to_rank": local_rank + 1, "activations": out.cpu()}))
             
