@@ -19,8 +19,7 @@ from smolcluster.utils.common_utils import (
     send_message,
 )
 from smolcluster.utils.device import get_device
-from smolcluster.utils.decoding import sample_next_token
-from smolcluster.utils.model_downloader import ensure_model_weights
+
 from smolcluster.utils.layers import (
     get_model_per_node
     
@@ -78,7 +77,6 @@ def compute_leader_activations(
     config: dict,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute gradients for leader/server node."""
-    optimizer.zero_grad()
     model.train()
     data = data.to(device)
     hidden = model(data)

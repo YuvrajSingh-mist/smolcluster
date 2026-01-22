@@ -29,12 +29,7 @@ CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
 with open(CONFIG_DIR / "model_parallelism" / "model_config_inference.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open(CONFIG_DIR / "model_parallelism" / "model_parallelism.yaml") as f:
-    cluster_config = yaml.safe_load(f)
-
-# Extract values with defaults
-PORT = cluster_config["port"]
-NUM_WORKERS = cluster_config["num_workers"]
+with open(CONFIG_DIR / "cluster_config_mp.yaml") as f:
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 
