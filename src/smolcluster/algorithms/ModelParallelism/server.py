@@ -298,7 +298,7 @@ def run_modelparallelism_server(
             for rank, worker_socket, addr in sorted(worker_queue, reverse=True):
                 
                 
-                if rank == NUM_WORKERS - 1:
+                if rank == NUM_WORKERS:
                     logger.info(f"[Step {step}] Sending generate_gradients to last worker rank {rank}")
                     send_message(
                         worker_socket,
