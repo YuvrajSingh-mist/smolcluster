@@ -191,7 +191,7 @@ def run_modelparallelism_worker(
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     
     # Set parameters
-    local_rank = worker_rank
+    local_rank = worker_rank + 1
     num_workers = cluster_config["num_workers"]
     num_nodes = cluster_config["num_nodes"]
     model_name = cluster_config["model_name"]
