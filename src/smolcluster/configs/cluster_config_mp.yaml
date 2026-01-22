@@ -1,7 +1,7 @@
 host_ip:
-  mini1: "127.0.0.1"
-  mini2: "127.0.0.1"
-  mini3: "127.0.0.1"
+  mini1: "10.10.0.1"
+  mini2: "10.10.0.1"
+  mini3: "10.10.0.1"
   pi4: "10.10.0.1"
   macbook: "10.10.0.1"
   pi5: "192.168.50.1"
@@ -23,5 +23,5 @@ server: mini1  # Server hostname
 
 #Model parallelism specific configs
 num_nodes: 3
-num_layers: 12
+num_layers: 6  # Number of transformer blocks (auto-detected from model, this is just for reference)
 model_name: causal_gpt2 

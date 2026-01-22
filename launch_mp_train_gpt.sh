@@ -80,7 +80,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
             ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" || true
             
             # Delete old log files and position files for fresh start
-            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" || true
+            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log 2>/dev/null; rm -f /tmp/promtail-positions.yaml /tmp/positions.yaml" || true
             
             # Ensure log directory exists
             ssh "$node" "mkdir -p /tmp/smolcluster-logs"
@@ -98,8 +98,8 @@ if [[ "$DRY_RUN" != "true" ]]; then
             ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
             sleep 2
             
-            # Check if Promtail is running
-            if ssh "$node" "pgrep -f promtail || tasklist /FI 'IMAGENAME eq promtail.exe' 2>nul | findstr promtail"; then
+            # Check if Promtail is running (cross-platform check)
+            if ssh "$node" "(pgrep -f promtail) || (command -v tasklist && tasklist | grep -i promtail.exe)"; then
                 echo "✅ $node: Promtail started successfully"
             else
                 echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"

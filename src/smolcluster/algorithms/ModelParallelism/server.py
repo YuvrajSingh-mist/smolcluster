@@ -78,7 +78,7 @@ def compute_leader_activations(
     device: torch.device,
     model: torch.nn.Module,
     data: torch.Tensor,
-    config: dict,
+
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute gradients for leader/server node."""
     model.train()
@@ -167,7 +167,7 @@ def run_modelparallelism_server(
     wandb.log({"model_structure": model_summary})
     
     # Load model layers for server (rank 0)
-    num_layers = cluster_config['num_layers']
+    num_layers = config['num_layers']
     logger.info(f"Loading server's share of model layers (rank {RANK})...")
     
     model_layers, out_layers = get_model_per_node(
@@ -247,7 +247,7 @@ def run_modelparallelism_server(
             step = epoch * len(train_loader) + batch_idx
             logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server computing leader activations")
             leader_activations = compute_leader_activations(
-                device, model, data, target, config
+                device, model, data
             )
             total_loss += leader_activations.item()
             logger.info(f"[Step {step}] Leader activations: {leader_activations.item():.4f}")

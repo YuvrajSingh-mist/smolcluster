@@ -210,7 +210,7 @@ def run_modelparallelism_worker(
     logger.info(f"Model initialized on device: {get_device()}")
     
     # Load model layers for this worker
-    num_layers = cluster_config['num_layers']
+    num_layers = config['num_layers']
     logger.info(f"Loading worker's share of model layers (rank {local_rank})...")
     
     model_layers, out_layers = get_model_per_node(
