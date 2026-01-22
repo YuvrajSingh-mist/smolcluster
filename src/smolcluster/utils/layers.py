@@ -194,6 +194,7 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, total_layers: int
         # Get the indices for this node's layers
         node_layer_indices = split_indices[local_rank].tolist()
         
+        print(layers)
         # Add transformer layers for this node
         for layer_idx in node_layer_indices:
             out_layers[f'model.blocks.{layer_idx}'] = layers[layer_idx]
