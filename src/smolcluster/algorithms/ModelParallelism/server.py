@@ -86,14 +86,7 @@ def compute_leader_activations(
     out = None
     with torch.no_grad():
     
-        out = model_layers[0](data)
-    
-        pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
-        out = out + model_layers[1](pos_ids)
-        
-        for layer in model_layers[2:]:
-            output = layer(out)
-            out = output[0] if isinstance(output, tuple) else output
+        out = model(data)
             
 
     return out
