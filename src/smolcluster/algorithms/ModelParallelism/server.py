@@ -27,11 +27,11 @@ from smolcluster.utils.layers import (
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
 
-def compute_loss(
+def compute_loss_and_grads(
     model: torch.nn.Module,
     data: torch.Tensor,
     target: torch.Tensor,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute loss for given data and target."""
     model.eval()
     data, target = data.to(get_device()), target.to(get_device())
@@ -41,7 +41,9 @@ def compute_loss(
     target = target.view(B*T)
     criterion = torch.nn.CrossEntropyLoss()
     loss = criterion(output, target)
-    return loss
+    loss.backward()
+    grads = get_gradients(model)
+    return loss, grads
 
 def evaluate(
     device: torch.device, 
@@ -80,18 +82,7 @@ def compute_leader_activations(
     model.train()
     data = data.to(device)
     hidden = model(data)
-    # B, T, C = output.shape
-    # output = output.view(B*T, C)
-    # target = target.view(B*T)
-    # loss = criterion(output, target)
-    # loss.backward()
-    
-    # Gradient clipping
-    # if config.get("gradient_clipping", {}).get("enabled", False):
-    #     max_norm = config["gradient_clipping"].get("max_norm", 1.0)
-    #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-    # grads = get_gradients(model)
     return hidden
 
 
@@ -149,7 +140,8 @@ def run_modelparallelism_server(
     num_workers = cluster_config["num_workers"]
     world_size = num_workers + 1
     model_name = cluster_config["model_name"]
-     
+    leader_grads = None
+    recv_grads = None
     RANK = 0
     NUM_WORKERS = cluster_config['num_workers']    
     
@@ -280,67 +272,85 @@ def run_modelparallelism_server(
             activations = out.cpu()
             # Send generation request to all workers in rank order (1, 2, ...)
             for rank, worker_socket, addr in sorted(worker_queue):
-                
+                logger.info(f"[Step {step}] Sending activations to worker rank {rank}")
                 send_message(
                     worker_socket,
                     (
                         "generate_activations_train",
+                        step,
                         {
-                          
                             "activations": activations,
-
                         },
                     ),
                 )
 
                 message = receive_message(worker_socket)
                 
-                command, payload = message
+                command, recv_step, payload = message
+                
+                assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
                 
                 if command == 'forward_activations':
                     activations = payload['activations'].to(get_device())
                     from_rank = payload['from_rank']
                     to_rank = payload['to_rank']
-                    logger.info(f"Received activations forwarded from worker {from_rank} to worker {to_rank}")
+                    logger.info(f"[Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}")
                     
                 else:
                     logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
                     break
             
+            
             for rank, worker_socket, addr in sorted(worker_queue, reverse=True):
                 
                 
                 if rank == NUM_WORKERS - 1:
+                    logger.info(f"[Step {step}] Sending generate_gradients to last worker rank {rank}")
                     send_message(
                         worker_socket,
                         (
-                            "generate_gradients"
+                            "generate_gradients",
+                            step,
                         ),
                     )
+                elif rank == RANK:
+                    
+                    loss, leader_grads = compute_loss_and_grads(model, data, target)
+                    loss.backward()
+                        
                 else:
+                    logger.info(f"[Step {step}] Sending gradients to worker rank {rank}")
                     send_message(
                         worker_socket,
                         (
                             "forward_gradients",
+                            step,
                             {
-                                "gradients": activations,
+                                "gradients": recv_grads if rank != RANK else leader_grads,
+                                "to_rank": rank
                             },
                         ),
                     )
                 #Receiving the last worker nodes activations
                 message = receive_message(sock)
 
-                command, payload = message
+                command, recv_step, payload = message
+                
+                assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
+                
                 if command == 'forward_gradients':
-                    grads = payload['gradients'].to(get_device())
-                    logger.info(f"Received gradients from last worker node.")
+                    recv_grads = payload['gradients'].to(get_device())
+                    logger.info(f"[Step {step}] Received gradients from last worker node.")
                     if rank == RANK:
-                        loss = compute_loss(model, data, target)
-                        loss.backward(grads)
-                    
-                    send_message(worker_socket, ("forward_gradients", grads))
+                    #     loss, grads = compute_loss_and_grads(model, data, target)
+                    #     loss.backward()
+                    #     send_message(worker_socket, ("forward_gradients", grads.cpu()))
+                    # else:
+                        loss, _ = compute_loss_and_grads(model, data, target)
+                        loss.backward(recv_grads)
             
             optimizer.step()    
+            optimizer.zero_grad()
             
             del activations 
             

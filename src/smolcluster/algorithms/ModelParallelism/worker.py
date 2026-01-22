@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
 import yaml
@@ -63,6 +63,24 @@ def compute_worker_activations(
     hidden = model(data)
     return hidden
 
+
+def compute_loss(
+    model: torch.nn.Module,
+    data: torch.Tensor,
+    target: torch.Tensor,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    
+    """Compute loss for given data and target."""
+    model.eval()
+    data, target = data.to(get_device()), target.to(get_device())
+    output = model(data)
+    B, T, C = output.shape
+    output = output.view(B*T, C)
+    target = target.view(B*T)
+    criterion = torch.nn.CrossEntropyLoss()
+    loss = criterion(output, target)
+    grads = get_gradients(loss, model)
+    return loss, grads
 
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_worker)
 logging.basicConfig(
@@ -131,6 +149,7 @@ def run_modelparallelism_worker(
     hostname,
     device,
     criterion,
+    optimizer,
 ):
     """
     Run Model Parallelism worker for distributed GPT training.
@@ -145,6 +164,7 @@ def run_modelparallelism_worker(
         hostname: Worker hostname
         device: Device to run on
         criterion: Loss criterion
+        optimizer: optimizer
     """
     global logger
     
@@ -225,10 +245,12 @@ def run_modelparallelism_worker(
             
             # Receive activations from server/previous worker
             message = receive_message(sock)
-            command, payload = message
+            command, recv_step, payload = message
+            
+            assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
             
             if command == 'generate_activations_train':
-                logger.info(f"Received command to generate activations for rank {local_rank}.")
+                logger.info(f"[Step {step}] Received command to generate activations for rank {local_rank}.")
                 
                 # Get activations from previous node
                 out = payload['activations'].to(get_device())
@@ -238,23 +260,48 @@ def run_modelparallelism_worker(
                     output = layer(out)
                     out = output[0] if isinstance(output, tuple) else output
         
-                logger.info(f"Finished generating activations for local_rank {local_rank}")
+                logger.info(f"[Step {step}] Finished generating activations for local_rank {local_rank}")
             
-                logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1}")
+                logger.info(f"[Step {step}] Sending activations from rank {local_rank} to rank {local_rank + 1}")
                 
                 # Send activations to next worker/server
-                send_message(sock, ('forward_activations', {
+                send_message(sock, ('forward_activations', step, {
                     "from_rank": local_rank, 
                     "to_rank": local_rank + 1, 
                     "activations": out.cpu()
                 }))
                 
                 del out
+            
+            elif command == 'generate_gradients':
+                logger.info(f"[Step {step}] Received command to compute gradients for rank {local_rank}.")
+                
+                loss, grads =  compute_loss(model, data, target)
+                
+                logger.info(f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}")
+                send_message(sock, ('forward_gradients', step, {
+                    "from_rank": local_rank, 
+                    "to_rank": local_rank - 1, 
+                    "gradients": grads.cpu()
+                }))
+            
+            elif command == 'forward_gradients':
+                
+                rank, recv_grads = payload["to_rank"], payload["gradients"]
+                logger.info(f"[Step {step}] Received gradients for rank {rank}.")  
+                
+                if rank == local_rank:
+                    logger.info(f"[Step {step}] Computing backward pass for rank {local_rank}")
+                    loss, grads = compute_loss(model, data, target)
+                    loss.backward(recv_grads)
+                    
                 
             elif command == 'down':
                 logger.info("Received exit command from server. Shutting down.")
                 break
-                
+            
+            optimizer.step()
+            optimizer.zero_grad()
             # Evaluation
             if step % eval_steps == 0:
                 val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
@@ -276,10 +323,6 @@ def run_modelparallelism_worker(
     sock.close()
     logger.info("Worker training completed and connection closed.")
 
-
-def main():
-    """Main entry point for standalone script execution."""
-    run_modelparallelism_worker()
 
 
 if __name__ == "__main__":
