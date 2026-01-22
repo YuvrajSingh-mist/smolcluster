@@ -209,13 +209,7 @@ def main():
             send_message(sock, ('forward_activations', {"from_rank": local_rank, "to_rank": local_rank + 1, "activations": out.cpu()}))
             
             del out
-            # while True:
-                
-            #     command = receive_message(sock)
-                
-            #     if command == 'finished_inference':
-            #         break
-            
+           
             
         elif command == 'down':
             logger.info("Received exit command from server. Shutting down.")

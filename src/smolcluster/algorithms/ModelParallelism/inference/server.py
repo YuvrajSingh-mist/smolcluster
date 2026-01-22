@@ -238,7 +238,7 @@ def main():
             
             logger.info("Finsihed generating activations for local_rank 0")
             
-            activations = out.cpu()
+            
             # Send generation request to all workers in rank order (1, 2, ...)
             for rank, worker_socket, addr in sorted(worker_queue):
                 
@@ -248,7 +248,7 @@ def main():
                         "generate_activations",
                         {
                             
-                            "activations": activations,
+                            "activations": out.cpu(),
                             "input_ids": tokenized_prompt.cpu(),  # Move to CPU before sending
                             "max_new_tokens": 1,  # Generate one token at a time
                             "decoding_strategy": decoding_strategy,
@@ -261,7 +261,7 @@ def main():
                 command, payload = message
                 
                 if command == 'forward_activations':
-                    activations = payload['activations'].to(get_device())
+                    activations = payload['activations']
                     from_rank = payload['from_rank']
                     to_rank = payload['to_rank']
                     logger.info(f"Received activations forwarded from worker {from_rank} to worker {to_rank}")
