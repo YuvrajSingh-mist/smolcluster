@@ -149,14 +149,9 @@ def run_modelparallelism_server(
     
     num_nodes = cluster_config['num_nodes']
     
-     # Create socket
+    # Create socket
     HOST_IP = "0.0.0.0"
     PORT = cluster_config["port"]
-    
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind((HOST_IP, PORT))
-    sock.listen(5)
-    # logger.info(f"Server listening on {HOST_IP}:{PORT}")
     
     logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
     workers = {}
@@ -182,21 +177,16 @@ def run_modelparallelism_server(
         total_layers=num_layers
     )
     
-   
-    
     model_layers = model_layers.to(get_device())
     logger.info(f"Server loaded {len(model_layers)} layers")
     
+    # Create and bind socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     
     # Bind the socket to the host and port
     sock.bind((HOST_IP, PORT))
-    
-    # Listen for incoming connections
     sock.listen(5)
     logger.info(f"Server listening on {HOST_IP}:{PORT}")
-   
-    logger.info(f"Server is running at {HOST_IP}:{PORT}")
     
     # Accept connections and wait for registration
     # Use priority queue to maintain workers sorted by rank
@@ -205,7 +195,7 @@ def run_modelparallelism_server(
     client_socket = None  # API client socket
     
     # Accept all connections (workers + API client)
-    while len(registered_workers) < NUM_WORKERS or client_socket is None:
+    while len(registered_workers) < NUM_WORKERS:
         conn, address = sock.accept()
         logger.info(f"Accepted connection from {address}")
 

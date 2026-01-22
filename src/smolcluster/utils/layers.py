@@ -156,7 +156,8 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, total_layers: int
     # if model_name == 'causal_gpt2':
         
     # Collect all transformer layers
-    layers = list(model.blocks)
+    layers = list(model.
+                  )
     
     # Create indices for all layers and split them across nodes using torch.chunk
     # This handles uneven splits automatically
