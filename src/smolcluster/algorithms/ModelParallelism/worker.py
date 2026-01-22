@@ -156,7 +156,7 @@ def run_modelparallelism_worker(
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
     )
-    logger.info(f"🚀 ModelParallelism Worker {worker_rank} starting up")
+    logger.info(f"ModelParallelism Worker {worker_rank} starting up")
     
     # Extract configuration
     batch_size = config["batch_size"]

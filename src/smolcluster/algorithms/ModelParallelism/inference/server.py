@@ -246,7 +246,7 @@ def main():
                     (
                         "generate_activations",
                         {
-                            "prompt": prompt,
+                            
                             "activations": activations,
                             "input_ids": tokenized_prompt.cpu(),  # Move to CPU before sending
                             "max_new_tokens": 1,  # Generate one token at a time
