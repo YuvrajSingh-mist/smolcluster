@@ -83,9 +83,20 @@ def compute_leader_activations(
     """Compute gradients for leader/server node."""
     model.train()
     data = data.to(device)
-    hidden = model(data)
+    out = None
+    with torch.no_grad():
+    
+        out = model_layers[0](leader_activations)
+    
+        pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
+        out = out + model_layers[1](pos_ids)
+        
+        for layer in model_layers[2:]:
+            output = layer(out)
+            out = output[0] if isinstance(output, tuple) else output
+            
 
-    return hidden
+    return out
 
 
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_server)
@@ -249,25 +260,10 @@ def run_modelparallelism_server(
             leader_activations = compute_leader_activations(
                 device, model, data
             )
-            total_loss += leader_activations.item()
-            logger.info(f"[Step {step}] Leader activations: {leader_activations.item():.4f}")
-       
-            logger.info(f"Generating activations for input IDs for rank 0")
-
-            with torch.no_grad():
-    
-                out = model_layers[0](leader_activations)
-            
-                pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
-                out = out + model_layers[1](pos_ids)
-                
-                for layer in model_layers[2:]:
-                    output = layer(out)
-                    out = output[0] if isinstance(output, tuple) else output
-            
+          
             logger.info("Finsihed generating activations for local_rank 0")
             
-            activations = out.cpu()
+            activations = leader_activations.cpu()
             # Send generation request to all workers in rank order (1, 2, ...)
             for rank, worker_socket, addr in sorted(worker_queue):
                 logger.info(f"[Step {step}] Sending activations to worker rank {rank}")
@@ -346,7 +342,8 @@ def run_modelparallelism_server(
                     # else:
                         loss, _ = compute_loss_and_grads(model, data, target)
                         loss.backward(recv_grads)
-            
+                        total_loss += loss.item()
+                        
             optimizer.step()    
             optimizer.zero_grad()
             

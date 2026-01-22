@@ -299,7 +299,7 @@ def run_modelparallelism_worker(
                     logger.info(f"[Step {step}] Computing backward pass for rank {local_rank}")
                     loss, grads = compute_loss(model, data, target)
                     loss.backward(recv_grads)
-                    
+                    total_loss += loss.item()
                 
             elif command == 'down':
                 logger.info("Received exit command from server. Shutting down.")
