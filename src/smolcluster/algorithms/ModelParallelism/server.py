@@ -76,17 +76,17 @@ def evaluate(
 
 def compute_leader_activations(
     device: torch.device,
-    model: torch.nn.Module,
+    model_layers: List[torch.nn.Module],
     data: torch.Tensor,
 
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute gradients for leader/server node."""
-    model.train()
+   
     data = data.to(device)
     out = None
     with torch.no_grad():
     
-        out = model_layers[0](leader_activations)
+        out = model_layers[0](data)
     
         pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
         out = out + model_layers[1](pos_ids)
