@@ -86,7 +86,7 @@ def compute_leader_activations(
     out = None
     with torch.no_grad():
     
-        out = model(data)
+        out = model_layers(data)
             
 
     return out
