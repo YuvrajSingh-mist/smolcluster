@@ -278,7 +278,14 @@ def run_modelparallelism_worker(
                 
                 del out
             
-            elif command == 'generate_gradients':
+             # Receive activations from server/previous worker
+            message = receive_message(sock)
+            command, recv_step, payload = message
+            
+            assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
+            
+            
+            if command == 'generate_gradients':
                 logger.info(f"[Step {step}] Received command to compute gradients for rank {local_rank}.")
                 
                 loss, grads =  compute_loss(model, data, target)
