@@ -357,11 +357,3 @@ def run_modelparallelism_server(
        
     sock.close()
 
-
-def main():
-    """Main entry point for standalone script execution."""
-    run_modelparallelism_server()
-
-
-if __name__ == "__main__":
-    main()

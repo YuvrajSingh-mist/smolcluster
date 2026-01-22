@@ -1,16 +1,17 @@
 """
-Training with EDP or SyncPS for GPT
+Training with EDP, SyncPS, or ModelParallelism for GPT
 
 This script provides both server and worker entry points for distributed
-GPT training using either EDP or SyncPS algorithms.
+GPT training using EDP, SyncPS, or ModelParallelism algorithms.
 
 Usage:
-    Server: python train.py server <hostname> --algorithm <edp|syncps>
-    Worker: python train.py worker <rank> <hostname> --algorithm <edp|syncps>
+    Server: python train.py server <hostname> --algorithm <edp|syncps|mp>
+    Worker: python train.py worker <rank> <hostname> --algorithm <edp|syncps|mp>
     
 Examples:
     python train.py server mini1 --algorithm edp
     python train.py worker 1 mini2 --algorithm syncps
+    python train.py server mini1 --algorithm mp
 """
 import argparse
 import logging
@@ -30,6 +31,8 @@ from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
 from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
+from smolcluster.algorithms["Model Parallelism"].server import run_modelparallelism_server
+from smolcluster.algorithms["Model Parallelism"].worker import run_modelparallelism_worker
 
 from smolcluster.utils.device import get_device
 
@@ -179,6 +182,18 @@ def run_server(hostname: str, algorithm: str = "syncps"):
             device=device,
             criterion=criterion,
         )
+    elif algorithm == "mp":
+        run_modelparallelism_server(
+            model=model,
+            optimizer=optimizer,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+        )
     else:  # syncps
         run_syncps_server(
             model=model,
@@ -200,7 +215,7 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
     Args:
         worker_rank: Worker rank (1-indexed)
         hostname: Worker hostname
-        algorithm: Either 'edp' or 'syncps'
+        algorithm: Either 'edp', 'syncps', or 'mp'
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -310,6 +325,21 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
             host_ip=host_ip,
             port=port,
         )
+    elif algorithm == "mp":
+        run_modelparallelism_worker(
+            model=model,
+            optimizer=optimizer,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            worker_rank=local_rank,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+            host_ip=host_ip,
+            port=port,
+        )
     else:  # syncps
         run_syncps_worker(
             model=model,
@@ -332,7 +362,7 @@ def main():
     parser.add_argument("mode", choices=["server", "worker"], help="Run as server or worker")
     parser.add_argument("arg1", help="Hostname (server mode) or rank (worker mode)")
     parser.add_argument("arg2", nargs="?", help="Hostname (worker mode only)")
-    parser.add_argument("-a", "--algorithm", choices=["edp", "syncps"], default="syncps",
+    parser.add_argument("-a", "--algorithm", choices=["edp", "syncps", "mp"], default="syncps",
                         help="Training algorithm to use (default: syncps)")
     
     # Handle both new argparse format and legacy positional format
@@ -377,8 +407,8 @@ def main():
         sys.exit(1)
     
     # Validate algorithm
-    if algorithm not in ["edp", "syncps"]:
-        print(f"Error: Invalid algorithm '{algorithm}'. Must be 'edp' or 'syncps'")
+    if algorithm not in ["edp", "syncps", "mp"]:
+        print(f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', or 'mp'")
         sys.exit(1)
     
     # Run appropriate mode
