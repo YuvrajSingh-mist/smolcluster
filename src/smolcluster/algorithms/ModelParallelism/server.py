@@ -6,7 +6,7 @@ import socket
 import threading
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import yaml
 import torch
 import torchinfo
