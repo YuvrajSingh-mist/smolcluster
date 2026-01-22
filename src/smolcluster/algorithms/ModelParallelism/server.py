@@ -86,7 +86,14 @@ def compute_leader_activations(
     out = None
     with torch.no_grad():
     
-        out = model_layers(data)
+        out = model_layers[0](data)
+    
+        pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
+        out = out + model_layers[1](pos_ids)
+        
+        for layer in model_layers[2:]:
+            output = layer(out)
+            out = output[0] if isinstance(output, tuple) else output
             
 
     return out
@@ -251,7 +258,7 @@ def run_modelparallelism_server(
             step = epoch * len(train_loader) + batch_idx
             logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server computing leader activations")
             leader_activations = compute_leader_activations(
-                device, model, data
+                device, model_layers, data
             )
           
             logger.info("Finsihed generating activations for local_rank 0")
