@@ -31,8 +31,8 @@ from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
 from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
-from smolcluster.algorithms["Model Parallelism"].server import run_modelparallelism_server
-from smolcluster.algorithms["Model Parallelism"].worker import run_modelparallelism_worker
+from smolcluster.algorithms.ModelParallelism.server import run_modelparallelism_server
+from smolcluster.algorithms.ModelParallelism.worker import run_modelparallelism_worker
 
 from smolcluster.utils.device import get_device
 
