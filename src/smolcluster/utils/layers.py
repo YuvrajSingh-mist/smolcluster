@@ -200,6 +200,8 @@ def get_model_per_node(model, num_nodes: int, local_rank: int, total_layers: int
             out_layers[f'model.blocks.{layer_idx}'] = layers[layer_idx]
    
     
+    logger.info(f"Loaded layers: {list(out_layers.keys())}")
+    
     final_model = torch.nn.ModuleList(list(out_layers.values()))
        
     return final_model, out_layers
