@@ -80,7 +80,7 @@ def compute_loss(
     target = target.view(B*T)
     criterion = torch.nn.CrossEntropyLoss()
     loss = criterion(output, target)
-    grads = get_gradients(loss, model)
+    grads = get_gradients(model)
     return loss, grads
 
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_worker)
