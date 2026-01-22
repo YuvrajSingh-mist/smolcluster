@@ -18,7 +18,7 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-workers: [pi5, win]  # Worker hostnames
+workers: [mini2, mini3]  # Worker hostnames
 server: mini1  # Server hostname
 
 #Model parallelism specific configs
