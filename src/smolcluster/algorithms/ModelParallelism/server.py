@@ -312,13 +312,23 @@ def run_modelparallelism_server(
             for rank, worker_socket, addr in sorted(worker_queue, reverse=True):
                 
                 
-                send_message(
-                    worker_socket,
-                    (
-                        "generate_gradients"
-                    ),
-                )
-                
+                if rank == NUM_WORKERS - 1:
+                    send_message(
+                        worker_socket,
+                        (
+                            "generate_gradients"
+                        ),
+                    )
+                else:
+                    send_message(
+                        worker_socket,
+                        (
+                            "forward_gradients",
+                            {
+                                "gradients": activations,
+                            },
+                        ),
+                    )
                 #Receiving the last worker nodes activations
                 message = receive_message(sock)
 
