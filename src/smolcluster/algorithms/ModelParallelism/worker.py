@@ -280,7 +280,7 @@ def run_modelparallelism_worker(
             
              # Receive activations from server/previous worker
             message = receive_message(sock)
-            command, recv_step = message
+            command, recv_step, payload = message
             
             assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
             
