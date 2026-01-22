@@ -91,8 +91,8 @@ def sample_next_token(
     Sample next token from final activations and append to prompt.
     
     Args:
-        activations: Model output activations
-        tokenized_prompt: Current tokenized prompt
+        activations: Model output activations (on device)
+        tokenized_prompt: Current tokenized prompt (on CPU)
         temperature: Sampling temperature
         tokenizer: Tokenizer for EOS token check
         decoding_strategy: "greedy", "sampling", "top_p", or "top_k"
@@ -119,7 +119,8 @@ def sample_next_token(
     else:
         raise ValueError(f"Unknown decoding strategy: {decoding_strategy}")
     
-    tokenized_prompt = torch.cat((tokenized_prompt, next_token_id), dim=1)
+    # Move next_token_id to CPU to concatenate with tokenized_prompt
+    tokenized_prompt = torch.cat((tokenized_prompt, next_token_id.cpu()), dim=1)
     
     # Check if EOS token
     should_stop = next_token_id.item() == tokenizer.eos_token_id

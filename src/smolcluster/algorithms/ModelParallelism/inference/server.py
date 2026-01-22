@@ -200,7 +200,8 @@ def main():
             logger.error(f"Error receiving request: {e}")
             break
         
-        tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids.to(get_device())
+        # Keep tokenized_prompt on CPU - only move to device when needed
+        tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids
         original_prompt_length = tokenized_prompt.shape[1]  # Track prompt length
         
         # Get active decoding strategy and its parameters
@@ -219,8 +220,8 @@ def main():
             
             activations = None
         
-            
-            out = tokenized_prompt
+            # Move tokenized_prompt to device for computation
+            out = tokenized_prompt.to(get_device())
         
             logger.info(f"Generating activations for input IDs for rank 0")
 
