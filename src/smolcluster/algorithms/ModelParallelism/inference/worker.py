@@ -204,7 +204,7 @@ def main():
     
             logger.info(f"Finsihed generating activations for local_rank {local_rank} on device {out.device}")
         
-            logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1 on devicd {out.device}}")
+            logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1} on device {out.device}")
             
             send_message(sock, ('forward_activations', {"from_rank": local_rank, "to_rank": local_rank + 1, "activations": out.cpu()}))
             
