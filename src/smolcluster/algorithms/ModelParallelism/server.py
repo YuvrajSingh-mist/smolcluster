@@ -336,7 +336,8 @@ def run_modelparallelism_server(
                 assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
                 
                 if command == 'forward_gradients':
-                    recv_grads = payload['gradients'].to(get_device())
+                    recv_grads = payload['gradients']
+                    recv_grads = {k: v.to(get_device()) for k, v in recv_grads.items()}
                     logger.info(f"[Step {step}] Received gradients from last worker node.")
                     if rank == RANK:
                     #     loss, grads = compute_loss_and_grads(model, data, target)
