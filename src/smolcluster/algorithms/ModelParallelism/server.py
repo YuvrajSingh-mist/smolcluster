@@ -329,7 +329,7 @@ def run_modelparallelism_server(
                         ),
                     )
                 #Receiving the last worker nodes activations
-                message = receive_message(sock)
+                message = receive_message(worker_socket)
 
                 command, recv_step, payload = message
                 
