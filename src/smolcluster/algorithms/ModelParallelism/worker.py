@@ -291,10 +291,12 @@ def run_modelparallelism_worker(
                 loss, grads =  compute_loss(model, data, target)
                 
                 logger.info(f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}")
+                
+
                 send_message(sock, ('forward_gradients', step, {
                     "from_rank": local_rank, 
                     "to_rank": local_rank - 1, 
-                    "gradients": grads.cpu()
+                    "gradients": {k: v.cpu() for k, v in grads.items()}
                 }))
             
             elif command == 'forward_gradients':
