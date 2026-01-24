@@ -222,7 +222,7 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     # Worker rank is 0-indexed internally but 1-indexed in command-line
-    local_rank = worker_rank - 1
+    local_rank = worker_rank 
     logger = logging.getLogger(f"[WORKER-{local_rank}-MAIN]")
     
     setup_wandb()
@@ -358,7 +358,7 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
 
 def main():
     """Main entry point for distributed training."""
-    parser = argparse.ArgumentParser(description="Distributed GPT Training with EDP or SyncPS")
+    parser = argparse.ArgumentParser(description="Distributed GPT Training")
     parser.add_argument("mode", choices=["server", "worker"], help="Run as server or worker")
     parser.add_argument("arg1", help="Hostname (server mode) or rank (worker mode)")
     parser.add_argument("arg2", nargs="?", help="Hostname (worker mode only)")

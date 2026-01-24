@@ -13,7 +13,7 @@ def get_hfmodel_per_node(model, num_nodes: int, local_rank: int, model_name: str
     out_layers = {}
     results = []
     
-    assert local_rank < num_nodes, "Local rank must be less than number of nodes"
+    assert local_rank <= num_nodes, "Local rank must be less than number of nodes"
          
     if model_name == 'causal_gpt2':
         
@@ -150,7 +150,7 @@ def load_weights_per_node(model_name: str, out_layers: dict, layer_mapping: dict
 def get_model_per_node(model, num_nodes: int, local_rank: int, total_layers: int) -> List:
     
     out_layers = {}
-   
+  
     assert local_rank < num_nodes, "Local rank must be less than number of nodes"
          
     # if model_name == 'causal_gpt2':

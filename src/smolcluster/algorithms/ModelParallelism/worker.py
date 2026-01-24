@@ -56,7 +56,7 @@ def compute_worker_activations(
     device: torch.device,
     model: torch.nn.Module,
     data: torch.Tensor,
-    config: dict,
+    
 ) -> torch.Tensor:
     """Compute activations for worker node."""
     model.train()
@@ -66,22 +66,24 @@ def compute_worker_activations(
 
 
 def compute_loss(
-    model: torch.nn.Module,
-    data: torch.Tensor,
+    act: torch.Tensor,
     target: torch.Tensor,
-) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+  
+) -> torch.Tensor:
     
     """Compute loss for given data and target."""
-    model.eval()
-    data, target = data.to(get_device()), target.to(get_device())
-    output = model(data)
-    B, T, C = output.shape
-    output = output.view(B*T, C)
+    # # model.eval()
+    # data, target = data.to(get_device()), target.to(get_device())
+    # output = model(data)
+    # B, T, C = output.shape
+    target = target.to(get_device())
+    B, T, C = act.shape
+    output = act.view(B*T, C)
     target = target.view(B*T)
     criterion = torch.nn.CrossEntropyLoss()
     loss = criterion(output, target)
-    grads = get_gradients(model)
-    return loss, grads
+ 
+    return loss
 
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_worker)
 logging.basicConfig(
@@ -191,7 +193,7 @@ def run_modelparallelism_worker(
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     
     # Set parameters
-    local_rank = worker_rank + 1
+    local_rank = worker_rank  # Worker rank is already correct (1, 2, etc.)
     num_workers = cluster_config["num_workers"]
     num_nodes = cluster_config["num_nodes"]
     model_name = cluster_config["model_name"]
@@ -237,6 +239,10 @@ def run_modelparallelism_worker(
             logger.info("Received start_training command from server.")
             break
 
+    # Initialize activation caches
+    act_in_cache = {}
+    act_out_cache = {}
+    
     logger.info("Starting training loop...")
     
     for epoch in range(num_epochs):
@@ -258,25 +264,33 @@ def run_modelparallelism_worker(
                 logger.info(f"[Step {step}] Received command to generate activations for rank {local_rank}.")
                 
                 # Get activations from previous node
-                out = payload['activations'].to(get_device())
+                act_in = payload['activations'].to(get_device())
+                act_in.requires_grad_(True) #has activations from all prev layers
                 
+                out = act_in
                 # Forward through this worker's layers
                 for layer in model_layers: 
-                    output = layer(out)
-                    out = output[0] if isinstance(output, tuple) else output
-        
+                    out = layer(out)
+                    out = out[0] if isinstance(out, tuple) else out
+
+                act_out = out
+                
+                # Cache activations WITH computation graph (no detach for act_in!)
+                act_in_cache[(step, local_rank)] = act_in
+                act_out_cache[(step, local_rank)] = act_out
+                
                 logger.info(f"[Step {step}] Finished generating activations for local_rank {local_rank}")
             
                 logger.info(f"[Step {step}] Sending activations from rank {local_rank} to rank {local_rank + 1}")
                 
-                # Send activations to next worker/server
+                # Send detached copy to next worker/server
                 send_message(sock, ('forward_activations', step, {
                     "from_rank": local_rank, 
                     "to_rank": local_rank + 1, 
-                    "activations": out.cpu()
+                    "activations": act_out.detach().cpu()
                 }))
                 
-                del out
+                # Don't delete - keep in cache for backward
             
              # Receive activations from server/previous worker
             message = receive_message(sock)
@@ -288,15 +302,21 @@ def run_modelparallelism_worker(
             if command == 'generate_gradients':
                 logger.info(f"[Step {step}] Received command to compute gradients for rank {local_rank}.")
                 
-                loss, grads =  compute_loss(model, data, target)
+                # Restore activations from cache (has computation graph)
+                act_in = act_in_cache[(step, local_rank)]
+                act_out = act_out_cache[(step, local_rank)]
+                
+                loss = compute_loss(act_out, target)
+                total_loss += loss.item()
+                loss.backward()
                 
                 logger.info(f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}")
                 
-
+                # Send input gradients to previous worker
                 send_message(sock, ('forward_gradients', step, {
                     "from_rank": local_rank, 
                     "to_rank": local_rank - 1, 
-                    "gradients": {k: v.cpu() for k, v in grads.items()}
+                    "gradients": act_in.grad.detach().cpu()
                 }))
             
             elif command == 'forward_gradients':
@@ -306,9 +326,24 @@ def run_modelparallelism_worker(
                 
                 if rank == local_rank:
                     logger.info(f"[Step {step}] Computing backward pass for rank {local_rank}")
-                    loss, grads = compute_loss(model, data, target)
-                    loss.backward(recv_grads)
-                    total_loss += loss.item()
+                    
+                    # Restore activations from cache (has computation graph)
+                    act_in = act_in_cache[(step, local_rank)]
+                    act_out = act_out_cache[(step, local_rank)]
+                    
+                    # Apply received gradients to activations
+                    torch.autograd.backward(act_out, recv_grads.to(get_device()))
+
+                send_message(sock, ('forward_gradients', step, {
+                    "from_rank": local_rank, 
+                    "to_rank": local_rank - 1, 
+                    "gradients": act_in.grad.detach().cpu()
+                }))
+                
+                # Clean up activations after backward
+                del act_in_cache[(step, local_rank)]
+                del act_out_cache[(step, local_rank)]
+                 
                 
             elif command == 'down':
                 logger.info("Received exit command from server. Shutting down.")
@@ -328,31 +363,7 @@ def run_modelparallelism_worker(
                             "epoch": epoch + 1,
                         })
             
-            # Evaluation
-            if step % eval_steps == 0:
-                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
-                
-                if decoder_type_ppl:
-                    wandb.log({
-                        "step": step,
-                        "epoch": epoch + 1,
-                        "losses/val": val_loss,
-                        "ppl/val": val_ppl,
-                    })
-                    logger.info(
-                        f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
-                    )
-                else:
-                    wandb.log({
-                        "step": step,
-                        "epoch": epoch + 1,
-                        "losses/val": val_loss,
-                    })
-                    logger.info(
-                        f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
-                    )
-                model.train()
-        
+           
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed."
         )
@@ -362,5 +373,3 @@ def run_modelparallelism_worker(
 
 
 
-if __name__ == "__main__":
-    main()
