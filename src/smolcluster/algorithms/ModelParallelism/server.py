@@ -247,8 +247,10 @@ def run_modelparallelism_server(
             # act_in = None
             act_out = None
             activations = None
-            
-            # Cache server's activations WITH computation graph (no detach!)
+                        # Clear MPS cache before caching activations
+            if device.type == 'mps':
+                torch.mps.empty_cache()
+                        # Cache server's activations WITH computation graph (no detach!)
             # act_in_cache[(step, RANK)] = data
             act_out_cache[(step, RANK)] = leader_activations
             activations = leader_activations
@@ -281,6 +283,11 @@ def run_modelparallelism_server(
                     from_rank = payload['from_rank']
                     to_rank = payload['to_rank']
                     logger.info(f"[Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}")
+                    
+                    # Clear MPS cache after moving activations to device
+                    if device.type == 'mps':
+                        torch.mps.empty_cache()
+                    
                     # Cache worker's output activations
                     act_out_cache[(step, to_rank)] = activations
                         
@@ -288,7 +295,13 @@ def run_modelparallelism_server(
                     logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
                     break
             
-            del activations
+            # Clean up activations tensor
+            if activations is not None:
+                del activations
+            
+            # Clear MPS cache before backward phase
+            if device.type == 'mps':
+                torch.mps.empty_cache()
             
             for rank, worker_socket, addr in sorted(worker_queue, reverse=True):
                 
@@ -328,9 +341,13 @@ def run_modelparallelism_server(
                         # Backward - this updates model parameters
                         torch.autograd.backward(act_out, recv_grads.to(get_device()))
                         
-                        # No need to send gradients - server is rank 0 (first node)
-                        # del act_in_cache[(step, RANK)]
-                        del act_out_cache[(step, RANK)]
+                        # Clean up server activation cache
+                        if (step, RANK) in act_out_cache:
+                            del act_out_cache[(step, RANK)]
+                        
+                        # Clear MPS cache after backward pass
+                        if device.type == 'mps':
+                            torch.mps.empty_cache()
                         
                     else:
                         target_socket = next((s for r, s, _ in worker_queue if r == to_rank), None)
@@ -347,9 +364,18 @@ def run_modelparallelism_server(
                                             },
                                         ),
                                     )
-                    
+            
+            # Clean up any remaining cached activations from this step
+            keys_to_delete = [key for key in act_out_cache.keys() if key[0] == step]
+            for key in keys_to_delete:
+                del act_out_cache[key]
+            
             optimizer.step()    
             optimizer.zero_grad()
+            
+            # Clear GPU memory after optimizer step
+            if device.type == 'mps':
+                torch.mps.empty_cache()
             
             # Log training metrics
             wandb.log({
