@@ -85,6 +85,15 @@ def compute_loss(
  
     return loss
 
+
+def clear_gpu_cache(device: torch.device) -> None:
+    """Clear GPU cache for both MPS and CUDA devices."""
+    if device.type == 'mps':
+        torch.mps.empty_cache()
+    elif device.type == 'cuda':
+        torch.cuda.empty_cache()
+
+
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_worker)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -280,8 +289,7 @@ def run_modelparallelism_worker(
                 act_out_cache[(step, local_rank)] = act_out
                 
                 # Clear unnecessary intermediate tensors
-                if device.type == 'mps':
-                    torch.mps.empty_cache()
+                clear_gpu_cache(device)
                 
                 logger.info(f"[Step {step}] Finished generating activations for local_rank {local_rank}")
             
@@ -326,6 +334,7 @@ def run_modelparallelism_worker(
                 # Clean up activations cache after backward pass
                 del act_in_cache[(step, local_rank)]
                 del act_out_cache[(step, local_rank)]
+                clear_gpu_cache(device)
             
             
             elif command == 'forward_gradients':
@@ -352,6 +361,7 @@ def run_modelparallelism_worker(
                 # Clean up activations after backward
                 del act_in_cache[(step, local_rank)]
                 del act_out_cache[(step, local_rank)]
+                clear_gpu_cache(device)
                  
                 
             elif command == 'down':
@@ -362,8 +372,7 @@ def run_modelparallelism_worker(
             optimizer.zero_grad()
             
             # Clear GPU memory after optimizer step
-            if device.type == 'mps':
-                torch.mps.empty_cache()
+            clear_gpu_cache(device)
             
             # Log gradient norms if tracking enabled
             if track_gradients:

@@ -81,6 +81,39 @@ def evaluate(
     return avg_loss, ppl
 
 
+def clear_gpu_cache(device: torch.device) -> None:
+    """Clear GPU cache for both MPS and CUDA devices."""
+    if device.type == 'mps':
+        torch.mps.empty_cache()
+    elif device.type == 'cuda':
+        torch.cuda.empty_cache()
+
+
+def compute_train_loss(
+    final_activations: torch.Tensor,
+    target: torch.Tensor,
+    criterion: torch.nn.Module,
+    device: torch.device
+) -> float:
+    """Compute training loss from final activations and targets.
+    
+    Args:
+        final_activations: Output activations from the last worker [B, T, C]
+        target: Target labels [B, T]
+        criterion: Loss function
+        device: Device to compute on
+        
+    Returns:
+        Training loss as a float
+    """
+    target_device = target.to(device)
+    B, T, C = final_activations.shape
+    output = final_activations.view(B*T, C)
+    target_flat = target_device.view(B*T)
+    train_loss = criterion(output, target_flat).item()
+    return train_loss
+
+
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_server)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -247,10 +280,11 @@ def run_modelparallelism_server(
             # act_in = None
             act_out = None
             activations = None
-                        # Clear MPS cache before caching activations
-            if device.type == 'mps':
-                torch.mps.empty_cache()
-                        # Cache server's activations WITH computation graph (no detach!)
+            
+            # Clear GPU cache before caching activations
+            clear_gpu_cache(device)
+            
+            # Cache server's activations WITH computation graph (no detach!)
             # act_in_cache[(step, RANK)] = data
             act_out_cache[(step, RANK)] = leader_activations
             activations = leader_activations
@@ -284,9 +318,8 @@ def run_modelparallelism_server(
                     to_rank = payload['to_rank']
                     logger.info(f"[Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}")
                     
-                    # Clear MPS cache after moving activations to device
-                    if device.type == 'mps':
-                        torch.mps.empty_cache()
+                    # Clear GPU cache after moving activations to device
+                    clear_gpu_cache(device)
                     
                     # Cache worker's output activations
                     act_out_cache[(step, to_rank)] = activations
@@ -295,13 +328,24 @@ def run_modelparallelism_server(
                     logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
                     break
             
+            # Compute training loss using final activations from last worker
+            final_activations = act_out_cache[(step, NUM_WORKERS)]
+            train_loss = compute_train_loss(final_activations, target, criterion, device)
+            
+            # Log training loss
+            logger.info(f"[Step {step}] Train Loss: {train_loss:.4f}")
+            wandb.log({
+                "losses/train": train_loss,
+                "step": step,
+                "epoch": epoch + 1,
+            })
+            
             # Clean up activations tensor
             if activations is not None:
                 del activations
             
-            # Clear MPS cache before backward phase
-            if device.type == 'mps':
-                torch.mps.empty_cache()
+            # Clear GPU cache before backward phase
+            clear_gpu_cache(device)
             
             for rank, worker_socket, addr in sorted(worker_queue, reverse=True):
                 
@@ -345,9 +389,8 @@ def run_modelparallelism_server(
                         if (step, RANK) in act_out_cache:
                             del act_out_cache[(step, RANK)]
                         
-                        # Clear MPS cache after backward pass
-                        if device.type == 'mps':
-                            torch.mps.empty_cache()
+                        # Clear GPU cache after backward pass
+                        clear_gpu_cache(device)
                         
                     else:
                         target_socket = next((s for r, s, _ in worker_queue if r == to_rank), None)
@@ -374,8 +417,7 @@ def run_modelparallelism_server(
             optimizer.zero_grad()
             
             # Clear GPU memory after optimizer step
-            if device.type == 'mps':
-                torch.mps.empty_cache()
+            clear_gpu_cache(device)
             
             # Log training metrics
             wandb.log({
