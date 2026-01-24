@@ -322,15 +322,15 @@ def run_modelparallelism_server(
                     clear_gpu_cache(device)
                     
                     # Cache worker's output activations
-                    act_out_cache[(step, to_rank)] = activations
+                    act_out_cache[(step, from_rank)] = activations
                         
                 else:
                     logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
                     break
             
             # Compute training loss using final activations from last worker
-            final_activations = act_out_cache[(step, NUM_WORKERS)]
-            train_loss = compute_train_loss(final_activations, target, criterion, device)
+      
+            train_loss = compute_train_loss(activations, target, criterion, device)
             
             # Log training loss
             logger.info(f"[Step {step}] Train Loss: {train_loss:.4f}")
