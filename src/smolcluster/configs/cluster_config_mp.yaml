@@ -1,12 +1,11 @@
 host_ip:
-  mini1: "127.0.0.1"
-  mini2: "127.0.0.1"
-  mini3: "127.0.0.1"
-  pi4: "127.0.0.1"
-  macbook: "127.0.0.1"
-  pi5: "127.0.0.1"
-  win: "127.0.0.1"
-  localhost: "127.0.0.1"
+  mini1: "10.10.0.1"
+  mini2: "10.10.0.1"
+  mini3: "10.10.0.1"
+  pi4: "10.10.0.1"
+  macbook: "10.10.0.1"
+  pi5: "192.168.50.1"
+  win: "10.10.0.1"
 
 port: 65432
 
@@ -19,8 +18,8 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-workers: [localhost, localhost]  # Worker hostnames (will run as separate processes)
-server: localhost  # Server hostname
+workers: [mini2, mini3]  # Worker hostnames
+server: mini1  # Server hostname
 
 #Model parallelism specific configs
 num_nodes: 3
