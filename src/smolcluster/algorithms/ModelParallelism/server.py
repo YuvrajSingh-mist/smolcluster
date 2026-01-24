@@ -414,7 +414,7 @@ def run_modelparallelism_server(
                 del act_out_cache[key]
             
             optimizer.step()    
-            optimizer.zero_grad()
+            
             
             # Clear GPU memory after optimizer step
             clear_gpu_cache(device)
@@ -437,6 +437,8 @@ def run_modelparallelism_server(
                             "step": step,
                             "epoch": epoch + 1,
                         })
+            
+            optimizer.zero_grad()
             
             # Evaluation
             if step % eval_steps == 0 and RANK == 0:
