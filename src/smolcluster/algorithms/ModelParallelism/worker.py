@@ -279,6 +279,10 @@ def run_modelparallelism_worker(
                 act_in_cache[(step, local_rank)] = act_in
                 act_out_cache[(step, local_rank)] = act_out
                 
+                # Clear unnecessary intermediate tensors
+                if device.type == 'mps':
+                    torch.mps.empty_cache()
+                
                 logger.info(f"[Step {step}] Finished generating activations for local_rank {local_rank}")
             
                 logger.info(f"[Step {step}] Sending activations from rank {local_rank} to rank {local_rank + 1}")
@@ -318,6 +322,11 @@ def run_modelparallelism_worker(
                     "to_rank": local_rank - 1, 
                     "gradients": act_in.grad.detach().cpu()
                 }))
+                
+                # Clean up activations cache after backward pass
+                del act_in_cache[(step, local_rank)]
+                del act_out_cache[(step, local_rank)]
+            
             
             elif command == 'forward_gradients':
                 
@@ -351,6 +360,10 @@ def run_modelparallelism_worker(
             
             optimizer.step()
             optimizer.zero_grad()
+            
+            # Clear GPU memory after optimizer step
+            if device.type == 'mps':
+                torch.mps.empty_cache()
             
             # Log gradient norms if tracking enabled
             if track_gradients:

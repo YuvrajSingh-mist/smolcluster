@@ -228,7 +228,7 @@ def run_modelparallelism_server(
     logger.info(f"Starting training for {model_name}.")
   
     # Initialize activation caches
-    act_in_cache = {}
+    # act_in_cache = {}
     act_out_cache = {}
     
     logger.info(f"Starting training for {num_epochs} epochs.")
@@ -244,12 +244,12 @@ def run_modelparallelism_server(
                 device, model_layers, data
             )
             leader_activations.requires_grad_(True)
-            act_in = None
+            # act_in = None
             act_out = None
             activations = None
             
             # Cache server's activations WITH computation graph (no detach!)
-            act_in_cache[(step, RANK)] = data
+            # act_in_cache[(step, RANK)] = data
             act_out_cache[(step, RANK)] = leader_activations
             activations = leader_activations
            
@@ -287,7 +287,8 @@ def run_modelparallelism_server(
                 else:
                     logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
                     break
-                    
+            
+            del activations
             
             for rank, worker_socket, addr in sorted(worker_queue, reverse=True):
                 
@@ -328,7 +329,9 @@ def run_modelparallelism_server(
                         torch.autograd.backward(act_out, recv_grads.to(get_device()))
                         
                         # No need to send gradients - server is rank 0 (first node)
-                    
+                        # del act_in_cache[(step, RANK)]
+                        del act_out_cache[(step, RANK)]
+                        
                     else:
                         target_socket = next((s for r, s, _ in worker_queue if r == to_rank), None)
                         if target_socket:
