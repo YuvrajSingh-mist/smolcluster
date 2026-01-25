@@ -367,6 +367,12 @@ def run_modelparallelism_worker(
                 optimizer.step()
                 logger.info(f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}")
                 
+                wandb.log({
+                    "step": step,
+                    "losses/train": total_loss / (batch_idx + 1),
+                    "epoch": epoch + 1,
+                })
+                    
                 # Send input gradients to previous worker
                 send_message(sock, ('forward_gradients', step, {
                     "from_rank": local_rank, 
@@ -374,11 +380,7 @@ def run_modelparallelism_worker(
                     "gradients": act_in.grad.detach().cpu()
                 }))
                 
-                wandb.log({
-                    "step": step,
-                    "losses/train": total_loss / (batch_idx + 1),
-                    "epoch": epoch + 1,
-                })
+            
                 # Clean up activations cache after backward pass
                 del act_in_cache[(step, local_rank)]
                 del act_out_cache[(step, local_rank)]
