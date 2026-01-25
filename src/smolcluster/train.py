@@ -185,7 +185,6 @@ def run_server(hostname: str, algorithm: str = "syncps"):
     elif algorithm == "mp":
         run_modelparallelism_server(
             model=model,
-            optimizer=optimizer,
             train_loader=train_loader,
             val_loader=val_loader,
             config=gpt_config,
@@ -328,7 +327,6 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
     elif algorithm == "mp":
         run_modelparallelism_worker(
             model=model,
-            optimizer=optimizer,
             train_loader=train_loader,
             val_loader=val_loader,
             config=gpt_config,

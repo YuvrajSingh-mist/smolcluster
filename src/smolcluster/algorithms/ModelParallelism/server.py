@@ -185,7 +185,6 @@ logger = logging.getLogger("[LEADER]")
 
 def run_modelparallelism_server(
     model,
-    optimizer,
     train_loader,
     val_loader,
     config,
@@ -199,7 +198,6 @@ def run_modelparallelism_server(
     
     Args:
         model: PyTorch model to train
-        optimizer: Optimizer instance
         train_loader: Training data loader
         val_loader: Validation data loader
         config: Training configuration dict (nn_config)
@@ -228,6 +226,7 @@ def run_modelparallelism_server(
     track_gradients = config["track_gradients"]
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     learning_rate = config["learning_rate"]
+    grad_clip_norm = config.get("grad_clip_norm", 0.0)
     num_workers = cluster_config["num_workers"]
     model_name = cluster_config["model_name"]
     recv_grads = None
@@ -247,6 +246,12 @@ def run_modelparallelism_server(
     else:
         get_lr_fn = None
         logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
+    
+    # Gradient clipping
+    if grad_clip_norm > 0.0:
+        logger.info(f"Gradient clipping enabled: max_norm={grad_clip_norm}")
+    else:
+        logger.info("Gradient clipping disabled")
     
     # Create socket
     HOST_IP = "0.0.0.0"
@@ -278,6 +283,10 @@ def run_modelparallelism_server(
     
     model_layers = model_layers.to(get_device())
     logger.info(f"Server loaded {len(model_layers)} layers")
+    
+    # Create optimizer for server's layers only
+    optimizer = torch.optim.AdamW(model_layers.parameters(), lr=learning_rate)
+    logger.info(f"Created optimizer for server with lr={learning_rate}")
     
     # Create and bind socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -473,6 +482,7 @@ def run_modelparallelism_server(
                         # Clear GPU cache after backward pass
                         clear_gpu_cache(device)
                         
+                        
                     else:
                         target_socket = next((s for r, s, _ in worker_queue if r == to_rank), None)
                         if target_socket:
@@ -493,6 +503,12 @@ def run_modelparallelism_server(
             keys_to_delete = [key for key in act_out_cache.keys() if key[0] == step]
             for key in keys_to_delete:
                 del act_out_cache[key]
+            
+            # Apply gradient clipping
+            if grad_clip_norm > 0.0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(model_layers.parameters(), grad_clip_norm)
+                if step % 100 == 0:  # Log occasionally to avoid spam
+                    logger.info(f"[Step {step}] Gradient norm before clipping: {grad_norm:.4f}")
             
             optimizer.step()    
             

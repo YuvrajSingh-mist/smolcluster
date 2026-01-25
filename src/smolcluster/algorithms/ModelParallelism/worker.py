@@ -153,7 +153,6 @@ def connect_to_server(
 
 def run_modelparallelism_worker(
     model,
-    optimizer,
     train_loader,
     val_loader,
     config,
@@ -170,7 +169,6 @@ def run_modelparallelism_worker(
     
     Args:
         model: PyTorch model to train
-        optimizer: Optimizer instance
         train_loader: Training data loader
         val_loader: Validation data loader
         config: Training configuration dict (nn_config)
@@ -233,6 +231,11 @@ def run_modelparallelism_worker(
     
     model_layers = model_layers.to(get_device())
     logger.info(f"Loaded {len(model_layers)} layers for worker {local_rank}")
+    
+    # Create optimizer for worker's layers only
+    learning_rate = config["learning_rate"]
+    optimizer = torch.optim.AdamW(model_layers.parameters(), lr=learning_rate)
+    logger.info(f"Created optimizer for worker {local_rank} with lr={learning_rate}")
     
     # Connect to server
     sock = connect_to_server(HOST_IP, PORT)
@@ -405,11 +408,11 @@ def run_modelparallelism_worker(
             
             # Log gradient norms if tracking enabled
             if track_gradients:
-                for name, param in model.named_parameters():
+                for name, param in model_layers.named_parameters():
                     if param.grad is not None:
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
                         wandb.log({
-                            f"gradients/worker_layer_{name}": grad_norm,
+                            f"gradients/worker_{local_rank}_layer_{name}": grad_norm,
                             "step": step,
                             "epoch": epoch + 1,
                         })
