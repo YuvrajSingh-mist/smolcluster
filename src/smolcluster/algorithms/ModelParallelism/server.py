@@ -55,71 +55,63 @@ def compute_leader_activations(
 
 
 def evaluate(
-    device: torch.device,
-    model_layers: List[torch.nn.Module],
-    val_loader: DataLoader,
+    device: torch.device, 
+    model_layers: torch.nn.Module, 
+    val_loader: DataLoader, 
     criterion: torch.nn.Module,
     worker_queue: list,
-    num_workers: int,
     decoder_type_ppl: bool = False
 ) -> tuple[float, Optional[float]]:
-    """Evaluate model on validation set using distributed inference across workers."""
+    """Evaluate model on validation set using distributed model layers.
+    
+    Activations flow through server layers -> worker 1 -> worker 2 -> back to server
+    for loss computation, matching the training forward pass.
+    """
+    model_layers.eval()
     total_val_loss = 0.0
-    
-    # Set model to eval mode
-    for layer in model_layers:
-        layer.eval()
-    
+ 
     with torch.no_grad():
-        for val_data, val_target in val_loader:
-            # Server computes leader activations
-            val_data = val_data.to(device)
+        for data, target in val_loader:
+            data = data.to(device)
+            target = target.to(device)
             
-            # Forward through server layers
-            out = model_layers[0](val_data)
-            pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=device)
-            out = out + model_layers[1](pos_ids)
+            # Server computes its layer activations
+            activations = compute_leader_activations(device, model_layers, data)
             
-            for layer in model_layers[2:]:
-                output = layer(out)
-                out = output[0] if isinstance(output, tuple) else output
-            
-            activations = out
-            
-            # Send activations through workers
+            # Forward through workers in rank order
             for rank, worker_socket, addr in sorted(worker_queue):
                 send_message(
                     worker_socket,
                     (
                         "evaluate_forward",
-                        0,  # dummy step for eval
+                        0,  # eval_step placeholder
                         {
                             "activations": activations.detach().cpu(),
                         },
                     ),
                 )
                 
+                # Receive activations from this worker
                 message = receive_message(worker_socket)
-                command, recv_step, payload = message
+                command, _, payload = message
                 
                 if command == 'eval_activations':
                     activations = payload['activations'].to(device)
+                else:
+                    logger.error(f"Unexpected eval command from worker {rank}: {command}")
+                    break
             
-            # Compute loss from final activations
-            val_target = val_target.to(device)
+            # Compute loss using final activations from last worker
             B, T, C = activations.shape
             output = activations.view(B*T, C)
-            target = val_target.view(B*T)
-            loss = criterion(output, target)
+            target_flat = target.view(B*T)
+            loss = criterion(output, target_flat)
             total_val_loss += loss.item()
-    
-    # Set model back to train mode
-    for layer in model_layers:
-        layer.train()
     
     avg_loss = total_val_loss / len(val_loader)
     ppl = math.exp(avg_loss) if decoder_type_ppl else None
     
+    model_layers.train()
     return avg_loss, ppl
 
 
@@ -531,7 +523,7 @@ def run_modelparallelism_server(
             
             # Evaluation
             if step % eval_steps == 0 and RANK == 0:
-                val_loss, val_ppl = evaluate(device, model_layers, val_loader, criterion, worker_queue, NUM_WORKERS, decoder_type_ppl)
+                val_loss, val_ppl = evaluate(device, model_layers, val_loader, criterion, worker_queue, decoder_type_ppl)
                 
                 if decoder_type_ppl:
                     wandb.log({
@@ -552,7 +544,6 @@ def run_modelparallelism_server(
                     logger.info(
                         f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     )
-                model.train()
             
                 # Clean up activations tensor
                 if activations is not None:

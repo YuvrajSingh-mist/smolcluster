@@ -263,40 +263,42 @@ def run_modelparallelism_worker(
             step = epoch * len(train_loader) + batch_idx
             logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server")
             
-            # Receive activations from server/previous worker
+            # Receive message from server
             message = receive_message(sock)
             command, recv_step, payload = message
             
-            assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
-            
-            if command == 'evaluate_forward':
-                logger.info(f"[Step {step}] Received evaluation forward pass request for rank {local_rank}.")
+            # Handle evaluation messages (doesn't affect step count)
+            while command == 'evaluate_forward':
+                logger.info(f"[Eval] Worker {local_rank} received evaluation activations")
                 
                 # Get activations from previous node
-                act_in = payload['activations'].to(get_device())
+                eval_activations = payload['activations'].to(get_device())
                 
-                out = act_in
-                # Forward through this worker's layers (eval mode - no grad)
+                # Forward through this worker's layers (no gradients for eval)
                 with torch.no_grad():
+                    model_layers.eval()
+                    out = eval_activations
                     for layer in model_layers:
-                        layer.eval()
                         out = layer(out)
                         out = out[0] if isinstance(out, tuple) else out
-                    
-                    # Set back to train mode
-                    for layer in model_layers:
-                        layer.train()
+                    model_layers.train()
                 
-                # Send activations to next worker/server
-                send_message(sock, ('eval_activations', step, {
-                    "from_rank": local_rank,
-                    "to_rank": local_rank + 1,
+                logger.info(f"[Eval] Worker {local_rank} sending evaluation activations")
+                
+                # Send activations to server
+                send_message(sock, ('eval_activations', 0, {
                     "activations": out.detach().cpu()
                 }))
                 
-                # continue  # Skip to next iteration
+                clear_gpu_cache(device)
+                
+                # Get next message (should be training message)
+                message = receive_message(sock)
+                command, recv_step, payload = message
             
-            elif command == 'generate_activations_train':
+            assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
+            
+            if command == 'generate_activations_train':
                 logger.info(f"[Step {step}] Received command to generate activations for rank {local_rank}.")
                 
                 # Get activations from previous node
