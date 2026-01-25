@@ -265,6 +265,16 @@ def run_modelparallelism_server(
     model = model.to(get_device())
     logger.info(f"Model initialized on device: {get_device()}")
     
+    # Log GPU utilization info
+    device_info = get_device()
+    if device_info.type == 'mps':
+        logger.info(f"Server using MPS (Apple Silicon GPU)")
+    elif device_info.type == 'cuda':
+        logger.info(f"Server using CUDA device: {torch.cuda.get_device_name()}")
+        logger.info(f"Server CUDA memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    else:
+        logger.info(f"Server using CPU - NO GPU ACCELERATION!")
+    
     # Log model summary
     model_summary = str(torchinfo.summary(model, verbose=0, device=device))
     logger.info("Model Summary:")
@@ -478,7 +488,7 @@ def run_modelparallelism_server(
                         
                         optimizer.zero_grad()
                         # Backward - this updates model parameters
-                        torch.autograd.backward(act_out, recv_grads.to(get_device()))
+                        torch.autograd.backward(act_out.to(get_device()), recv_grads.to(get_device()))
                         optimizer.step()   
                         
                         # Clean up server activation cache

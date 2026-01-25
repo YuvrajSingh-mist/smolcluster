@@ -218,6 +218,16 @@ def run_modelparallelism_worker(
     model = model.to(get_device())
     logger.info(f"Model initialized on device: {get_device()}")
     
+    # Log GPU utilization info
+    device_info = get_device()
+    if device_info.type == 'mps':
+        logger.info(f"Worker {local_rank} using MPS (Apple Silicon GPU)")
+    elif device_info.type == 'cuda':
+        logger.info(f"Worker {local_rank} using CUDA device: {torch.cuda.get_device_name()}")
+        logger.info(f"Worker {local_rank} CUDA memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+    else:
+        logger.info(f"Worker {local_rank} using CPU - NO GPU ACCELERATION!")
+    
     # Load model layers for this worker
     num_layers = config['num_layers']
     logger.info(f"Loading worker's share of model layers (rank {local_rank})...")
