@@ -18,7 +18,6 @@ from smolcluster.utils.common_utils import (
     receive_message,
     send_message,
 )
-from smolcluster.utils.device import get_device
 from smolcluster.utils.layers import (
     get_model_per_node
 )
@@ -69,6 +68,7 @@ def compute_loss(
     act: torch.Tensor,
     target: torch.Tensor,
     criterion: torch.nn.functional,
+    device: torch.device,
 ) -> torch.Tensor:
     
     """Compute loss for given data and target."""
@@ -76,8 +76,8 @@ def compute_loss(
     # data, target = data.to(get_device()), target.to(get_device())
     # output = model(data)
     # B, T, C = output.shape
-    act = act.to(get_device())
-    target = target.to(get_device())
+    act = act.to(device)
+    target = target.to(device)
     B, T, C = act.shape
     output = act.view(B*T, C)
     target = target.view(B*T)
@@ -215,18 +215,8 @@ def run_modelparallelism_worker(
     logger.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
     
     # Initialize model
-    model = model.to(get_device())
-    logger.info(f"Model initialized on device: {get_device()}")
-    
-    # Log GPU utilization info
-    device_info = get_device()
-    if device_info.type == 'mps':
-        logger.info(f"Worker {local_rank} using MPS (Apple Silicon GPU)")
-    elif device_info.type == 'cuda':
-        logger.info(f"Worker {local_rank} using CUDA device: {torch.cuda.get_device_name()}")
-        logger.info(f"Worker {local_rank} CUDA memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    else:
-        logger.info(f"Worker {local_rank} using CPU - NO GPU ACCELERATION!")
+    model = model.to(device)
+    logger.info(f"Model initialized on device: {device}")
     
     # Load model layers for this worker
     num_layers = config['num_layers']
@@ -239,7 +229,7 @@ def run_modelparallelism_worker(
         total_layers=num_layers
     )
     
-    model_layers = model_layers.to(get_device())
+    model_layers = model_layers.to(device)
     logger.info(f"Loaded {len(model_layers)} layers for worker {local_rank}")
     
     # Create optimizer for worker's layers only
@@ -275,8 +265,8 @@ def run_modelparallelism_worker(
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
             logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server")
-            data = data.to(get_device())
-            target = target.to(get_device())
+            data = data.to(device)
+            target = target.to(device)
             
             # Receive message from server
             message = receive_message(sock)
@@ -287,7 +277,7 @@ def run_modelparallelism_worker(
                 logger.info(f"[Eval] Worker {local_rank} received evaluation activations")
                 
                 # Get activations from previous node
-                eval_activations = payload['activations'].to(get_device())
+                eval_activations = payload['activations'].to(device)
                 
                 # Forward through this worker's layers (no gradients for eval)
                 with torch.no_grad():
@@ -317,7 +307,7 @@ def run_modelparallelism_worker(
                 logger.info(f"[Step {step}] Received command to generate activations for rank {local_rank}.")
                 
                 # Get activations from previous node
-                act_in = payload['activations'].to(get_device())
+                act_in = payload['activations'].to(device)
                 act_in.requires_grad_(True) #has activations from all prev layers
                 
                 out = act_in
@@ -362,7 +352,7 @@ def run_modelparallelism_worker(
                 act_in = act_in_cache[(step, local_rank)]
                 act_out = act_out_cache[(step, local_rank)]
                 
-                loss = compute_loss(act_out, target, criterion)
+                loss = compute_loss(act_out, target, criterion, device)
                 total_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
@@ -395,7 +385,7 @@ def run_modelparallelism_worker(
                     act_out = act_out_cache[(step, local_rank)]
                     
                     # Apply received gradients to activations
-                    torch.autograd.backward(act_out, recv_grads.to(get_device()))
+                    torch.autograd.backward(act_out, recv_grads.to(device))
 
                 send_message(sock, ('forward_gradients', step, {
                     "from_rank": local_rank, 

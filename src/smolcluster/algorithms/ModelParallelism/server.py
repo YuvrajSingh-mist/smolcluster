@@ -19,8 +19,6 @@ from smolcluster.utils.common_utils import (
     receive_message,
     send_message,
 )
-from smolcluster.utils.device import get_device
-
 from smolcluster.utils.layers import (
     get_model_per_node
     
@@ -43,7 +41,7 @@ def compute_leader_activations(
     
     out = model_layers[0](data)
 
-    pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=get_device())
+    pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=device)
     out = out + model_layers[1](pos_ids)
     
     for layer in model_layers[2:]:
@@ -262,18 +260,8 @@ def run_modelparallelism_server(
     workers = {}
 
     # Load tokenizer
-    model = model.to(get_device())
-    logger.info(f"Model initialized on device: {get_device()}")
-    
-    # Log GPU utilization info
-    device_info = get_device()
-    if device_info.type == 'mps':
-        logger.info(f"Server using MPS (Apple Silicon GPU)")
-    elif device_info.type == 'cuda':
-        logger.info(f"Server using CUDA device: {torch.cuda.get_device_name()}")
-        logger.info(f"Server CUDA memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    else:
-        logger.info(f"Server using CPU - NO GPU ACCELERATION!")
+    model = model.to(device)
+    logger.info(f"Model initialized on device: {device}")
     
     # Log model summary
     model_summary = str(torchinfo.summary(model, verbose=0, device=device))
@@ -292,7 +280,7 @@ def run_modelparallelism_server(
         total_layers=num_layers
     )
     
-    model_layers = model_layers.to(get_device())
+    model_layers = model_layers.to(device)
     logger.info(f"Server loaded {len(model_layers)} layers")
     
     # Create optimizer for server's layers only
@@ -368,8 +356,8 @@ def run_modelparallelism_server(
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
              
-            data = data.to(get_device())
-            target = target.to(get_device())
+            data = data.to(device)
+            target = target.to(device)
             # Update learning rate if scheduler enabled
             if get_lr_fn is not None:
                 current_lr = get_lr_fn(step)
@@ -419,7 +407,7 @@ def run_modelparallelism_server(
                 assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
                 
                 if command == 'forward_activations':
-                    activations = payload['activations'].to(get_device())
+                    activations = payload['activations'].to(device)
                     from_rank = payload['from_rank']
                     to_rank = payload['to_rank']
                     logger.info(f"[Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}")
@@ -484,11 +472,11 @@ def run_modelparallelism_server(
                         logger.info(f"[Step {step}] Computing backward pass for server")
                         # Restore server's activations from cache (has computation graph)
                         act_out = act_out_cache[(step, RANK)]
-                        act_out = act_out.to(get_device())
+                        act_out = act_out.to(device)
                         
                         optimizer.zero_grad()
                         # Backward - this updates model parameters
-                        torch.autograd.backward(act_out.to(get_device()), recv_grads.to(get_device()))
+                        torch.autograd.backward(act_out, recv_grads.to(device))
                         optimizer.step()   
                         
                         # Clean up server activation cache
