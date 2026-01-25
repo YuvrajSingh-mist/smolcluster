@@ -396,6 +396,7 @@ def run_modelparallelism_server(
                         step,
                         {
                             "activations": activations.detach().cpu(),
+                            "targets": target.detach().cpu() if rank == NUM_WORKERS else None,
                         },
                     ),
                 )
@@ -422,17 +423,17 @@ def run_modelparallelism_server(
                     logger.error(f"Unexpected command from worker {rank}: {command}. Cannot continue.")
                     break
             
-            # Compute training loss using final activations from last worker
+            # # Compute training loss using final activations from last worker
       
-            train_loss = compute_train_loss(activations, target, criterion, device)
+            # train_loss = compute_train_loss(activations, target, criterion, device)
             
-            # Log training loss
-            logger.info(f"[Step {step}] Train Loss: {train_loss:.4f}")
-            wandb.log({
-                "losses/train": train_loss,
-                "step": step,
-                "epoch": epoch + 1,
-            })
+            # # Log training loss
+            # logger.info(f"[Step {step}] Train Loss: {train_loss:.4f}")
+            # wandb.log({
+            #     "losses/train": train_loss,
+            #     "step": step,
+            #     "epoch": epoch + 1,
+            # })
             
            
             # Clear GPU cache before backward phase

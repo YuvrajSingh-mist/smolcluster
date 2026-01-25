@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
 import yaml
@@ -65,11 +65,11 @@ def compute_worker_activations(
 
 
 def compute_loss(
-    act: torch.Tensor,
-    target: torch.Tensor,
-    criterion: torch.nn.functional,
+    act: Any,
+    target: Any,
+    criterion: Any,
     device: torch.device,
-) -> torch.Tensor:
+) -> Any:
     
     """Compute loss for given data and target."""
     # # model.eval()
@@ -254,6 +254,7 @@ def run_modelparallelism_worker(
     # Initialize activation caches
     act_in_cache = {}
     act_out_cache = {}
+    target_cache = {}
     
     logger.info("Starting training loop...")
     
@@ -308,6 +309,8 @@ def run_modelparallelism_worker(
                 
                 # Get activations from previous node
                 act_in = payload['activations'].to(device)
+                if payload.get('targets') is not None:
+                    target_cache[step] = payload['targets']
                 act_in.requires_grad_(True) #has activations from all prev layers
                 
                 out = act_in
@@ -352,7 +355,12 @@ def run_modelparallelism_worker(
                 act_in = act_in_cache[(step, local_rank)]
                 act_out = act_out_cache[(step, local_rank)]
                 
-                loss = compute_loss(act_out, target, criterion, device)
+                target_for_loss = target_cache.pop(step, None)
+                if target_for_loss is None:
+                    target_for_loss = target
+                else:
+                    target_for_loss = target_for_loss.to(device)
+                loss = compute_loss(act_out, target_for_loss, criterion, device)
                 total_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
@@ -366,6 +374,11 @@ def run_modelparallelism_worker(
                     "gradients": act_in.grad.detach().cpu()
                 }))
                 
+                wandb.log({
+                    "step": step,
+                    "losses/train": total_loss / (batch_idx + 1),
+                    "epoch": epoch + 1,
+                })
                 # Clean up activations cache after backward pass
                 del act_in_cache[(step, local_rank)]
                 del act_out_cache[(step, local_rank)]
