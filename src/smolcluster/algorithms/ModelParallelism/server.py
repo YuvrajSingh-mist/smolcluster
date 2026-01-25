@@ -340,10 +340,7 @@ def run_modelparallelism_server(
                 "epoch": epoch + 1,
             })
             
-            # Clean up activations tensor
-            if activations is not None:
-                del activations
-            
+           
             # Clear GPU cache before backward phase
             clear_gpu_cache(device)
             
@@ -442,7 +439,7 @@ def run_modelparallelism_server(
             
             # Evaluation
             if step % eval_steps == 0 and RANK == 0:
-                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
+                val_loss, val_ppl = evaluate(device, activations, val_loader, criterion, decoder_type_ppl)
                 
                 if decoder_type_ppl:
                     wandb.log({
@@ -464,6 +461,10 @@ def run_modelparallelism_server(
                         f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     )
                 model.train()
+            
+                # Clean up activations tensor
+                if activations is not None:
+                    del activations
             
             gc.collect()
             activations = None
