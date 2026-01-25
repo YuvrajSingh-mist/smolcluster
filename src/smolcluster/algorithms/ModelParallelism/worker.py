@@ -68,7 +68,7 @@ def compute_worker_activations(
 def compute_loss(
     act: torch.Tensor,
     target: torch.Tensor,
-  
+    criterion: torch.nn.functional,
 ) -> torch.Tensor:
     
     """Compute loss for given data and target."""
@@ -76,11 +76,11 @@ def compute_loss(
     # data, target = data.to(get_device()), target.to(get_device())
     # output = model(data)
     # B, T, C = output.shape
+    act = act.to(get_device())
     target = target.to(get_device())
     B, T, C = act.shape
     output = act.view(B*T, C)
     target = target.view(B*T)
-    criterion = torch.nn.CrossEntropyLoss()
     loss = criterion(output, target)
  
     return loss
@@ -265,6 +265,8 @@ def run_modelparallelism_worker(
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
             logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server")
+            data = data.to(get_device())
+            target = target.to(get_device())
             
             # Receive message from server
             message = receive_message(sock)
@@ -350,7 +352,7 @@ def run_modelparallelism_worker(
                 act_in = act_in_cache[(step, local_rank)]
                 act_out = act_out_cache[(step, local_rank)]
                 
-                loss = compute_loss(act_out, target)
+                loss = compute_loss(act_out, target, criterion)
                 total_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()

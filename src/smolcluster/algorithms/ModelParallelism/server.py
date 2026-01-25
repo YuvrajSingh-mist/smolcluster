@@ -140,6 +140,7 @@ def compute_train_loss(
     Returns:
         Training loss as a float
     """
+    final_actvations = final_activations.to(device)
     target_device = target.to(device)
     B, T, C = final_activations.shape
     output = final_activations.view(B*T, C)
@@ -356,7 +357,9 @@ def run_modelparallelism_server(
 
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            
+             
+            data = data.to(get_device())
+            target = target.to(get_device())
             # Update learning rate if scheduler enabled
             if get_lr_fn is not None:
                 current_lr = get_lr_fn(step)
@@ -471,6 +474,7 @@ def run_modelparallelism_server(
                         logger.info(f"[Step {step}] Computing backward pass for server")
                         # Restore server's activations from cache (has computation graph)
                         act_out = act_out_cache[(step, RANK)]
+                        act_out = act_out.to(get_device())
                         
                         optimizer.zero_grad()
                         # Backward - this updates model parameters
