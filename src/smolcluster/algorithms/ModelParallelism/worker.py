@@ -294,9 +294,9 @@ def run_modelparallelism_worker(
                     "activations": out.detach().cpu()
                 }))
                 
-                continue  # Skip to next iteration
+                # continue  # Skip to next iteration
             
-            if command == 'generate_activations_train':
+            elif command == 'generate_activations_train':
                 logger.info(f"[Step {step}] Received command to generate activations for rank {local_rank}.")
                 
                 # Get activations from previous node
