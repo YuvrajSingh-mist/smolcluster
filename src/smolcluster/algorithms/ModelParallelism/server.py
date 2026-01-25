@@ -539,7 +539,7 @@ def run_modelparallelism_server(
             
             
             # Evaluation
-            if step % eval_steps == 0 and RANK == 0:
+            if step % eval_steps == 0 and step != 0:
                 val_loss, val_ppl = evaluate(device, model_layers, val_loader, criterion, worker_queue, decoder_type_ppl)
                 
                 if decoder_type_ppl:
