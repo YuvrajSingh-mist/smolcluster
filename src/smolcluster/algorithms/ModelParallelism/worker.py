@@ -258,7 +258,7 @@ def run_modelparallelism_worker(
     logger.info("Starting training loop...")
     
     for epoch in range(num_epochs):
-        model.train()
+        model_layers.train()
         total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
         

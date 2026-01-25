@@ -350,7 +350,7 @@ def run_modelparallelism_server(
     
     logger.info(f"Starting training for {num_epochs} epochs.")
     for epoch in range(num_epochs):
-        model.train()
+        model_layers.train()
      
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
