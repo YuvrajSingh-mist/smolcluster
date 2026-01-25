@@ -352,8 +352,9 @@ def run_modelparallelism_worker(
                 
                 loss = compute_loss(act_out, target)
                 total_loss += loss.item()
+                optimizer.zero_grad()
                 loss.backward()
-                
+                optimizer.step()
                 logger.info(f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}")
                 
                 # Send input gradients to previous worker
@@ -400,7 +401,7 @@ def run_modelparallelism_worker(
                 logger.info("Received exit command from server. Shutting down.")
                 break
             
-            optimizer.step()
+          
             
             
             # Clear GPU memory after optimizer step
@@ -416,7 +417,7 @@ def run_modelparallelism_worker(
                             "step": step,
                             "epoch": epoch + 1,
                         })
-            optimizer.zero_grad()
+            
            
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed."

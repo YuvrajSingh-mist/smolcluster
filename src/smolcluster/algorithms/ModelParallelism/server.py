@@ -472,8 +472,10 @@ def run_modelparallelism_server(
                         # Restore server's activations from cache (has computation graph)
                         act_out = act_out_cache[(step, RANK)]
                         
+                        optimizer.zero_grad()
                         # Backward - this updates model parameters
                         torch.autograd.backward(act_out, recv_grads.to(get_device()))
+                        optimizer.step()   
                         
                         # Clean up server activation cache
                         if (step, RANK) in act_out_cache:
@@ -510,7 +512,7 @@ def run_modelparallelism_server(
                 if step % 100 == 0:  # Log occasionally to avoid spam
                     logger.info(f"[Step {step}] Gradient norm before clipping: {grad_norm:.4f}")
             
-            optimizer.step()    
+        
             
             
             # Clear GPU memory after optimizer step
@@ -535,7 +537,6 @@ def run_modelparallelism_server(
                             "epoch": epoch + 1,
                         })
             
-            optimizer.zero_grad()
             
             # Evaluation
             if step % eval_steps == 0 and RANK == 0:
