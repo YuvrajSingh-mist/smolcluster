@@ -360,6 +360,7 @@ def run_modelparallelism_worker(
                     target_for_loss = target
                 else:
                     target_for_loss = target_for_loss.to(device)
+                    
                 loss = compute_loss(act_out, target_for_loss, criterion, device)
                 total_loss += loss.item()
                 optimizer.zero_grad()
@@ -369,10 +370,10 @@ def run_modelparallelism_worker(
                 
                 wandb.log({
                     "step": step,
-                    "losses/train": total_loss / (batch_idx + 1),
+                    f"losses/train_{local_rank}": total_loss / (batch_idx + 1),
                     "epoch": epoch + 1,
                 })
-                    
+                logger.info(f"[Step {step}] Training loss: {total_loss / (batch_idx + 1):.4f}")
                 # Send input gradients to previous worker
                 send_message(sock, ('forward_gradients', step, {
                     "from_rank": local_rank, 
