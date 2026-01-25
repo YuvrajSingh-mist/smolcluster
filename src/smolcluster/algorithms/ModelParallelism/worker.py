@@ -269,6 +269,33 @@ def run_modelparallelism_worker(
             
             assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
             
+            if command == 'evaluate_forward':
+                logger.info(f"[Step {step}] Received evaluation forward pass request for rank {local_rank}.")
+                
+                # Get activations from previous node
+                act_in = payload['activations'].to(get_device())
+                
+                out = act_in
+                # Forward through this worker's layers (eval mode - no grad)
+                with torch.no_grad():
+                    for layer in model_layers:
+                        layer.eval()
+                        out = layer(out)
+                        out = out[0] if isinstance(out, tuple) else out
+                    
+                    # Set back to train mode
+                    for layer in model_layers:
+                        layer.train()
+                
+                # Send activations to next worker/server
+                send_message(sock, ('eval_activations', step, {
+                    "from_rank": local_rank,
+                    "to_rank": local_rank + 1,
+                    "activations": out.detach().cpu()
+                }))
+                
+                continue  # Skip to next iteration
+            
             if command == 'generate_activations_train':
                 logger.info(f"[Step {step}] Received command to generate activations for rank {local_rank}.")
                 
