@@ -114,6 +114,34 @@ def compute_train_loss(
     return train_loss
 
 
+def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
+    """Create learning rate schedule with linear warmup and cosine decay.
+    
+    Args:
+        warmup_iters: Number of warmup iterations
+        max_iters: Total training iterations
+        learning_rate: Peak learning rate (after warmup)
+        min_lr: Minimum learning rate (end of decay)
+    
+    Returns:
+        Function that takes step and returns learning rate
+    """
+    def get_lr(step):
+        # Linear warmup
+        if step < warmup_iters:
+            return learning_rate * (step + 1) / warmup_iters
+        
+        # Cosine decay after warmup
+        if step > max_iters:
+            return min_lr
+        
+        decay_ratio = (step - warmup_iters) / (max_iters - warmup_iters)
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+        return min_lr + coeff * (learning_rate - min_lr)
+    
+    return get_lr
+
+
 # Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_server)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -165,6 +193,7 @@ def run_modelparallelism_server(
     eval_steps = config["eval_steps"]
     track_gradients = config["track_gradients"]
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
+    learning_rate = config["learning_rate"]
     num_workers = cluster_config["num_workers"]
     model_name = cluster_config["model_name"]
     recv_grads = None
@@ -172,6 +201,18 @@ def run_modelparallelism_server(
     NUM_WORKERS = cluster_config['num_workers']    
     
     num_nodes = cluster_config['num_nodes']
+    
+    # Learning rate scheduler setup
+    use_lr_scheduler = config.get("use_lr_scheduler", False)
+    total_steps = num_epochs * len(train_loader)
+    if use_lr_scheduler:
+        warmup_iters = config["warmup_iters"]
+        min_lr = config["min_lr"]
+        get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
+        logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
+    else:
+        get_lr_fn = None
+        logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
     
     # Create socket
     HOST_IP = "0.0.0.0"
@@ -272,6 +313,15 @@ def run_modelparallelism_server(
 
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
+            
+            # Update learning rate if scheduler enabled
+            if get_lr_fn is not None:
+                current_lr = get_lr_fn(step)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = current_lr
+            else:
+                current_lr = learning_rate
+            
             logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server computing leader activations")
             leader_activations = compute_leader_activations(
                 device, model_layers, data
@@ -420,7 +470,7 @@ def run_modelparallelism_server(
             wandb.log({
                 "step": step,
                 "epoch": epoch + 1,
-                "lr": optimizer.param_groups[0]['lr'],
+                "lr": current_lr,
                 "batch_size": batch_size,
             })
             

@@ -369,7 +369,7 @@ def run_modelparallelism_worker(
                 break
             
             optimizer.step()
-            optimizer.zero_grad()
+            
             
             # Clear GPU memory after optimizer step
             clear_gpu_cache(device)
@@ -380,11 +380,11 @@ def run_modelparallelism_worker(
                     if param.grad is not None:
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
                         wandb.log({
-                            f"gradients/layer_{name}": grad_norm,
+                            f"gradients/worker_layer_{name}": grad_norm,
                             "step": step,
                             "epoch": epoch + 1,
                         })
-            
+            optimizer.zero_grad()
            
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed."

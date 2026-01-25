@@ -25,7 +25,7 @@ use_fp16: true            # Enable mixed precision training (fp16) with PyTorch 
 
 use_lr_scheduler: true     # Enable/disable learning rate scheduling
 warmup_iters: 300          # Linear warmup iterations
-min_lr: 0.00003              # Minimum learning rate for cosine decay
+min_lr: 0.00006            # Minimum learning rate for cosine decay
 
 # Data
 
