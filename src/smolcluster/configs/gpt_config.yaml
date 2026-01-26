@@ -13,7 +13,7 @@ max_seq_len: 256  # Maximum sequence length (paper: 128 or 256)
 
 # Training Hyperparameters
     
-batch_size: 64             # Batch size
+batch_size: 16             # Batch size
 num_epochs: 2              # Number of epochs
 learning_rate: 0.0003       # Learning rate
 weight_decay: 0.01         # Weight decay for AdamW
