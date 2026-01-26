@@ -363,7 +363,6 @@ def run_modelparallelism_worker(
                     
                 loss = compute_loss(act_out, target_for_loss, criterion, device)
                 total_loss += loss.item()
-                total_loss = total_loss / (batch_idx + 1) 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -371,8 +370,7 @@ def run_modelparallelism_worker(
                 
                 wandb.log({
                     "step": step,
-                    f"losses/train_{local_rank}": total_loss,
-                    f"ppl/train_{local_rank}": torch.exp(total_loss),
+                    f"losses/train_{local_rank}": total_loss / (batch_idx + 1),
                     "epoch": epoch + 1,
                 })
                 logger.info(f"[Step {step}] Training loss: {total_loss / (batch_idx + 1):.4f}")
