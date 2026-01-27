@@ -9,7 +9,7 @@ import torch
 def send_message(sock: socket.SocketType, message: Any) -> None:
     # Optimize socket for high-bandwidth transfers (40Gbps Thunderbolt)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8 * 1024 * 1024)  # 8MB send buffer (macOS limit)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)  # 4MB send buffer (cross-platform)
     except OSError:
         pass  # Use system default if unable to set
     
@@ -20,7 +20,7 @@ def send_message(sock: socket.SocketType, message: Any) -> None:
 def receive_message(sock: socket.SocketType) -> dict:
     # Optimize socket for high-bandwidth transfers (40Gbps Thunderbolt)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)  # 8MB receive buffer (macOS limit)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)  # 4MB receive buffer (cross-platform)
     except OSError:
         pass  # Use system default if unable to set
     
@@ -35,7 +35,7 @@ def receive_message(sock: socket.SocketType) -> dict:
     data = b""
     remaining = msglen
     while remaining > 0:
-        chunk_size = min(8 * 1024 * 1024, remaining)  # 8MB chunks (matches macOS buffer limit)
+        chunk_size = min(1 * 1024 * 1024, remaining)  # 1MB chunks (works reliably on Windows/macOS/Linux)
         chunk = sock.recv(chunk_size)
         if not chunk:
             raise ConnectionError("Socket connection broken while receiving message")
