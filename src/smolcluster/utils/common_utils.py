@@ -128,8 +128,8 @@ def receive_message(sock: socket.SocketType, buffer_size_mb: Optional[int] = Non
     _network_metrics.record_buffer_size(msglen)
 
     # Read the message data - use smaller chunks for better cross-platform compatibility
-    # Chunk size based on buffer size: 1MB for small buffers, up to 2MB for large buffers
-    chunk_size_base = min(buffer_bytes // 4, 2 * 1024 * 1024)
+    # Chunk size based on buffer size: 1MB for small buffers, up to 4MB for large buffers
+    chunk_size_base = min(buffer_bytes // 4, 4 * 1024 * 1024)
     
     data = b""
     remaining = msglen
