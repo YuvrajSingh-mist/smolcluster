@@ -16,6 +16,7 @@ import wandb
 
 
 from smolcluster.utils.common_utils import (
+    get_network_metrics,
     receive_message,
     send_message,
 )
@@ -234,6 +235,13 @@ def run_modelparallelism_server(
     
     num_nodes = cluster_config['num_nodes']
     
+    # Network configuration
+    buffer_size_mb = cluster_config.get("buffer_size", {}).get(hostname, 4)
+    track_network_metrics = cluster_config.get("track_network_metrics", False)
+    metrics_log_interval = cluster_config.get("metrics_log_interval", 50)
+    logger.info(f"Network buffer size: {buffer_size_mb}MB")
+    logger.info(f"Network metrics tracking: {track_network_metrics}")
+    
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
     total_steps = num_epochs * len(train_loader)
@@ -339,7 +347,7 @@ def run_modelparallelism_server(
     # Send start_training to workers in rank order
     for rank, worker_socket, addr in sorted(worker_queue):
         logger.info(f"Sending start_training to worker rank {rank} at {addr}")
-        send_message(worker_socket, "start_training")
+        send_message(worker_socket, "start_training", buffer_size_mb=buffer_size_mb)
 
     logger.info(f"Starting training for {model_name}.")
   
@@ -539,6 +547,28 @@ def run_modelparallelism_server(
                             "step": step,
                             "epoch": epoch + 1,
                         })
+            
+            # Log network metrics if tracking enabled
+            if track_network_metrics and step % metrics_log_interval == 0:
+                network_stats = get_network_metrics(reset=True)
+                if network_stats:
+                    wandb.log({
+                        "network/send_bandwidth_mbps": network_stats.get("send_bandwidth_mbps", 0),
+                        "network/recv_bandwidth_mbps": network_stats.get("recv_bandwidth_mbps", 0),
+                        "network/avg_send_latency_ms": network_stats.get("avg_send_latency_ms", 0),
+                        "network/avg_recv_latency_ms": network_stats.get("avg_recv_latency_ms", 0),
+                        "network/avg_buffer_size_kb": network_stats.get("avg_buffer_size_kb", 0),
+                        "network/max_buffer_size_kb": network_stats.get("max_buffer_size_kb", 0),
+                        "network/total_send_mb": network_stats.get("total_send_mb", 0),
+                        "network/total_recv_mb": network_stats.get("total_recv_mb", 0),
+                        "step": step,
+                        "epoch": epoch + 1,
+                    })
+                    logger.info(
+                        f"[Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
+                        f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps, "
+                        f"Buffer={network_stats.get('avg_buffer_size_kb', 0):.2f}KB"
+                    )
             
             
             # Evaluation

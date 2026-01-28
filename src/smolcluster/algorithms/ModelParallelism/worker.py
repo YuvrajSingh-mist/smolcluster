@@ -14,7 +14,7 @@ import wandb
 from transformers import AutoConfig, GPT2LMHeadModel
 
 from smolcluster.utils.common_utils import (
-    get_gradients,
+    get_network_metrics,
     receive_message,
     send_message,
 )
@@ -208,6 +208,13 @@ def run_modelparallelism_worker(
     # Use provided host_ip and port (from train.py)
     HOST_IP = host_ip
     PORT = port
+    
+    # Network configuration
+    buffer_size_mb = cluster_config.get("buffer_size", {}).get(hostname, 4)
+    track_network_metrics = cluster_config.get("track_network_metrics", False)
+    metrics_log_interval = cluster_config.get("metrics_log_interval", 50)
+    logger.info(f"Network buffer size: {buffer_size_mb}MB")
+    logger.info(f"Network metrics tracking: {track_network_metrics}")
     
     # Update logger with rank
     logger = logging.getLogger(f"[WORKER-{local_rank}]")
@@ -435,6 +442,25 @@ def run_modelparallelism_worker(
                             "step": step,
                             "epoch": epoch + 1,
                         })
+            
+            # Log network metrics if tracking enabled
+            if track_network_metrics and step % metrics_log_interval == 0:
+                network_stats = get_network_metrics(reset=True)
+                if network_stats:
+                    wandb.log({
+                        f"network/worker_{local_rank}_send_bandwidth_mbps": network_stats.get("send_bandwidth_mbps", 0),
+                        f"network/worker_{local_rank}_recv_bandwidth_mbps": network_stats.get("recv_bandwidth_mbps", 0),
+                        f"network/worker_{local_rank}_avg_send_latency_ms": network_stats.get("avg_send_latency_ms", 0),
+                        f"network/worker_{local_rank}_avg_recv_latency_ms": network_stats.get("avg_recv_latency_ms", 0),
+                        f"network/worker_{local_rank}_avg_buffer_size_kb": network_stats.get("avg_buffer_size_kb", 0),
+                        f"network/worker_{local_rank}_max_buffer_size_kb": network_stats.get("max_buffer_size_kb", 0),
+                        "step": step,
+                        "epoch": epoch + 1,
+                    })
+                    logger.info(
+                        f"[Worker {local_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
+                        f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
+                    )
             
            
         logger.info(

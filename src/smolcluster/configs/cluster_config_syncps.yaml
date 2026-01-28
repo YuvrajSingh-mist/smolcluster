@@ -9,6 +9,20 @@ host_ip:
 
 port: 65432
 
+# Network buffer sizes (in MB) - device-specific optimizations
+buffer_size:
+  mini1: 8  # Mac Mini - 8MB (Thunderbolt 40Gbps)
+  mini2: 8  # Mac Mini - 8MB
+  mini3: 8  # Mac Mini - 8MB
+  macbook: 8  # MacBook - 8MB
+  pi4: 2  # Raspberry Pi 4 - 2MB (Gigabit Ethernet)
+  pi5: 2  # Raspberry Pi 5 - 2MB (Gigabit Ethernet)
+  win: 1  # Windows 11 - 1MB (conservative for compatibility)
+
+# Network metrics tracking
+track_network_metrics: true  # Enable bandwidth, latency, buffer usage tracking
+metrics_log_interval: 50  # Log network metrics every N steps
+
 
 # Timeout for gradient collection
 timeout: 0.1  # How long server waits for gradients (seconds)
