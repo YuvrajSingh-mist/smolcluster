@@ -3,6 +3,7 @@ import socket
 import struct
 import time
 from typing import Any, Optional
+from huggingface_hub import HfApi, Repository
 
 import torch
 
@@ -72,7 +73,6 @@ _network_metrics = NetworkMetrics()
 def get_network_metrics(reset: bool = True) -> dict:
     """Get current network metrics."""
     return _network_metrics.get_metrics(reset=reset)
-
 
 def send_message(sock: socket.SocketType, message: Any, buffer_size_mb: Optional[int] = None) -> None:
     """Send a message with optional buffer size configuration and metrics tracking.

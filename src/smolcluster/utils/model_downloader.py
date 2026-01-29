@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Dict
 from tqdm import tqdm
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +149,9 @@ def ensure_model_weights(
     logger.info(f"✅ Found weights at {weights_path}")
     return weights_path
 
+
+
+    
 
 if __name__ == "__main__":
     

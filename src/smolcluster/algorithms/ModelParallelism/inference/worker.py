@@ -29,7 +29,12 @@ CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
 with open(CONFIG_DIR / "model_parallelism" / "model_config_inference.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open(CONFIG_DIR / "cluster_config_mp.yaml") as f:
+with open(CONFIG_DIR / "model_parallelism" / "model_parallelism.yaml") as f:
+    cluster_config = yaml.safe_load(f)
+
+# Extract values with defaults
+PORT = cluster_config["port"]
+NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
 
@@ -37,15 +42,16 @@ WORLD_SIZE = NUM_WORKERS + 1
 if len(sys.argv) > 1:
     WORKER_RANK = sys.argv[1]
 else:
-    WORKER_RANK = input(f"Enter worker ID (1 to {NUM_WORKERS}): ")
+    WORKER_RANK = input(f"Enter worker rank (1 to {NUM_WORKERS}): ")
 
 if len(sys.argv) > 2:
     HOSTNAME = sys.argv[2]
 else:
     HOSTNAME = input("Enter worker hostname: ")
 
-# Set parameters
-local_rank = int(WORKER_RANK)
+# Set parameters - worker_rank is 1-indexed like regular MP
+worker_rank = int(WORKER_RANK)
+local_rank = worker_rank  # Keep 1-indexed for consistency
 
 # Workers connect to the server using the IP specified for this worker's hostname
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
@@ -168,6 +174,7 @@ def main():
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
+    # Register with the server
     # Register with the server
     logger.info(f"Registering as worker {local_rank} with server...")
     send_message(sock, ("register", local_rank))

@@ -13,6 +13,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from smolcluster.utils.model_downloader import download_and_convert_model
+from smolcluster.utils.model_downloader import load_model_weights_config
 
 # Setup logging
 logging.basicConfig(
@@ -54,7 +55,7 @@ def main():
     
     # List available models if requested
     if args.list:
-        from smolcluster.utils.model_downloader import load_model_weights_config
+        
         config = load_model_weights_config()
         logger.info("Available models:")
         for name, info in config['models'].items():
