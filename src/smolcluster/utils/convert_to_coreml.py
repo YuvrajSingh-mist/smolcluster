@@ -95,6 +95,7 @@ def convert_to_coreml_weights(
     local_rank: int = 0,
     hf_model_identifier: str = 'openai-community/gpt2',
     cluster_config_path: Optional[str] = None,
+    nn_config: Optional[dict] = None,
     upload_to_hf: bool = False) -> None:
     
     # Load cluster config
@@ -105,10 +106,16 @@ def convert_to_coreml_weights(
     with open(cluster_config_path) as f:
         cluster_config = yaml.safe_load(f)
     
+    if nn_config is None:
+        config_dir = Path(__file__).parent.parent / "configs"
+        with open(config_dir / "gpt_config.yaml") as f:
+            nn_config = yaml.safe_load(f)
+            
     # Extract parameters from config
     num_nodes = cluster_config['num_nodes']
     num_layers = cluster_config['num_layers']
     model_name = cluster_config['model_name']
+    max_seq = nn_config["max_seq_len"]
     
     model = AutoModelForCausalLM.from_pretrained(hf_model_identifier)    
     model.eval()
@@ -140,10 +147,12 @@ def convert_to_coreml_weights(
     traced,
     inputs=[
         ct.TensorType(
-            shape=input_data.shape,
+            name="x",
+            shape=(1, ct.RangeDim(1, max_seq), 768),
             dtype=np.float32
         )
     ],
+     
     compute_units=ct.ComputeUnit.CPU_AND_GPU,  # <-- KEY
     minimum_deployment_target=ct.target.iOS17,
 )
