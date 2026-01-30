@@ -168,8 +168,11 @@ def main():
             buffer = payload['activations'].cpu().numpy().tobytes()
             send_message(tablet_sock, buffer)
             
+            
+            logger.info("Activations sent to tablet device, waiting for processed results...")
             # Receive processed activations back from tablet device
             processed_data = receive_message(tablet_sock)
+            
             logger.info(f"Tablet proxy {local_rank} received processed activations from tablet device {HOSTNAME}")
             
             # Forward results back to server
