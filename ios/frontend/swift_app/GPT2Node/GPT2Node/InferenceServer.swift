@@ -10,14 +10,14 @@ final class InferenceServer {
 
     private let port: NWEndpoint.Port = 8000
     private var listener: NWListener?
-    private let model: gpt2_rank1
+    private let model: gpt2_rank2
 
     private init() throws {
         log.info("Initializing InferenceServer")
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndGPU
-        self.model = try gpt2_rank1(configuration: config)
+        self.model = try gpt2_rank2(configuration: config)
 
         log.info("Core ML model loaded successfully")
     }
@@ -65,12 +65,7 @@ final class InferenceServer {
 
             self.log.info("Received \(data.count) bytes")
 
-            // Sanity check
-            let expectedBytes = 1 * 1 * 768 * MemoryLayout<Float>.size
-            if data.count != expectedBytes {
-                self.log.warning("Unexpected byte count: \(data.count), expected \(expectedBytes)")
-            }
-
+           
             let input = self.deserializeFP32(data)
 
             let start = CFAbsoluteTimeGetCurrent()
@@ -86,11 +81,12 @@ final class InferenceServer {
             connection.send(content: response, completion: .contentProcessed { error in
                 if let error = error {
                     self.log.error("Send error: \(error.localizedDescription)")
-                } else {
-                    self.log.info("Response sent successfully")
+                    connection.cancel()
+                    return
                 }
-                connection.cancel()
-                self.log.info("Connection closed")
+
+                self.log.info("Response sent successfully, keeping connection alive")
+                self.receive(from: connection)   //  KEEP LISTENING
             })
         }
     }
@@ -98,7 +94,7 @@ final class InferenceServer {
     private func runModel(_ x: MLMultiArray) -> MLMultiArray {
         log.info("Running Core ML model")
 
-        let input = gpt2_rank1Input(x: x)
+        let input = gpt2_rank2Input(x: x)
         let output = try! model.prediction(input: input)
 
         log.info("Core ML prediction finished")
