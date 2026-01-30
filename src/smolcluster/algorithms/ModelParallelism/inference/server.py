@@ -163,13 +163,16 @@ def main():
                     # Add to priority queue sorted by rank
                     heapq.heappush(worker_queue, (rank, conn, address))
                     logger.info(f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})")
+                
                 elif command == "register_client":
                     logger.info(f"API client registered from {address}")
                     client_socket = conn
                     send_message(client_socket, ("client_registered", None))
+                
                 else:
                     logger.warning(f"Unexpected message from {address}: {command}")
                     conn.close()
+                    
             except Exception as e:
                 logger.error(f"Error during registration from {address}: {e}")
                 conn.close()

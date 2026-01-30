@@ -42,10 +42,14 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-workers:
-  regular: [mini3]  # Regular workers (script will SSH and launch)
-  tablets: [ipad]   # Tablet workers (already running on device, no SSH launch)
 server: mini2  # Server hostname
+workers:
+  regular:
+    - hostname: mini3
+      rank: 1
+  tablets:
+    - hostname: ipad
+      rank: 2
 
 #Model parallelism specific configs
 num_nodes: 3

@@ -32,5 +32,9 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-workers: [mini2, mini3]  # Worker hostnames
 server: mini1  # Server hostname
+workers:
+  - hostname: mini2
+    rank: 1
+  - hostname: mini3
+    rank: 2

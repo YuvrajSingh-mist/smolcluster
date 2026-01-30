@@ -51,5 +51,9 @@ data_message_queue_size: 100  # Size of the data queue for each worker
 
 # Cluster configuration
 num_workers: 2
-workers: [pi5, win]  # Worker hostnames
 server: mini1  # Server hostname
+workers:
+  - hostname: pi5
+    rank: 1
+  - hostname: win
+    rank: 2
