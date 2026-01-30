@@ -171,7 +171,7 @@ def main():
             
             logger.info("Activations sent to tablet device, waiting for processed results...")
             # Receive processed activations back from tablet device
-            processed_activations = recv_tensor(tablet_sock, shape=activations.shape)
+            processed_activations = recv_tensor(tablet_sock, shape=payload['activations'].shape)
             
             logger.info(f"Tablet proxy {local_rank} received processed activations from tablet device {HOSTNAME}")
             
