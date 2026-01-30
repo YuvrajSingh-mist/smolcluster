@@ -193,7 +193,9 @@ def main():
     logger.info("Waiting for generation requests...")
     
     while True:
+        
         message = receive_message(sock)
+        print(message)
         command, payload = message
         
         out = None

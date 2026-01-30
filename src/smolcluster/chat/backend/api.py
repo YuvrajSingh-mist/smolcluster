@@ -40,7 +40,7 @@ app.add_middleware(
 
 # Global socket connection to server
 server_socket: Optional[socket.socket] = None
-SERVER_HOST = "10.10.0.1"  # Update with your server host
+SERVER_HOST = "10.10.0.2"  # Update with your server host
 SERVER_PORT = 65432  # Update with your server port
 
 
@@ -230,4 +230,4 @@ async def reconnect():
 
 if __name__ == "__main__":
     
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
