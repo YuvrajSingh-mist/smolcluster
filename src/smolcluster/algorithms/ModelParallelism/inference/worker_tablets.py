@@ -9,7 +9,7 @@ import yaml
 from smolcluster.utils.common_utils import (
     receive_message,
     send_message,
- 
+    recv_tensor,
 )
 
 
@@ -171,7 +171,7 @@ def main():
             
             logger.info("Activations sent to tablet device, waiting for processed results...")
             # Receive processed activations back from tablet device
-            processed_data = receive_message(tablet_sock)
+            processed_activations = recv_tensor(tablet_sock, shape=activations.shape)
             
             logger.info(f"Tablet proxy {local_rank} received processed activations from tablet device {HOSTNAME}")
             
@@ -181,7 +181,7 @@ def main():
             send_message(server_sock, ('forward_activations', {
                 "from_rank": local_rank, 
                 "to_rank": local_rank + 1, 
-                "activations": processed_data['activations'],
+                "activations": processed_activations,
                 "tablet_device": HOSTNAME  # Include tablet device info
             }))
            

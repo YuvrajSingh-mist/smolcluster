@@ -5,6 +5,7 @@ from .common_utils import (
     send_message,
     set_gradients,
     set_weights,
+    recv_tensor
 )
 from .data import get_data_indices
 from .device import get_device
@@ -24,6 +25,7 @@ __all__ = [
     "get_hfmodel_per_node",
     "set_weights",
     "get_weights",
+    'recv_tensor',
     "download_and_convert_model",
     "ensure_model_weights",
 ]

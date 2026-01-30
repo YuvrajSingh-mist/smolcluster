@@ -74,6 +74,28 @@ def get_network_metrics(reset: bool = True) -> dict:
     """Get current network metrics."""
     return _network_metrics.get_metrics(reset=reset)
 
+
+def recv_tensor(sock: socket.socket, shape) -> torch.Tensor:
+    """
+    Receive a raw FP32 tensor with a 4-byte length header.
+    Shape is known from context.
+    """
+    raw_len = sock.recv(4)
+    if not raw_len:
+        raise ConnectionError("Socket closed")
+
+    msglen = struct.unpack(">I", raw_len)[0]
+
+    data = b""
+    while len(data) < msglen:
+        chunk = sock.recv(min(4096, msglen - len(data)))
+        if not chunk:
+            raise ConnectionError("Socket closed while receiving tensor")
+        data += chunk
+
+    return torch.frombuffer(data, dtype=torch.float32).view(shape)
+
+
 def send_message(sock: socket.SocketType, message: Any, buffer_size_mb: Optional[int] = None) -> None:
     """Send a message with optional buffer size configuration and metrics tracking.
     
