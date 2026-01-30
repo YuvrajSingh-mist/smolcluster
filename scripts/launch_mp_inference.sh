@@ -17,8 +17,29 @@ REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is diff
 # Read configuration from YAML
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 SERVER=$(yq '.server' "$CONFIG_FILE")
-WORKERS=($(yq '.workers.regular[]' "$CONFIG_FILE" 2>/dev/null || echo ""))
-TABLETS=($(yq '.workers.tablets[]' "$CONFIG_FILE" 2>/dev/null || echo ""))
+
+# Read regular workers (hostname and rank) - bash 3.2 compatible
+REGULAR_WORKERS=()
+while IFS= read -r worker; do
+    [[ -n "$worker" ]] && REGULAR_WORKERS+=("$worker")
+done < <(yq '.workers.regular[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE" 2>/dev/null)
+
+# Read tablet workers (hostname and rank) - bash 3.2 compatible
+TABLET_WORKERS=()
+while IFS= read -r tablet; do
+    [[ -n "$tablet" ]] && TABLET_WORKERS+=("$tablet")
+done < <(yq '.workers.tablets[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE" 2>/dev/null)
+
+# Extract just hostnames for SSH operations
+WORKERS=()
+for worker in "${REGULAR_WORKERS[@]}"; do
+    [[ -n "$worker" ]] && WORKERS+=("${worker%%:*}")
+done
+TABLETS=()
+for tablet in "${TABLET_WORKERS[@]}"; do
+    [[ -n "$tablet" ]] && TABLETS+=("${tablet%%:*}")
+done
+
 ALL_NODES=("$SERVER" "${WORKERS[@]}" "${TABLETS[@]}")
 
 # Validate configuration
@@ -236,47 +257,34 @@ launch_on_node "$SERVER" "$SERVER_CMD" "mp_inference_server"
 echo "⏳ Waiting 3 seconds for server to initialize..."
 sleep 3
 
-# Build combined worker list with types (regular vs tablet)
-# This maintains rank order across both types
-COMBINED_WORKERS=()
-WORKER_TYPES=()
-for worker in "${WORKERS[@]}"; do
-    COMBINED_WORKERS+=("$worker")
-    WORKER_TYPES+=("regular")
-done
-for tablet in "${TABLETS[@]}"; do
-    COMBINED_WORKERS+=("$tablet")
-    WORKER_TYPES+=("tablet")
-done
-
 # Launch workers
 echo ""
 echo "👷 Launching Model Parallelism inference workers..."
-if [[ ${#TABLETS[@]} -gt 0 ]]; then
+if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
     echo "ℹ️  Tablets should run manually: "
-    for ((i=0; i<${#TABLETS[@]}; i++)); do
-        tablet="${TABLETS[$i]}"
-        # Calculate the rank for this tablet (after all regular workers)
-        rank=$((${#WORKERS[@]} + i + 1))
-        echo "      $tablet: python worker_tablets.py $rank $tablet"
+    for worker_entry in "${TABLET_WORKERS[@]}"; do
+        hostname="${worker_entry%%:*}"
+        rank="${worker_entry##*:}"
+        echo "      $hostname: python worker_tablets.py $rank $hostname"
     done
 fi
 
-for ((i=0; i<${#COMBINED_WORKERS[@]}; i++)); do
-    rank=$((i + 1))  # Ranks are 1-indexed
-    node="${COMBINED_WORKERS[$i]}"
-    worker_type="${WORKER_TYPES[$i]}"
-    
-    if [[ "$worker_type" == "tablet" ]]; then
-        echo "   ⏭️  Rank $rank: $node (tablet - skip SSH launch)"
-        continue
-    fi
+# Launch regular workers
+for worker_entry in "${REGULAR_WORKERS[@]}"; do
+    hostname="${worker_entry%%:*}"
+    rank="${worker_entry##*:}"
     
     # Launch regular worker via SSH
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $node"
-    launch_on_node "$node" "$WORKER_CMD" "mp_inference_worker$rank"
-    echo "   ✅ Rank $rank: $node (mp_inference_worker$rank)"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $hostname"
+    launch_on_node "$hostname" "$WORKER_CMD" "mp_inference_worker$rank"
+    echo "   ✅ Rank $rank: $hostname (mp_inference_worker$rank)"
 done
+
+# Reminder for tablet workers
+if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
+    echo ""
+    echo "⚠️  Remember to manually start tablet workers as shown above"
+fi
 
 echo ""
 echo "🎉 Model Parallelism inference launch complete!"

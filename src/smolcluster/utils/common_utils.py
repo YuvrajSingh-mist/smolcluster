@@ -74,27 +74,59 @@ def get_network_metrics(reset: bool = True) -> dict:
     """Get current network metrics."""
     return _network_metrics.get_metrics(reset=reset)
 
+def recv_tensor(sock):
+    """Receive a tensor with network metrics tracking."""
+    start_time = time.time()
+    
+    # read seq_len
+    raw = sock.recv(4)
+    if not raw:
+        raise ConnectionError("socket closed")
+    seq_len = struct.unpack(">I", raw)[0]
 
-def recv_tensor(sock: socket.socket, shape) -> torch.Tensor:
-    """
-    Receive a raw FP32 tensor with a 4-byte length header.
-    Shape is known from context.
-    """
-    raw_len = sock.recv(4)
-    if not raw_len:
-        raise ConnectionError("Socket closed")
+    # read payload length
+    raw = sock.recv(4)
+    payload_len = struct.unpack(">I", raw)[0]
+    
+    _network_metrics.record_buffer_size(payload_len)
 
-    msglen = struct.unpack(">I", raw_len)[0]
-
+    # read payload
     data = b""
-    while len(data) < msglen:
-        chunk = sock.recv(min(4096, msglen - len(data)))
+    while len(data) < payload_len:
+        chunk = sock.recv(min(4096, payload_len - len(data)))
         if not chunk:
-            raise ConnectionError("Socket closed while receiving tensor")
+            raise ConnectionError("socket closed")
         data += chunk
 
-    return torch.frombuffer(data, dtype=torch.float32).view(shape)
+    tensor = (
+        torch.frombuffer(data, dtype=torch.float32)
+        .view(1, seq_len, 768)
+    )
+    
+    # Record metrics
+    duration = time.time() - start_time
+    _network_metrics.record_recv(payload_len, duration)
 
+    return tensor
+
+def send_tensor(sock, tensor: torch.Tensor):
+    """Send a tensor with network metrics tracking."""
+    start_time = time.time()
+   
+    seq_len = tensor.shape[1]
+
+    payload = tensor.detach().cpu().numpy().astype("float32").tobytes()
+    
+    _network_metrics.record_buffer_size(len(payload))
+
+    sock.sendall(struct.pack(">I", seq_len))        # seq_len
+    sock.sendall(struct.pack(">I", len(payload)))   # payload length
+    sock.sendall(payload)
+    
+    # Record metrics
+    duration = time.time() - start_time
+    _network_metrics.record_send(len(payload), duration)
+    
 
 def send_message(sock: socket.SocketType, message: Any, buffer_size_mb: Optional[int] = None) -> None:
     """Send a message with optional buffer size configuration and metrics tracking.

@@ -17,7 +17,19 @@ REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is diff
 # Read configuration from YAML
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 SERVER=$(yq '.server' "$CONFIG_FILE")
-WORKERS=($(yq '.workers[]' "$CONFIG_FILE"))
+
+# Read workers (hostname and rank) - bash 3.2 compatible
+WORKER_ENTRIES=()
+while IFS= read -r worker; do
+    [[ -n "$worker" ]] && WORKER_ENTRIES+=("$worker")
+done < <(yq '.workers[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE")
+
+# Extract just hostnames for SSH operations
+WORKERS=()
+for worker in "${WORKER_ENTRIES[@]}"; do
+    WORKERS+=("${worker%%:*}")
+done
+
 ALL_NODES=("$SERVER" "${WORKERS[@]}")
 
 # Validate configuration
@@ -248,15 +260,16 @@ sleep 5
 # Launch workers
 echo ""
 echo "👷 Launching workers..."
-for ((i=1; i<=NUM_WORKERS; i++)); do
-    node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
+for worker_entry in "${WORKER_ENTRIES[@]}"; do
+    hostname="${worker_entry%%:*}"
+    rank="${worker_entry##*:}"
     if [[ -n "$RESUME_CHECKPOINT" ]]; then
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm syncps --resume-checkpoint '$RESUME_CHECKPOINT'"
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm syncps --resume-checkpoint '$RESUME_CHECKPOINT'"
     else
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm syncps"
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm syncps"
     fi
-    launch_on_node "$node" "$WORKER_CMD" "worker$i"
-    echo "   $node: worker$i"
+    launch_on_node "$hostname" "$WORKER_CMD" "worker$rank"
+    echo "   $hostname: worker$rank"
 done
 
 echo ""

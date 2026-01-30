@@ -17,7 +17,19 @@ REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is diff
 # Read configuration from YAML
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 SERVER=$(yq '.server' "$CONFIG_FILE")
-WORKERS=($(yq '.workers[]' "$CONFIG_FILE"))
+
+# Read workers (hostname and rank) - bash 3.2 compatible
+WORKER_ENTRIES=()
+while IFS= read -r worker; do
+    [[ -n "$worker" ]] && WORKER_ENTRIES+=("$worker")
+done < <(yq '.workers[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE")
+
+# Extract just hostnames for SSH operations
+WORKERS=()
+for worker in "${WORKER_ENTRIES[@]}"; do
+    WORKERS+=("${worker%%:*}")
+done
+
 ALL_NODES=("$SERVER" "${WORKERS[@]}")
 
 # Validate configuration
