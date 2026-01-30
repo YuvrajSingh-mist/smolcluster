@@ -10,7 +10,8 @@ fi
 # Set WANDB_API_KEY for wandb compatibility
 export WANDB_API_KEY="$WANDB_API_TOKEN"
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_mp.yaml"
 
 echo "🚀 SmolCluster Local Launch - Model Parallelism"

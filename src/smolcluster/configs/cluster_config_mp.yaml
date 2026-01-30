@@ -1,13 +1,23 @@
 host_ip:
   mini1: "10.10.0.1"
-  mini2: "10.10.0.1"
-  mini3: "10.10.0.1"
+  mini2: "10.10.0.2"
+  mini3: "10.10.0.2"
   pi4: "10.10.0.1"
   macbook: "10.10.0.1"
   pi5: "192.168.50.1"
   win: "10.10.0.1"
+  ipad: "172.20.10.3"
 
-port: 65432
+port:
+  default: 65432
+  mini1: 65432
+  mini2: 65432
+  mini3: 65432
+  pi4: 65432
+  macbook: 65432
+  pi5: 65432
+  win: 65432
+  ipad: 8000  # iPad uses port 8000 (port forwarding from external network)
 
 # Network buffer sizes (in MB) - device-specific optimizations
 buffer_size:
@@ -32,8 +42,10 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-workers: [pi5, win]  # Worker hostnames
-server: mini1  # Server hostname
+workers:
+  regular: [mini3]  # Regular workers (script will SSH and launch)
+  tablets: [ipad]   # Tablet workers (already running on device, no SSH launch)
+server: mini2  # Server hostname
 
 #Model parallelism specific configs
 num_nodes: 3

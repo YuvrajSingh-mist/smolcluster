@@ -85,12 +85,13 @@ def setup_wandb():
 
 
 
-def run_server(hostname: str, algorithm: str = "syncps"):
+def run_server(hostname: str, algorithm: str = "syncps", resume_checkpoint_path: str = None):
     """Run server for GPT training.
     
     Args:
         hostname: Server hostname
-        algorithm: Either 'edp' or 'syncps'
+        algorithm: Either 'edp', 'syncps', or 'mp'
+        resume_checkpoint_path: Path to checkpoint to resume from
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -181,6 +182,7 @@ def run_server(hostname: str, algorithm: str = "syncps"):
             hostname=hostname,
             device=device,
             criterion=criterion,
+            resume_checkpoint_path=resume_checkpoint_path,
         )
     elif algorithm == "mp":
         run_modelparallelism_server(
@@ -192,6 +194,7 @@ def run_server(hostname: str, algorithm: str = "syncps"):
             hostname=hostname,
             device=device,
             criterion=criterion,
+            resume_checkpoint_path=resume_checkpoint_path,
         )
     else:  # syncps
         run_syncps_server(
@@ -204,17 +207,19 @@ def run_server(hostname: str, algorithm: str = "syncps"):
             hostname=hostname,
             device=device,
             criterion=criterion,
+            resume_checkpoint_path=resume_checkpoint_path,
         )
     wandb.finish()
 
 
-def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
+def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps", resume_checkpoint_path: str = None):
     """Run worker for GPT training.
     
     Args:
         worker_rank: Worker rank (1-indexed)
         hostname: Worker hostname
         algorithm: Either 'edp', 'syncps', or 'mp'
+        resume_checkpoint_path: Path to checkpoint to resume from
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -323,6 +328,7 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
             criterion=criterion,
             host_ip=host_ip,
             port=port,
+            resume_checkpoint_path=resume_checkpoint_path,
         )
     elif algorithm == "mp":
         run_modelparallelism_worker(
@@ -337,6 +343,7 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
             criterion=criterion,
             host_ip=host_ip,
             port=port,
+            resume_checkpoint_path=resume_checkpoint_path,
         )
     else:  # syncps
         run_syncps_worker(
@@ -350,6 +357,7 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps"):
             criterion=criterion,
             host_ip=host_ip,
             port=port,
+            resume_checkpoint_path=resume_checkpoint_path,
         )
     wandb.finish()
 
@@ -362,14 +370,17 @@ def main():
     parser.add_argument("arg2", nargs="?", help="Hostname (worker mode only)")
     parser.add_argument("-a", "--algorithm", choices=["edp", "syncps", "mp"], default="syncps",
                         help="Training algorithm to use (default: syncps)")
+    parser.add_argument("-r", "--resume-checkpoint", type=str, default=None,
+                        help="Path to checkpoint to resume training from")
     
     # Handle both new argparse format and legacy positional format
     if len(sys.argv) >= 2 and sys.argv[1] in ["server", "worker"]:
         # Try to parse with argparse first
-        if "--algorithm" in sys.argv or "-a" in sys.argv:
+        if "--algorithm" in sys.argv or "-a" in sys.argv or "--resume-checkpoint" in sys.argv or "-r" in sys.argv:
             args = parser.parse_args()
             mode = args.mode
             algorithm = args.algorithm
+            resume_checkpoint_path = args.resume_checkpoint
             
             # Parse positional args based on mode
             if mode == "server":
@@ -385,6 +396,7 @@ def main():
         else:
             # Legacy format: mode hostname [rank]
             mode = sys.argv[1]
+            resume_checkpoint_path = None
             if len(sys.argv) < 3:
                 parser.print_help()
                 sys.exit(1)
@@ -411,13 +423,13 @@ def main():
     
     # Run appropriate mode
     if mode == "server":
-        run_server(hostname, algorithm)
+        run_server(hostname, algorithm, resume_checkpoint_path)
     elif mode == "worker":
         if worker_rank is None:
             print("Error: Worker mode requires rank argument")
             parser.print_help()
             sys.exit(1)
-        run_worker(worker_rank, hostname, algorithm)
+        run_worker(worker_rank, hostname, algorithm, resume_checkpoint_path)
 
     
 if __name__ == "__main__":

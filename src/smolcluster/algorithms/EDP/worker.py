@@ -28,6 +28,7 @@ from smolcluster.utils.quantization import (
     quantize_model_weights,
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.checkpointing import CheckpointManager
 
 # Setup logging (will be replaced by setup_cluster_logging in run_edp_worker)
 logging.basicConfig(
@@ -76,6 +77,13 @@ def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     
     return get_lr
 
+
+def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_steps: int) -> bool:
+    """Determine if a checkpoint should be saved at the current step."""
+    if checkpoint_steps <= 0:
+        return False
+    # Save at regular intervals and at the end of training
+    return (step % checkpoint_steps == 0 and step != 0) or (step == total_steps - 1)
 
 
 def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
@@ -165,6 +173,7 @@ def run_edp_worker(
     criterion,
     host_ip,
     port,
+    resume_checkpoint_path=None,
 ):
     """
     Run EDP worker training.
@@ -214,13 +223,15 @@ def run_edp_worker(
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
     total_steps = num_epochs * len(train_loader)
+    scheduler = None
     if use_lr_scheduler:
         warmup_iters = config["warmup_iters"]
         min_lr = config["min_lr"]
         get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
+        # Wrap custom LR function in LambdaLR scheduler for proper state saving
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: get_lr_fn(step) / learning_rate)
         logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
     else:
-        get_lr_fn = None
         logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
 
     # Initialize W&B for worker
@@ -237,6 +248,46 @@ def run_edp_worker(
         settings=wandb.Settings(start_method="thread"),  # Prevent asyncio issues
     )
     logger.info(f"Worker {worker_rank} wandb initialized")
+
+    # Initialize checkpointing
+    save_checkpoints = config.get("save_checkpoints", True)
+    checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
+    checkpoint_steps = config.get("checkpoint_steps", 500)
+    # Prioritize command-line resume path over config value
+    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
+    save_optimizer_state = config.get("save_optimizer_state", True)
+    
+    # Initialize checkpoint manager
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=checkpoint_dir,
+        max_checkpoints=max_checkpoints_to_keep,
+        save_optimizer_state=save_optimizer_state,
+        prefix=f"worker_{worker_rank}"
+    )
+    logger.info(f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}")
+    
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    start_step = 0
+    if save_checkpoints and resume_from_checkpoint:
+        logger.info(f"Resuming from checkpoint: {resume_from_checkpoint}")
+        checkpoint_data = checkpoint_manager.load_checkpoint(
+            checkpoint_path=resume_from_checkpoint,
+            model=model,
+            optimizer=optimizer if save_optimizer_state else None,
+            scheduler=scheduler,  # Load scheduler state if it exists
+            device=device
+        )
+        if checkpoint_data:
+            start_epoch = checkpoint_data.get('epoch', 0)
+            start_step = checkpoint_data.get('step', 0)
+            # Restore model version for elastic training
+            model_version = checkpoint_data.get('metadata', {}).get('model_version', 0)
+            recv_model_version = checkpoint_data.get('metadata', {}).get('recv_model_version', -1)
+            logger.info(f"Resumed from epoch {start_epoch}, step {start_step}, model_version {model_version}")
+        else:
+            logger.warning(f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch")
 
     # Connect to server with retry logic
     sock = connect_to_server(host_ip, port)
@@ -321,15 +372,14 @@ def run_edp_worker(
     
     step_start_time = time.time()
     
-    for step in range(total_steps):
+    for step in range(start_step, total_steps):
         model.train()
         epoch = step // len(train_loader)
         
         # Update learning rate if scheduler enabled
-        if get_lr_fn is not None:
-            current_lr = get_lr_fn(step)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = current_lr
+        if scheduler is not None:
+            # Get current LR for logging
+            current_lr = scheduler.get_last_lr()[0]
         else:
             current_lr = learning_rate
 
@@ -380,6 +430,10 @@ def run_edp_worker(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
                 
             optimizer.step()  # Local SGD: workers apply updates independently
+        
+        # Step the scheduler after optimizer
+        if scheduler is not None:
+            scheduler.step()
         
         logger.info("Local forward and backward pass complete.")
         # Send locally-updated weights for Polyak averaging on server
@@ -574,8 +628,30 @@ def run_edp_worker(
                 train_ppl = math.exp(loss.item())
                 safe_wandb_log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
 
+        # Save checkpoint at regular intervals
+        if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, total_steps):
+            checkpoint_manager.save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,  # Save scheduler state
+                step=step,
+                epoch=epoch,
+                loss=loss.item(),
+                metadata={
+                    "train_loss": loss.item(),
+                    "val_loss": val_loss if step % eval_steps == 0 else None,
+                    "worker_rank": worker_rank,
+                    "model_version": model_version,
+                    "recv_model_version": recv_model_version,
+                    "learning_rate": current_lr
+                }
+            )
+            logger.info(f"[Step {step}] Worker {worker_rank} checkpoint saved (model_version={model_version})")
+
         logger.info(f"Epoch: {epoch} , Step {step}/{total_steps} completed.")
 
+    logger.info("Training complete. Closing connection.")
+    
     # Finish wandb tracking
     wandb.finish()
     logger.info(f"Worker {worker_rank} wandb tracking finished.")

@@ -8,6 +8,7 @@ import torch
 import torchinfo
 from torch.utils.data import DataLoader
 import wandb
+from pathlib import Path
 
 from smolcluster.utils.common_utils import (
     get_gradients,
@@ -17,6 +18,7 @@ from smolcluster.utils.common_utils import (
     set_gradients,
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 
 # Setup logging (will be replaced by setup_cluster_logging in run_syncps_server)
 logging.basicConfig(
@@ -140,6 +142,7 @@ def run_syncps_server(
     hostname,
     device,
     criterion,
+    resume_checkpoint_path=None,
 ):
     """
     Run Synchronous Parameter Server training.
@@ -176,6 +179,50 @@ def run_syncps_server(
     num_workers = cluster_config["num_workers"]
     world_size = num_workers + 1
     rank = 0  # Server is rank 0
+    
+    # Checkpoint configuration
+    save_checkpoints = config.get("save_checkpoints", True)
+    checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
+    checkpoint_steps = config.get("checkpoint_steps", 500)
+    # Prioritize command-line resume path over config value
+    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
+    save_optimizer_state = config.get("save_optimizer_state", True)
+    
+    # Initialize checkpoint manager
+    project_root = Path(__file__).parent.parent.parent.parent.parent
+    full_checkpoint_dir = project_root / checkpoint_dir / "syncps"
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=str(full_checkpoint_dir),
+        max_checkpoints=max_checkpoints_to_keep,
+        save_optimizer=save_optimizer_state,
+        rank=rank,
+        algorithm="syncps"
+    )
+    
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    start_step = 0
+    if save_checkpoints and resume_from_checkpoint:
+        if resume_from_checkpoint == "latest":
+            checkpoint_path = checkpoint_manager.find_latest_checkpoint()
+        else:
+            checkpoint_path = resume_from_checkpoint
+        
+        if checkpoint_path:
+            logger.info(f"Resuming from checkpoint: {checkpoint_path}")
+            metadata = checkpoint_manager.load_checkpoint(
+                checkpoint_path=checkpoint_path,
+                model=model,
+                optimizer=optimizer if save_optimizer_state else None,
+                scheduler=None,  # SyncPS doesn't use scheduler, uses custom LR schedule
+                device=device
+            )
+            start_epoch = metadata.get('epoch', 0)
+            start_step = metadata.get('step', 0)
+            logger.info(f"Resumed from epoch={start_epoch}, step={start_step}")
+        else:
+            logger.warning(f"No checkpoint found to resume from, starting fresh")
     
     # Create socket
     HOST_IP = "0.0.0.0"
@@ -238,14 +285,21 @@ def run_syncps_server(
         send_message(worker_socket, "start_training")
 
     logger.info(f"Starting training for {num_epochs} epochs.")
-    for epoch in range(num_epochs):
+    total_steps = num_epochs * len(train_loader)
+    
+    for epoch in range(start_epoch, num_epochs):
         model.train()
         total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server computing leader gradients")
+            
+            # Skip batches if resuming mid-epoch
+            if step < start_step:
+                continue
+            
+            logger.info(f"[Step {step}  / {total_steps}] Server computing leader gradients")
             leader_loss, leader_grads = compute_leader_gradients(
                 device, model, data, target, criterion, optimizer, config
             )
@@ -360,6 +414,23 @@ def run_syncps_server(
                     logger.info(
                         f"Step {step}: Val Loss={val_loss:.4f}"
                     )
+            
+            # Save checkpoint
+            if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, total_steps):
+                logger.info(f"Saving checkpoint at step {step}, epoch {epoch + 1}")
+                checkpoint_manager.save_checkpoint(
+                    step=step,
+                    epoch=epoch,
+                    model=model,
+                    optimizer=optimizer if save_optimizer_state else None,
+                    scheduler=None,  # SyncPS doesn't use scheduler
+                    loss=leader_loss.item(),
+                    metadata={
+                        'batch_idx': batch_idx,
+                        'world_size': world_size,
+                        'val_loss': val_loss if step % eval_steps == 0 else None
+                    }
+                )
 
         avg_loss = total_loss / len(train_loader)
        

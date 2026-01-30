@@ -9,19 +9,22 @@ fi
 export WANDB_API_KEY="$WANDB_API_TOKEN"
 
 # Configuration
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_mp.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 SERVER=$(yq '.server' "$CONFIG_FILE")
-WORKERS=($(yq '.workers[]' "$CONFIG_FILE"))
-ALL_NODES=("$SERVER" "${WORKERS[@]}")
+WORKERS=($(yq '.workers.regular[]' "$CONFIG_FILE" 2>/dev/null || echo ""))
+TABLETS=($(yq '.workers.tablets[]' "$CONFIG_FILE" 2>/dev/null || echo ""))
+ALL_NODES=("$SERVER" "${WORKERS[@]}" "${TABLETS[@]}")
 
 # Validate configuration
-if [[ ${#WORKERS[@]} -ne $NUM_WORKERS ]]; then
-    echo "❌ Error: num_workers ($NUM_WORKERS) does not match the number of workers in the list (${#WORKERS[@]})"
+ACTUAL_WORKER_COUNT=$((${#WORKERS[@]} + ${#TABLETS[@]}))
+if [[ $ACTUAL_WORKER_COUNT -ne $NUM_WORKERS ]]; then
+    echo "❌ Error: num_workers ($NUM_WORKERS) does not match total workers (${#WORKERS[@]} regular + ${#TABLETS[@]} tablets = $ACTUAL_WORKER_COUNT)"
     exit 1
 fi
 
@@ -52,10 +55,16 @@ fi
 
 echo "📤 This API key will be used on all remote nodes"
 
+# Create array of nodes that need SSH (server + regular workers only, not tablets)
+SSH_NODES=("$SERVER" "${WORKERS[@]}")
+
 # Check SSH connectivity and remote requirements
 echo "🔗 Checking SSH connectivity and remote requirements..."
+if [[ ${#TABLETS[@]} -gt 0 ]]; then
+    echo "ℹ️  Skipping SSH checks for tablets: ${TABLETS[*]} (run locally on device)"
+fi
 if [[ "$DRY_RUN" != "true" ]]; then
-    for node in "${ALL_NODES[@]}"; do
+    for node in "${SSH_NODES[@]}"; do
         if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$node" "echo 'SSH OK'"; then
             echo "❌ Error: Cannot connect to $node via SSH. Please check SSH setup."
             exit 1
@@ -129,6 +138,9 @@ fi
 
 echo "Server: $SERVER"
 echo "Workers: ${WORKERS[*]}"
+if [[ ${#TABLETS[@]} -gt 0 ]]; then
+    echo "Tablets (run manually): ${TABLETS[*]}"
+fi
 echo "All nodes: ${ALL_NODES[*]}"
 
 # Start logging infrastructure on controller (this machine)
@@ -204,10 +216,10 @@ launch_on_node() {
 echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    ssh "$SERVER" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux kill-session -t mp_server  || true"
+    ssh "$SERVER" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux kill-session -t mp_inference_server  || true"
     for worker_node in "${WORKERS[@]}"; do
-        # Kill any session that starts with "mp_worker"
-        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}'  | grep -E '^mp_worker' | xargs -I {} tmux kill-session -t {}  || true"
+        # Kill any session that starts with "mp_inference_worker"
+        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}'  | grep -E '^mp_inference_worker' | xargs -I {} tmux kill-session -t {}  || true"
     done
     echo "✅ Cleanup complete"
 else
@@ -216,22 +228,54 @@ fi
 
 # Launch server on $SERVER
 echo ""
-echo "🖥️  Launching Model Parallelism server on $SERVER..."
+echo "🖥️  Launching Model Parallelism inference server on $SERVER..."
 SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/server.py $SERVER"
-launch_on_node "$SERVER" "$SERVER_CMD" "mp_server"
+launch_on_node "$SERVER" "$SERVER_CMD" "mp_inference_server"
 
 # Wait a moment for server to start
 echo "⏳ Waiting 3 seconds for server to initialize..."
 sleep 3
 
+# Build combined worker list with types (regular vs tablet)
+# This maintains rank order across both types
+COMBINED_WORKERS=()
+WORKER_TYPES=()
+for worker in "${WORKERS[@]}"; do
+    COMBINED_WORKERS+=("$worker")
+    WORKER_TYPES+=("regular")
+done
+for tablet in "${TABLETS[@]}"; do
+    COMBINED_WORKERS+=("$tablet")
+    WORKER_TYPES+=("tablet")
+done
+
 # Launch workers
 echo ""
-echo "👷 Launching Model Parallelism workers..."
-for ((i=1; i<=NUM_WORKERS; i++)); do
-    node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $i $node"
-    launch_on_node "$node" "$WORKER_CMD" "mp_worker$i"
-    echo "   $node: mp_worker$i"
+echo "👷 Launching Model Parallelism inference workers..."
+if [[ ${#TABLETS[@]} -gt 0 ]]; then
+    echo "ℹ️  Tablets should run manually: "
+    for ((i=0; i<${#TABLETS[@]}; i++)); do
+        tablet="${TABLETS[$i]}"
+        # Calculate the rank for this tablet (after all regular workers)
+        rank=$((${#WORKERS[@]} + i + 1))
+        echo "      $tablet: python worker_tablets.py $rank $tablet"
+    done
+fi
+
+for ((i=0; i<${#COMBINED_WORKERS[@]}; i++)); do
+    rank=$((i + 1))  # Ranks are 1-indexed
+    node="${COMBINED_WORKERS[$i]}"
+    worker_type="${WORKER_TYPES[$i]}"
+    
+    if [[ "$worker_type" == "tablet" ]]; then
+        echo "   ⏭️  Rank $rank: $node (tablet - skip SSH launch)"
+        continue
+    fi
+    
+    # Launch regular worker via SSH
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $node"
+    launch_on_node "$node" "$WORKER_CMD" "mp_inference_worker$rank"
+    echo "   ✅ Rank $rank: $node (mp_inference_worker$rank)"
 done
 
 echo ""
@@ -239,7 +283,7 @@ echo "🎉 Model Parallelism inference launch complete!"
 echo ""
 echo "📊 Check status:"
 echo "   ssh $SERVER 'tmux ls'"
-echo "   ssh $SERVER 'tmux attach -t mp_server'"
+echo "   ssh $SERVER 'tmux attach -t mp_inference_server'"
 echo ""
 echo "💬 Server will prompt for text input. Attach to server session to interact:"
-echo "   ssh $SERVER -t 'tmux attach -t mp_server'"
+echo "   ssh $SERVER -t 'tmux attach -t mp_inference_server'"

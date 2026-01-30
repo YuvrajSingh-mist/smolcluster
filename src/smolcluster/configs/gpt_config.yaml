@@ -47,3 +47,6 @@ decoder_type:
 save_checkpoints: true     # Whether to save model checkpoints
 checkpoint_dir: "checkpoints"  # Directory to save checkpoints (relative to project root)
 checkpoint_steps: 500      # Save checkpoint every N steps (set to 0 to disable step-based saving)
+resume_from_checkpoint: null  # Path to checkpoint to resume from (null to start fresh, or "latest" to auto-resume from latest)
+max_checkpoints_to_keep: 3  # Maximum number of checkpoints to keep (older ones are deleted)
+save_optimizer_state: true  # Whether to save optimizer state in checkpoints

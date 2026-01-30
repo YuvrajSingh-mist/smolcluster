@@ -25,6 +25,7 @@ from smolcluster.utils.layers import (
     
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 
 
 
@@ -114,6 +115,14 @@ def evaluate(
     return avg_loss, ppl
 
 
+def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_steps: int) -> bool:
+    """Determine if a checkpoint should be saved at the current step."""
+    if checkpoint_steps <= 0:
+        return False
+    # Save at regular intervals and at the end of training
+    return (step % checkpoint_steps == 0 and step != 0) or (step == total_steps - 1)
+
+
 def clear_gpu_cache(device: torch.device) -> None:
     """Clear GPU cache for both MPS and CUDA devices."""
     if device.type == 'mps':
@@ -192,6 +201,7 @@ def run_modelparallelism_server(
     hostname,
     device,
     criterion,
+    resume_checkpoint_path=None,
 ):
     """
     Run Synchronous Parameter Server training.
@@ -235,24 +245,32 @@ def run_modelparallelism_server(
     
     num_nodes = cluster_config['num_nodes']
     
+    # Checkpoint configuration
+    save_checkpoints = config.get("save_checkpoints", True)
+    checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
+    checkpoint_steps = config.get("checkpoint_steps", 500)
+    # Prioritize command-line resume path over config value
+    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
+    save_optimizer_state = config.get("save_optimizer_state", True)
+    
+    # Initialize checkpoint manager
+    project_root = Path(__file__).parent.parent.parent.parent.parent
+    full_checkpoint_dir = project_root / checkpoint_dir / "mp"
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=str(full_checkpoint_dir),
+        max_checkpoints=max_checkpoints_to_keep,
+        save_optimizer=save_optimizer_state,
+        rank=RANK,
+        algorithm="mp"
+    )
+    
     # Network configuration
     buffer_size_mb = cluster_config.get("buffer_size", {}).get(hostname, 4)
     track_network_metrics = cluster_config.get("track_network_metrics", False)
     metrics_log_interval = cluster_config.get("metrics_log_interval", 50)
     logger.info(f"Network buffer size: {buffer_size_mb}MB")
     logger.info(f"Network metrics tracking: {track_network_metrics}")
-    
-    # Learning rate scheduler setup
-    use_lr_scheduler = config.get("use_lr_scheduler", False)
-    total_steps = num_epochs * len(train_loader)
-    if use_lr_scheduler:
-        warmup_iters = config["warmup_iters"]
-        min_lr = config["min_lr"]
-        get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
-        logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
-    else:
-        get_lr_fn = None
-        logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
     
     # Gradient clipping
     if grad_clip_norm > 0.0:
@@ -294,6 +312,49 @@ def run_modelparallelism_server(
     # Create optimizer for server's layers only
     optimizer = torch.optim.AdamW(model_layers.parameters(), lr=learning_rate)
     logger.info(f"Created optimizer for server with lr={learning_rate}")
+    
+    # Learning rate scheduler setup (after optimizer creation)
+    use_lr_scheduler = config.get("use_lr_scheduler", False)
+    total_steps = num_epochs * len(train_loader)
+    scheduler = None
+    if use_lr_scheduler:
+        warmup_iters = config["warmup_iters"]
+        min_lr = config["min_lr"]
+        get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
+        # Wrap custom LR function in LambdaLR scheduler for proper state saving
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: get_lr_fn(step) / learning_rate)
+        logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
+    else:
+        logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
+    
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    start_step = 0
+    if save_checkpoints and resume_from_checkpoint:
+        if resume_from_checkpoint == "latest":
+            checkpoint_path = checkpoint_manager.find_latest_checkpoint()
+        else:
+            checkpoint_path = resume_from_checkpoint
+        
+        if checkpoint_path:
+            logger.info(f"Resuming from checkpoint: {checkpoint_path}")
+            # Create a temporary model with only server layers for loading
+            temp_model = torch.nn.Sequential(*model_layers)
+            metadata = checkpoint_manager.load_checkpoint(
+                checkpoint_path=checkpoint_path,
+                model=temp_model,
+                optimizer=optimizer if save_optimizer_state else None,
+                scheduler=scheduler,  # Load scheduler state if it exists
+                device=device
+            )
+            # Copy loaded state back to model_layers
+            for i, layer in enumerate(model_layers):
+                layer.load_state_dict(temp_model[i].state_dict())
+            start_epoch = metadata.get('epoch', 0)
+            start_step = metadata.get('step', 0)
+            logger.info(f"Resumed from epoch={start_epoch}, step={start_step}")
+        else:
+            logger.warning(f"No checkpoint found to resume from, starting fresh")
     
     # Create and bind socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -356,21 +417,23 @@ def run_modelparallelism_server(
     act_out_cache = {}
     
     logger.info(f"Starting training for {num_epochs} epochs.")
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         model_layers.train()
      
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
+            
+            # Skip batches if resuming mid-epoch
+            if step < start_step:
+                continue
              
             data = data.to(device)
             target = target.to(device)
             # Update learning rate if scheduler enabled
-            if get_lr_fn is not None:
-                current_lr = get_lr_fn(step)
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = current_lr
+            if scheduler is not None:
+                current_lr = scheduler.get_last_lr()[0]
             else:
                 current_lr = learning_rate
             
@@ -523,6 +586,12 @@ def run_modelparallelism_server(
                 if step % 100 == 0:  # Log occasionally to avoid spam
                     logger.info(f"[Step {step}] Gradient norm before clipping: {grad_norm:.4f}")
             
+            # Apply gradients
+            optimizer.step()
+            
+            # Step the scheduler after optimizer
+            if scheduler is not None:
+                scheduler.step()
         
             
             
@@ -595,6 +664,24 @@ def run_modelparallelism_server(
                         f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     )
             
+            # Save checkpoint at regular intervals
+            if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, num_epochs * len(train_loader)):
+                # Wrap model_layers in Sequential for proper state_dict saving
+                temp_model = torch.nn.Sequential(*model_layers)
+                checkpoint_manager.save_checkpoint(
+                    model=temp_model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,  # Save scheduler state
+                    step=step,
+                    epoch=epoch,
+                    loss=None,
+                    metadata={
+                        "val_loss": val_loss if step % eval_steps == 0 and step != 0 else None,
+                        "learning_rate": current_lr
+                    }
+                )
+                logger.info(f"[Step {step}] Checkpoint saved")
+                
                 # Clean up activations tensor
                 if activations is not None:
                     del activations

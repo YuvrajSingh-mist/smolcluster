@@ -5,16 +5,13 @@ import sys
 import time
 from pathlib import Path
 import sys
-import torch
-
 import yaml
 
 from transformers import AutoConfig, GPT2LMHeadModel
 
 from smolcluster.utils.common_utils import (
     receive_message,
-    send_message,
- 
+    send_message
 )
 from smolcluster.utils.device import get_device
 from smolcluster.utils.layers import (
@@ -26,6 +23,7 @@ from smolcluster.utils.model_downloader import ensure_model_weights
 
 # Load configs
 CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
+
 with open(CONFIG_DIR / "model_parallelism" / "model_config_inference.yaml") as f:
     nn_config = yaml.safe_load(f)
 
@@ -33,7 +31,6 @@ with open(CONFIG_DIR / "model_parallelism" / "model_parallelism.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
-PORT = cluster_config["port"]
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
@@ -55,6 +52,13 @@ local_rank = worker_rank  # Keep 1-indexed for consistency
 
 # Workers connect to the server using the IP specified for this worker's hostname
 HOST_IP = cluster_config["host_ip"][HOSTNAME]
+
+# Get port for this device (with fallback to default)
+port_config = cluster_config["port"]
+if isinstance(port_config, dict):
+    PORT = port_config.get(HOSTNAME, port_config.get("default", 65432))
+else:
+    PORT = port_config  # Backward compatibility if port is still a single value
 
 # Setup logging
 logging.basicConfig(

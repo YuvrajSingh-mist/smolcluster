@@ -8,10 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
-import yaml
 import wandb
 
-from transformers import AutoConfig, GPT2LMHeadModel
 
 from smolcluster.utils.common_utils import (
     get_network_metrics,
@@ -22,6 +20,7 @@ from smolcluster.utils.layers import (
     get_model_per_node
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.checkpointing import CheckpointManager
 
 
 def evaluate(
@@ -49,6 +48,14 @@ def evaluate(
     ppl = math.exp(avg_loss) if decoder_type_ppl else None
     
     return avg_loss, ppl
+
+
+def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_steps: int) -> bool:
+    """Determine if a checkpoint should be saved at the current step."""
+    if checkpoint_steps <= 0:
+        return False
+    # Save at regular intervals and at the end of training
+    return (step % checkpoint_steps == 0 and step != 0) or (step == total_steps - 1)
 
 
 def compute_worker_activations(
@@ -163,6 +170,7 @@ def run_modelparallelism_worker(
     criterion,
     host_ip,
     port,
+    resume_checkpoint_path=None,
 ):
     """
     Run Model Parallelism worker for distributed GPT training.
@@ -244,6 +252,48 @@ def run_modelparallelism_worker(
     optimizer = torch.optim.AdamW(model_layers.parameters(), lr=learning_rate)
     logger.info(f"Created optimizer for worker {local_rank} with lr={learning_rate}")
     
+    # Initialize checkpointing
+    save_checkpoints = config.get("save_checkpoints", True)
+    checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
+    checkpoint_steps = config.get("checkpoint_steps", 500)
+    # Prioritize command-line resume path over config value
+    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
+    save_optimizer_state = config.get("save_optimizer_state", True)
+    
+    # Initialize checkpoint manager
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=checkpoint_dir,
+        max_checkpoints=max_checkpoints_to_keep,
+        save_optimizer_state=save_optimizer_state,
+        prefix=f"worker_{local_rank}"
+    )
+    logger.info(f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}")
+    
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    start_step = 0
+    if save_checkpoints and resume_from_checkpoint:
+        logger.info(f"Resuming from checkpoint: {resume_from_checkpoint}")
+        # Create temporary model for loading
+        temp_model = torch.nn.Sequential(*model_layers)
+        checkpoint_data = checkpoint_manager.load_checkpoint(
+            checkpoint_path=resume_from_checkpoint,
+            model=temp_model,
+            optimizer=optimizer if save_optimizer_state else None,
+            scheduler=None,  # MP doesn't use scheduler
+            device=device
+        )
+        # Copy loaded state back to model_layers
+        for i, layer in enumerate(model_layers):
+            layer.load_state_dict(temp_model[i].state_dict())
+        if checkpoint_data:
+            start_epoch = checkpoint_data.get('epoch', 0)
+            start_step = checkpoint_data.get('step', 0)
+            logger.info(f"Resumed from epoch {start_epoch}, step {start_step}")
+        else:
+            logger.warning(f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch")
+    
     # Connect to server
     sock = connect_to_server(HOST_IP, PORT)
     
@@ -265,13 +315,18 @@ def run_modelparallelism_worker(
     
     logger.info("Starting training loop...")
     
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         model_layers.train()
         total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
         
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
+            
+            # Skip batches if resuming mid-epoch
+            if step < start_step:
+                continue
+                
             logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server")
             data = data.to(device)
             target = target.to(device)
@@ -381,6 +436,26 @@ def run_modelparallelism_worker(
                     "epoch": epoch + 1,
                 })
                 logger.info(f"[Step {step}] Training loss: {total_loss / (batch_idx + 1):.4f}")
+                
+                # Save checkpoint at regular intervals
+                if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, num_epochs * len(train_loader)):
+                    # Wrap model_layers in Sequential for proper state_dict saving
+                    temp_model = torch.nn.Sequential(*model_layers)
+                    checkpoint_manager.save_checkpoint(
+                        model=temp_model,
+                        optimizer=optimizer,
+                        scheduler=None,  # MP doesn't use scheduler
+                        step=step,
+                        epoch=epoch,
+                        loss=loss.item(),
+                        metadata={
+                            "train_loss": total_loss / (batch_idx + 1),
+                            "worker_rank": local_rank,
+                            "learning_rate": optimizer.param_groups[0]['lr']
+                        }
+                    )
+                    logger.info(f"[Step {step}] Worker {local_rank} checkpoint saved")
+                
                 # Send input gradients to previous worker
                 send_message(sock, ('forward_gradients', step, {
                     "from_rank": local_rank, 

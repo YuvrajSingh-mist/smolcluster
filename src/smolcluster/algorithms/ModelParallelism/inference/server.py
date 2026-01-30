@@ -2,6 +2,7 @@ import gc
 import heapq
 import logging
 import gc
+import select
 import socket
 import threading
 from collections import defaultdict
@@ -34,7 +35,14 @@ with open(CONFIG_DIR / "cluster_config_mp.yaml") as f:
 
 # Extract values with defaults
 HOST_IP = "0.0.0.0"
-PORT = cluster_config["port"]
+port_config = cluster_config["port"]
+if isinstance(port_config, dict):
+    # Get all unique ports from the config
+    PORTS = list(set(port_config.values()))
+    PORT = port_config.get("default", 65432)  # Primary port for server
+else:
+    PORTS = [port_config]  # Backward compatibility
+    PORT = port_config
 NUM_WORKERS = cluster_config["num_workers"]
 SEED = cluster_config.get("seed", 42)
 WORLD_SIZE = NUM_WORKERS + 1
@@ -104,19 +112,23 @@ model_layers = model_layers.to(get_device())
 logger.info(f"Server loaded {len(model_layers)} layers")
 
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+# Create sockets for all unique ports
+server_sockets = []
+for port in PORTS:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((HOST_IP, port))
+    sock.listen(5)
+    server_sockets.append((sock, port))
+    logger.info(f"Server listening on {HOST_IP}:{port}")
 
-# Bind the socket to the host and port
-sock.bind((HOST_IP, PORT))
-
-# Listen for incoming connections
-sock.listen(5)
-logger.info(f"Server listening on {HOST_IP}:{PORT}")
+# Use the primary port's socket as the main one for backward compatibility
+sock = server_sockets[0][0] if len(server_sockets) == 1 else next((s for s, p in server_sockets if p == PORT), server_sockets[0][0])
 
 
 def main():
    
-    logger.info(f"Server is running at {HOST_IP}:{PORT}")
+    logger.info(f"Server is running on ports: {PORTS}")
     
     # Accept connections and wait for registration
     # Use priority queue to maintain workers sorted by rank
@@ -124,40 +136,44 @@ def main():
     registered_workers = {}  # rank -> socket (for quick lookup)
     client_socket = None  # API client socket
     
-    # Accept all connections (workers + API client)
+    # Accept all connections (workers + API client) from multiple ports
     while len(registered_workers) < NUM_WORKERS or client_socket is None:
-        conn, address = sock.accept()
-        logger.info(f"Accepted connection from {address}")
+        # Use select to wait for connections on any of the server sockets
+        readable, _, _ = select.select([s for s, _ in server_sockets], [], [], 1.0)
+        
+        for ready_sock in readable:
+            conn, address = ready_sock.accept()
+            logger.info(f"Accepted connection from {address}")
 
-        # Wait for registration message
-        try:
-            message = receive_message(conn)
-            if message is None:
-                logger.warning(
-                    f"Connection from {address} closed before registration"
-                )
+            # Wait for registration message
+            try:
+                message = receive_message(conn)
+                if message is None:
+                    logger.warning(
+                        f"Connection from {address} closed before registration"
+                    )
+                    conn.close()
+                    continue
+
+                command, rank = message
+                if command == "register":
+                    logger.info(f"Worker rank {rank} registered from {address}")
+                    registered_workers[rank] = conn
+                    workers[address] = conn
+                    # Add to priority queue sorted by rank
+                    heapq.heappush(worker_queue, (rank, conn, address))
+                    logger.info(f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})")
+                elif command == "register_client":
+                    logger.info(f"API client registered from {address}")
+                    client_socket = conn
+                    send_message(client_socket, ("client_registered", None))
+                else:
+                    logger.warning(f"Unexpected message from {address}: {command}")
+                    conn.close()
+            except Exception as e:
+                logger.error(f"Error during registration from {address}: {e}")
                 conn.close()
                 continue
-
-            command, rank = message
-            if command == "register":
-                logger.info(f"Worker rank {rank} registered from {address}")
-                registered_workers[rank] = conn
-                workers[address] = conn
-                # Add to priority queue sorted by rank
-                heapq.heappush(worker_queue, (rank, conn, address))
-                logger.info(f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})")
-            elif command == "register_client":
-                logger.info(f"API client registered from {address}")
-                client_socket = conn
-                send_message(client_socket, ("client_registered", None))
-            else:
-                logger.warning(f"Unexpected message from {address}: {command}")
-                conn.close()
-        except Exception as e:
-            logger.error(f"Error during registration from {address}: {e}")
-            conn.close()
-            continue
 
     logger.info(f"All workers connected. Starting inference on {model_name}...")
     logger.info(f"Worker priority queue (by rank): {[(rank, addr) for rank, _, addr in worker_queue]}")
@@ -307,8 +323,11 @@ def main():
         send_message(worker_socket, "down")
         
     logger.info("Inference completed successfully!")
-       
-    sock.close()
+    
+    # Close all server sockets
+    for sock, port in server_sockets:
+        sock.close()
+        logger.info(f"Closed server socket on port {port}")
 
 
 if __name__ == "__main__":
