@@ -46,10 +46,10 @@ server: mini2  # Server hostname
 workers:
   regular:
     - hostname: mini3
-      rank: 1
+      rank: 2
   tablets:
     - hostname: ipad
-      rank: 2
+      rank: 1
 
 #Model parallelism specific configs
 num_nodes: 3

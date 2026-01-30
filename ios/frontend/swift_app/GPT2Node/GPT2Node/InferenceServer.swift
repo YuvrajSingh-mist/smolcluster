@@ -10,7 +10,7 @@ final class InferenceServer {
 
     private let port: NWEndpoint.Port = 8000
     private var listener: NWListener?
-    private let model: gpt2_rank2
+    private let model: gpt2_rank1
 
     // TCP framing state
     private var buffer = Data()
@@ -22,7 +22,7 @@ final class InferenceServer {
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndGPU
-        self.model = try gpt2_rank2(configuration: config)
+        self.model = try gpt2_rank1(configuration: config)
 
         log.info("Core ML model loaded")
     }
@@ -161,7 +161,7 @@ final class InferenceServer {
     // MARK: - Core ML
 
     private func runModel(_ x: MLMultiArray) -> MLMultiArray {
-        let input = gpt2_rank2Input(x: x)
+        let input = gpt2_rank1Input(x: x)
         let output = try! model.prediction(input: input)
         return output.x
     }
