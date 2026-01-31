@@ -45,11 +45,11 @@ num_workers: 2
 server: mini2  # Server hostname
 workers:
   regular:
-    - hostname: mini3
-      rank: 2
-  tablets:
-    - hostname: ipad
+    - hostname: win
       rank: 1
+  tablets:
+    - hostname: pi5
+      rank: 2
 
 #Model parallelism specific configs
 num_nodes: 3
