@@ -27,7 +27,7 @@ CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
 with open(CONFIG_DIR / "model_parallelism" / "model_config_inference.yaml") as f:
     nn_config = yaml.safe_load(f)
 
-with open(CONFIG_DIR / "cluster_config_mp.yaml") as f:
+with open(CONFIG_DIR / "model_parallelism" / "cluster_config_inference.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Extract values with defaults
