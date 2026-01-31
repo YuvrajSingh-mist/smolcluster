@@ -42,14 +42,16 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-server: mini2  # Server hostname
+server: mini1  # Server hostname
 workers:
   regular:
-    - hostname: mini3
+    - hostname: pi5
       rank: 2
-  tablets:
-    - hostname: ipad
-      rank: 1
+    - hostname: win
+      rank: 3
+  # tablets:
+  #   - hostname: ipad
+  #     rank: 1
 
 #Model parallelism specific configs
 num_nodes: 3
