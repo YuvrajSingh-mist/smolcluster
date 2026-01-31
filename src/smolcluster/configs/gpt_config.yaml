@@ -9,7 +9,7 @@ num_layers: 6     # Number of layers (paper: 6 or 12)
 num_heads: 4      # Number of attention heads (paper: 4)
 ff_dim: 768      # Feed-forward dimension (paper: 1024)
 dropout: 0.1      # Dropout rate
-max_seq_len: 256  # Maximum sequence length (paper: 128 or 256)
+max_seq_len: 1024  # Maximum sequence length (paper: 128 or 256)
 
 # Training Hyperparameters
     

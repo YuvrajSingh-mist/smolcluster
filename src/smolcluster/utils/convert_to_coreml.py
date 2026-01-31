@@ -1,3 +1,4 @@
+from pyexpat import model
 import torch
 from transformers import AutoModelForCausalLM
 from pathlib import Path
@@ -101,21 +102,22 @@ def convert_to_coreml_weights(
     # Load cluster config
     if cluster_config_path is None:
         config_dir = Path(__file__).parent.parent / "configs"
-        cluster_config_path = str(config_dir / "cluster_config_mp.yaml")
+        cluster_config_path = str(config_dir / "model_parallelism" / "cluster_config_inference.yaml")
     
     with open(cluster_config_path) as f:
         cluster_config = yaml.safe_load(f)
     
     if nn_config is None:
         config_dir = Path(__file__).parent.parent / "configs"
-        with open(config_dir / "gpt_config.yaml") as f:
+        with open(config_dir / "model_parallelism" / "model_config_inference.yaml") as f:
             nn_config = yaml.safe_load(f)
             
     # Extract parameters from config
+    model_name = cluster_config['model_name']
     num_nodes = cluster_config['num_nodes']
     num_layers = cluster_config['num_layers']
     model_name = cluster_config['model_name']
-    max_seq = nn_config["max_seq_len"]
+    max_seq = nn_config[model_name]["ctx_length"]
     
     model = AutoModelForCausalLM.from_pretrained(hf_model_identifier)    
     model.eval()

@@ -195,7 +195,6 @@ def main():
     while True:
         
         message = receive_message(sock)
-        print(message)
         command, payload = message
         
         out = None

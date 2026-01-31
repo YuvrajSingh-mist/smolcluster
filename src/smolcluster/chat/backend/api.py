@@ -4,6 +4,7 @@ Handles user input and communicates with the distributed inference server.
 """
 import logging
 import socket
+import time
 from pathlib import Path
 from typing import Optional
 import uvicorn
@@ -42,6 +43,8 @@ app.add_middleware(
 server_socket: Optional[socket.socket] = None
 SERVER_HOST = "10.10.0.2"  # Update with your server host
 SERVER_PORT = 65432  # Update with your server port
+MAX_CONNECTION_RETRIES = 10
+RETRY_DELAY = 3  # seconds
 
 
 class ChatRequest(BaseModel):
@@ -59,27 +62,39 @@ class ChatResponse(BaseModel):
 
 
 def connect_to_server():
-    """Establish connection to Model Parallelism server."""
+    """Establish connection to Model Parallelism server with retry logic."""
     global server_socket
-    try:
-        if server_socket is None:
-            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_socket.connect((SERVER_HOST, SERVER_PORT))
-            logger.info(f"Connected to server at {SERVER_HOST}:{SERVER_PORT}")
-            
-            # Register as client
-            send_message(server_socket, ("register_client", 0))
-            response = receive_message(server_socket)
-            if response and response[0] == "client_registered":
-                logger.info("Successfully registered with server")
-            else:
-                raise Exception(f"Failed to register with server: {response}")
+    
+    for attempt in range(1, MAX_CONNECTION_RETRIES + 1):
+        try:
+            if server_socket is None:
+                logger.info(f"Attempt {attempt}/{MAX_CONNECTION_RETRIES}: Connecting to {SERVER_HOST}:{SERVER_PORT}...")
+                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server_socket.settimeout(10)  # 10 second timeout
+                server_socket.connect((SERVER_HOST, SERVER_PORT))
+                server_socket.settimeout(None)  # Remove timeout after connection
+                logger.info(f"Connected to server at {SERVER_HOST}:{SERVER_PORT}")
                 
-        return server_socket
-    except Exception as e:
-        logger.error(f"Failed to connect to server: {e}")
-        server_socket = None
-        raise HTTPException(status_code=503, detail=f"Server unavailable: {str(e)}")
+                # Register as client
+                send_message(server_socket, ("register_client", 0))
+                response = receive_message(server_socket)
+                if response and response[0] == "client_registered":
+                    logger.info("Successfully registered with server")
+                    return server_socket
+                else:
+                    raise Exception(f"Failed to register with server: {response}")
+                    
+            return server_socket
+        except Exception as e:
+            logger.warning(f"Attempt {attempt}/{MAX_CONNECTION_RETRIES} failed: {e}")
+            server_socket = None
+            
+            if attempt < MAX_CONNECTION_RETRIES:
+                logger.info(f"Retrying in {RETRY_DELAY} seconds...")
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error(f"Failed to connect after {MAX_CONNECTION_RETRIES} attempts")
+                raise HTTPException(status_code=503, detail=f"Server unavailable after {MAX_CONNECTION_RETRIES} attempts: {str(e)}")
 
 
 def disconnect_from_server():

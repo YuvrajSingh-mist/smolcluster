@@ -4,6 +4,7 @@ causal_gpt2:
   num_nodes: 3
   num_layers: 12
   max_new_tokens: 256
+  ctx_length: 1024
   
   # Active decoding strategy to use
   active_decoding_strategy: top_k
