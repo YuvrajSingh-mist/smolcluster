@@ -432,7 +432,12 @@ def run_edp_server(
        
     # Create and bind socket
     HOST_IP = "0.0.0.0"
-    PORT = cluster_config["port"]
+    port_config = cluster_config["port"]
+    if isinstance(port_config, dict):
+        server_hostname = cluster_config["server"]
+        PORT = port_config.get(server_hostname, port_config.get("default", 65432))
+    else:
+        PORT = port_config
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((HOST_IP, PORT))
