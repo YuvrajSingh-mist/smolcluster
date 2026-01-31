@@ -42,7 +42,7 @@ seed: 42
 
 # Cluster configuration
 num_workers: 2
-server: mini x  # Server hostname
+server: mini2  # Server hostname
 workers:
   regular:
     - hostname: mini3
