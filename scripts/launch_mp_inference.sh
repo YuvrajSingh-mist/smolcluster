@@ -11,7 +11,7 @@ export WANDB_API_KEY="$WANDB_API_TOKEN"
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_mp.yaml"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/model_parallelism/cluster_config_inference.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
