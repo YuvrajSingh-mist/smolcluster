@@ -106,16 +106,6 @@
             font-weight: 500;
         }
         
-        .param-badge.metric {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            font-weight: 600;
-        }
-        
-        .param-badge.metric strong {
-            color: white;
-        }
-        
         .param-badge strong {
             color: #667eea;
         }
@@ -350,25 +340,27 @@
                         paramsDiv.appendChild(badge);
                     }
                     
-                    // Add performance metrics
+                    // Add performance metrics in seconds
                     if (params.time_to_first_token_ms !== undefined && params.time_to_first_token_ms > 0) {
+                        const ttftSec = (params.time_to_first_token_ms / 1000).toFixed(3);
                         const badge = document.createElement('span');
-                        badge.className = 'param-badge metric';
-                        badge.innerHTML = `<strong>⚡ TTFT:</strong> ${params.time_to_first_token_ms}ms`;
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>TTFT:</strong> ${ttftSec}s`;
                         paramsDiv.appendChild(badge);
                     }
                     
                     if (params.tokens_per_second !== undefined && params.tokens_per_second > 0) {
                         const badge = document.createElement('span');
-                        badge.className = 'param-badge metric';
-                        badge.innerHTML = `<strong>🚀 Speed:</strong> ${params.tokens_per_second} tok/s`;
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Speed:</strong> ${params.tokens_per_second} tok/s`;
                         paramsDiv.appendChild(badge);
                     }
                     
                     if (params.total_time_ms !== undefined && params.total_time_ms > 0) {
+                        const totalSec = (params.total_time_ms / 1000).toFixed(3);
                         const badge = document.createElement('span');
-                        badge.className = 'param-badge metric';
-                        badge.innerHTML = `<strong>⏱️ Total:</strong> ${params.total_time_ms}ms`;
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Total:</strong> ${totalSec}s`;
                         paramsDiv.appendChild(badge);
                     }
                     
