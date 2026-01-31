@@ -1,7 +1,9 @@
-"""
+"""  
 FastAPI backend for chat application with Model Parallelism server.
 Handles user input and communicates with the distributed inference server.
 """
+import asyncio
+import json
 import logging
 import socket
 import time
@@ -11,6 +13,7 @@ import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from smolcluster.utils.common_utils import send_message, receive_message, get_inference_metrics
@@ -185,109 +188,105 @@ async def health():
         return {"status": "error", "healthy": False, "error": str(e)}
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat(request: ChatRequest):
     """
-    Send user text to model parallelism server and get generated response.
+    Stream tokens from model parallelism server with accurate TTFT measurement.
     
     Args:
         request: ChatRequest with text and generation parameters
         
     Returns:
-        ChatResponse with generated text and performance metrics
+        StreamingResponse with Server-Sent Events
     """
-    # Get inference metrics tracker
-    metrics_tracker = get_inference_metrics()
-    metrics_tracker.reset()
+    async def generate():
+        # Get inference metrics tracker
+        metrics_tracker = get_inference_metrics()
+        metrics_tracker.reset()
+        
+        try:
+            # Ensure connection
+            sock = connect_to_server()
+            if sock is None:
+                yield f"data: {json.dumps({'error': 'Could not connect to server', 'done': True})}\n\n"
+                return
+            
+            # Send inference request to server
+            inference_request = {
+                "command": "inference",
+                "prompt": request.text,
+                "max_tokens": request.max_tokens or model_config.get("max_new_tokens", 50),
+                "temperature": request.temperature or model_config.get("temperature", 0.7),
+                "top_p": request.top_p or model_config.get("top_p", 0.9),
+                "top_k": request.top_k or model_config.get("top_k", 50)
+            }
+            
+            logger.info(f"Sending streaming inference request: {request.text[:50]}...")
+            
+            # Start timing
+            metrics_tracker.start_inference()
+            send_message(sock, ("inference", inference_request))
+            
+            # Stream tokens as they arrive
+            full_text = ""
+            while True:
+                response = receive_message(sock)
+                
+                if response is None:
+                    yield f"data: {json.dumps({'error': 'Connection lost', 'done': True})}\n\n"
+                    break
+                
+                command, result = response
+                
+                if command == "token":
+                    # Received a new token
+                    token_text = result.get("text", "")
+                    token_idx = result.get("token_idx", 0)
+                    
+                    # Record token for metrics
+                    metrics_tracker.record_token()
+                    full_text += token_text
+                    
+                    # Send token to frontend
+                    yield f"data: {json.dumps({'token': token_text, 'done': False})}\n\n"
+                    logger.info(f"Streamed token {token_idx}: {token_text}")
+                    
+                elif command == "inference_complete":
+                    # Generation complete
+                    metrics_tracker.end_inference()
+                    perf_metrics = metrics_tracker.get_metrics()
+                    
+                    logger.info(f"Streaming complete. Metrics: {perf_metrics}")
+                    
+                    # Send final metrics
+                    final_data = {
+                        'done': True,
+                        'full_text': full_text,
+                        'total_time_ms': perf_metrics.get('total_time_ms'),
+                        'time_to_first_token_ms': perf_metrics.get('time_to_first_token_ms'),
+                        'tokens_per_second': perf_metrics.get('tokens_per_second'),
+                        'num_tokens': perf_metrics.get('num_tokens')
+                    }
+                    yield f"data: {json.dumps(final_data)}\\n\\n"
+                    break
+                    
+                elif command == "error":
+                    error_msg = result.get("message", "Unknown error")
+                    logger.error(f"Server error: {error_msg}")
+                    yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                    break
+                    
+                else:
+                    logger.warning(f"Unexpected command: {command}")
+                    yield f"data: {json.dumps({'error': f'Unexpected response: {command}', 'done': True})}\n\n"
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error during streaming inference: {e}")
+            disconnect_from_server()
+            yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
     
-    try:
-        # Ensure connection
-        sock = connect_to_server()
-        if sock is None:
-            raise HTTPException(status_code=503, detail="Could not connect to server")
-        
-        # Send inference request to server
-        inference_request = {
-            "command": "inference",
-            "prompt": request.text,
-            "max_tokens": request.max_tokens or model_config.get("max_new_tokens", 50),
-            "temperature": request.temperature or model_config.get("temperature", 0.7),
-            "top_p": request.top_p or model_config.get("top_p", 0.9),
-            "top_k": request.top_k or model_config.get("top_k", 50)
-        }
-        
-        logger.info(f"Sending inference request: {request.text[:50]}...")
-        
-        # Start timing
-        metrics_tracker.start_inference()
-        send_message(sock, ("inference", inference_request))
-        
-        # Receive generated response
-        response = receive_message(sock)
-        metrics_tracker.end_inference()
-        
-        if response is None:
-            raise HTTPException(status_code=500, detail="No response from server")
-        
-        command, result = response
-        
-        if command == "inference_result":
-            generated_text = result.get("text", "")
-            logger.info(f"Received response: {generated_text[:50]}...")
-            
-            # Count tokens (simple approximation: split by whitespace)
-            # For more accurate counting, use a tokenizer
-            num_tokens = len(generated_text.split())
-            for _ in range(num_tokens):
-                metrics_tracker.record_token()
-            
-            # Get performance metrics
-            perf_metrics = metrics_tracker.get_metrics()
-            logger.info(f"Inference metrics: {perf_metrics}")
-            
-            return ChatResponse(
-                generated_text=generated_text,
-                success=True,
-                total_time_ms=perf_metrics.get('total_time_ms'),
-                time_to_first_token_ms=perf_metrics.get('time_to_first_token_ms'),
-                tokens_per_second=perf_metrics.get('tokens_per_second'),
-                num_tokens=perf_metrics.get('num_tokens')
-            )
-        elif command == "error":
-            error_msg = result.get("message", "Unknown error")
-            logger.error(f"Server error: {error_msg}")
-            perf_metrics = metrics_tracker.get_metrics()
-            return ChatResponse(
-                generated_text="",
-                success=False,
-                error=error_msg,
-                total_time_ms=perf_metrics.get('total_time_ms'),
-                time_to_first_token_ms=perf_metrics.get('time_to_first_token_ms'),
-                tokens_per_second=perf_metrics.get('tokens_per_second'),
-                num_tokens=perf_metrics.get('num_tokens')
-            )
-        else:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Unexpected response from server: {command}"
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error during inference: {e}")
-        # Try to reconnect on next request
-        disconnect_from_server()
-        perf_metrics = metrics_tracker.get_metrics()
-        return ChatResponse(
-            generated_text="",
-            success=False,
-            error=str(e),
-            total_time_ms=perf_metrics.get('total_time_ms'),
-            time_to_first_token_ms=perf_metrics.get('time_to_first_token_ms'),
-            tokens_per_second=perf_metrics.get('tokens_per_second'),
-            num_tokens=perf_metrics.get('num_tokens')
-        )
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/reconnect")

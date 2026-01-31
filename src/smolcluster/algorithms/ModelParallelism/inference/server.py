@@ -300,6 +300,17 @@ def main():
                 top_k=top_k
             )
             
+            # Stream the token immediately to client
+            new_token_id = tokenized_prompt[0, -1].item()
+            new_token_text = tokenizer.decode([new_token_id], skip_special_tokens=True)
+            
+            try:
+                send_message(client_socket, ("token", {"text": new_token_text, "token_idx": token_idx}))
+                logger.info(f"Streamed token {token_idx}: {new_token_text}")
+            except Exception as e:
+                logger.error(f"Failed to stream token to client: {e}")
+                break
+            
             if should_stop:
                 break
         
@@ -309,12 +320,12 @@ def main():
        
         logger.info(f"Generated: {generated_text[:100]}...")
         
-        # Send result back to API client
+        # Send completion signal to client
         try:
-            send_message(client_socket, ("inference_result", {"text": generated_text}))
-            logger.info("Sent result to client")
+            send_message(client_socket, ("inference_complete", {"text": generated_text}))
+            logger.info("Sent completion signal to client")
         except Exception as e:
-            logger.error(f"Failed to send result to client: {e}")
+            logger.error(f"Failed to send completion to client: {e}")
         
         del activations 
         

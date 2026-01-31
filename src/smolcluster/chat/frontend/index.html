@@ -407,8 +407,25 @@
             addMessage(text, 'user');
             chatInput.value = '';
             
-            // Show loading
-            showLoading();
+            // Create assistant message placeholder for streaming
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            messageDiv.id = 'streamingMessage';
+            
+            const wrapperDiv = document.createElement('div');
+            wrapperDiv.className = 'message-wrapper';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = '';
+            
+            wrapperDiv.appendChild(contentDiv);
+            messageDiv.appendChild(wrapperDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            
+            let fullText = '';
+            let metrics = {};
             
             try {
                 const response = await fetch(`${API_URL}/chat`, {
@@ -424,33 +441,99 @@
                     })
                 });
                 
-                removeLoading();
-                
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 
-                const data = await response.json();
+                // Read streaming response
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
                 
-                if (data.success) {
-                    addMessage(data.generated_text, 'assistant', {
-                        max_tokens: modelConfig.max_new_tokens,
-                        temperature: modelConfig.temperature,
-                        top_p: modelConfig.top_p,
-                        top_k: modelConfig.top_k,
-                        decoding_strategy: modelConfig.decoding_strategy,
-                        // Inference metrics
-                        time_to_first_token_ms: data.time_to_first_token_ms,
-                        tokens_per_second: data.tokens_per_second,
-                        total_time_ms: data.total_time_ms,
-                        num_tokens: data.num_tokens
-                    });
-                } else {
-                    addMessage(`Error: ${data.error}`, 'error');
+                while (true) {
+                    const {value, done} = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.slice(6));
+                            
+                            if (data.error) {
+                                contentDiv.textContent = `Error: ${data.error}`;
+                                contentDiv.parentElement.parentElement.className = 'message error';
+                                break;
+                            }
+                            
+                            if (data.token) {
+                                // Append token to display
+                                fullText += data.token;
+                                contentDiv.textContent = fullText;
+                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                            }
+                            
+                            if (data.done) {
+                                // Generation complete, add metrics
+                                metrics = {
+                                    time_to_first_token_ms: data.time_to_first_token_ms,
+                                    tokens_per_second: data.tokens_per_second,
+                                    total_time_ms: data.total_time_ms,
+                                    num_tokens: data.num_tokens
+                                };
+                                
+                                // Add parameter badges
+                                const paramsDiv = document.createElement('div');
+                                paramsDiv.className = 'params-info';
+                                
+                                // Model parameters
+                                const tempBadge = document.createElement('span');
+                                tempBadge.className = 'param-badge';
+                                tempBadge.innerHTML = `<strong>Temp:</strong> ${modelConfig.temperature}`;
+                                paramsDiv.appendChild(tempBadge);
+                                
+                                const topPBadge = document.createElement('span');
+                                topPBadge.className = 'param-badge';
+                                topPBadge.innerHTML = `<strong>Top-p:</strong> ${modelConfig.top_p}`;
+                                paramsDiv.appendChild(topPBadge);
+                                
+                                // Performance metrics
+                                if (metrics.time_to_first_token_ms) {
+                                    const ttftSec = (metrics.time_to_first_token_ms / 1000).toFixed(3);
+                                    const ttftBadge = document.createElement('span');
+                                    ttftBadge.className = 'param-badge';
+                                    ttftBadge.innerHTML = `<strong>TTFT:</strong> ${ttftSec}s`;
+                                    paramsDiv.appendChild(ttftBadge);
+                                }
+                                
+                                if (metrics.tokens_per_second) {
+                                    const speedBadge = document.createElement('span');
+                                    speedBadge.className = 'param-badge';
+                                    speedBadge.innerHTML = `<strong>Speed:</strong> ${metrics.tokens_per_second} tok/s`;
+                                    paramsDiv.appendChild(speedBadge);
+                                }
+                                
+                                if (metrics.total_time_ms) {
+                                    const totalSec = (metrics.total_time_ms / 1000).toFixed(3);
+                                    const totalBadge = document.createElement('span');
+                                    totalBadge.className = 'param-badge';
+                                    totalBadge.innerHTML = `<strong>Total:</strong> ${totalSec}s`;
+                                    paramsDiv.appendChild(totalBadge);
+                                }
+                                
+                                wrapperDiv.appendChild(paramsDiv);
+                                messageDiv.id = '';  // Remove streaming ID
+                                break;
+                            }
+                        }
+                    }
                 }
                 
             } catch (error) {
-                removeLoading();
+                const streamingMsg = document.getElementById('streamingMessage');
+                if (streamingMsg) {
+                    streamingMsg.remove();
+                }
                 addMessage(`Failed to get response: ${error.message}`, 'error');
                 console.error('Error:', error);
             } finally {
