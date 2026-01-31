@@ -19,6 +19,11 @@ port:
   win: 65432
   ipad: 8000  # iPad uses port 8000 (port forwarding from external network)
 
+# Web interface ports
+web_interface:
+  api_port: 8080      # FastAPI backend port
+  frontend_port: 5050  # HTML frontend port
+
 # Network buffer sizes (in MB) - device-specific optimizations
 buffer_size:
   mini1: 8  # Mac Mini - 8MB (Thunderbolt 40Gbps)

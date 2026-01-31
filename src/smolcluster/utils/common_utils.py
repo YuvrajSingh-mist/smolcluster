@@ -8,6 +8,65 @@ from huggingface_hub import HfApi, Repository
 import torch
 
 
+class InferenceMetrics:
+    """Track inference performance metrics."""
+    
+    def __init__(self):
+        self.reset()
+    
+    def reset(self):
+        """Reset all metrics for a new inference request."""
+        self.start_time = None
+        self.first_token_time = None
+        self.end_time = None
+        self.num_tokens = 0
+    
+    def start_inference(self):
+        """Mark the start of inference."""
+        self.start_time = time.time()
+    
+    def record_first_token(self):
+        """Record when the first token was generated."""
+        if self.first_token_time is None:
+            self.first_token_time = time.time()
+    
+    def record_token(self):
+        """Record that a token was generated."""
+        self.num_tokens += 1
+        if self.num_tokens == 1:
+            self.record_first_token()
+    
+    def end_inference(self):
+        """Mark the end of inference."""
+        self.end_time = time.time()
+    
+    def get_metrics(self) -> dict:
+        """Calculate and return inference metrics."""
+        metrics = {}
+        
+        if self.start_time and self.end_time:
+            # Total time for generation
+            total_time = self.end_time - self.start_time
+            metrics['total_time_ms'] = round(total_time * 1000, 2)
+            
+            # Time to first token (TTFT)
+            if self.first_token_time:
+                ttft = self.first_token_time - self.start_time
+                metrics['time_to_first_token_ms'] = round(ttft * 1000, 2)
+            else:
+                metrics['time_to_first_token_ms'] = 0
+            
+            # Tokens per second (throughput)
+            if self.num_tokens > 0 and total_time > 0:
+                metrics['tokens_per_second'] = round(self.num_tokens / total_time, 2)
+            else:
+                metrics['tokens_per_second'] = 0
+            
+            metrics['num_tokens'] = self.num_tokens
+        
+        return metrics
+
+
 class NetworkMetrics:
     """Track network performance metrics for distributed training."""
     
@@ -66,13 +125,19 @@ class NetworkMetrics:
         return metrics
 
 
-# Global metrics instance (can be replaced with per-socket tracking if needed)
+# Global metrics instances
 _network_metrics = NetworkMetrics()
+_inference_metrics = InferenceMetrics()
 
 
 def get_network_metrics(reset: bool = True) -> dict:
     """Get current network metrics."""
     return _network_metrics.get_metrics(reset=reset)
+
+
+def get_inference_metrics() -> InferenceMetrics:
+    """Get the global inference metrics instance."""
+    return _inference_metrics
 
 def recv_tensor(sock):
     """Receive a tensor with network metrics tracking."""
@@ -154,7 +219,7 @@ def send_message(sock: socket.SocketType, message: Any, buffer_size_mb: Optional
     _network_metrics.record_send(len(data), duration)
 
 
-def receive_message(sock: socket.SocketType, buffer_size_mb: Optional[int] = None) -> dict:
+def receive_message(sock: socket.SocketType, buffer_size_mb: Optional[int] = None) -> Optional[dict]:
     """Receive a message with optional buffer size configuration and metrics tracking.
     
     Args:
@@ -162,7 +227,7 @@ def receive_message(sock: socket.SocketType, buffer_size_mb: Optional[int] = Non
         buffer_size_mb: Buffer size in MB (None = use 4MB default)
         
     Returns:
-        Unpickled message
+        Unpickled message or None if socket closed
     """
     start_time = time.time()
     

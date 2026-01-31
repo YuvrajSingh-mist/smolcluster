@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from smolcluster.utils.common_utils import send_message, receive_message
+from smolcluster.utils.common_utils import send_message, receive_message, get_inference_metrics
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
 with open(CONFIG_DIR / "model_parallelism" / "model_config_inference.yaml") as f:
     model_configs = yaml.safe_load(f)
+
+# Load cluster config for web interface ports and server connection
+with open(CONFIG_DIR / "model_parallelism" / "cluster_config_inference.yaml") as f:
+    cluster_config = yaml.safe_load(f)
 
 # Get active model config (default to causal_gpt2)
 MODEL_NAME = 'causal_gpt2'
@@ -41,8 +45,19 @@ app.add_middleware(
 
 # Global socket connection to server
 server_socket: Optional[socket.socket] = None
-SERVER_HOST = "10.10.0.2"  # Update with your server host
-SERVER_PORT = 65432  # Update with your server port
+
+# Get server connection details from cluster config
+server_hostname = cluster_config["server"]
+SERVER_HOST = cluster_config["host_ip"][server_hostname]
+port_config = cluster_config["port"]
+if isinstance(port_config, dict):
+    SERVER_PORT = port_config.get(server_hostname, port_config.get("default", 65432))
+else:
+    SERVER_PORT = port_config
+
+# Get web interface port from cluster config
+API_PORT = cluster_config["web_interface"]["api_port"]
+
 MAX_CONNECTION_RETRIES = 10
 RETRY_DELAY = 3  # seconds
 
@@ -59,6 +74,11 @@ class ChatResponse(BaseModel):
     generated_text: str
     success: bool
     error: Optional[str] = None
+    # Inference metrics
+    total_time_ms: Optional[float] = None
+    time_to_first_token_ms: Optional[float] = None
+    tokens_per_second: Optional[float] = None
+    num_tokens: Optional[int] = None
 
 
 def connect_to_server():
@@ -133,6 +153,27 @@ async def root():
     return {"status": "ok", "service": "SmolCluster Chat API"}
 
 
+@app.get("/config")
+async def get_config():
+    """Get API and model configuration."""
+    active_strategy = model_config.get("active_decoding_strategy", "top_p")
+    strategies = model_config.get("decoding_strategies", {})
+    strategy_params = strategies.get(active_strategy, {})
+    
+    return {
+        "api_port": API_PORT,
+        "frontend_port": cluster_config["web_interface"]["frontend_port"],
+        "server_host": SERVER_HOST,
+        "server_port": SERVER_PORT,
+        "model_name": MODEL_NAME,
+        "max_new_tokens": model_config.get("max_new_tokens", 50),
+        "decoding_strategy": active_strategy,
+        "temperature": strategy_params.get("temperature", 1.0),
+        "top_p": strategy_params.get("p", 0.9),
+        "top_k": strategy_params.get("k", 50)
+    }
+
+
 @app.get("/health")
 async def health():
     """Check if server connection is healthy."""
@@ -144,23 +185,6 @@ async def health():
         return {"status": "error", "healthy": False, "error": str(e)}
 
 
-@app.get("/config")
-async def get_config():
-    """Get model configuration values for frontend."""
-    active_strategy = model_config.get("active_decoding_strategy", "top_p")
-    strategies = model_config.get("decoding_strategies", {})
-    strategy_params = strategies.get(active_strategy, {})
-    
-    return {
-        "model_name": MODEL_NAME,
-        "max_new_tokens": model_config.get("max_new_tokens", 50),
-        "decoding_strategy": active_strategy,
-        "temperature": strategy_params.get("temperature", 1.0),
-        "top_p": strategy_params.get("p", 0.9),
-        "top_k": strategy_params.get("k", 50)
-    }
-
-
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
@@ -170,11 +194,17 @@ async def chat(request: ChatRequest):
         request: ChatRequest with text and generation parameters
         
     Returns:
-        ChatResponse with generated text
+        ChatResponse with generated text and performance metrics
     """
+    # Get inference metrics tracker
+    metrics_tracker = get_inference_metrics()
+    metrics_tracker.reset()
+    
     try:
         # Ensure connection
         sock = connect_to_server()
+        if sock is None:
+            raise HTTPException(status_code=503, detail="Could not connect to server")
         
         # Send inference request to server
         inference_request = {
@@ -187,10 +217,14 @@ async def chat(request: ChatRequest):
         }
         
         logger.info(f"Sending inference request: {request.text[:50]}...")
+        
+        # Start timing
+        metrics_tracker.start_inference()
         send_message(sock, ("inference", inference_request))
         
         # Receive generated response
         response = receive_message(sock)
+        metrics_tracker.end_inference()
         
         if response is None:
             raise HTTPException(status_code=500, detail="No response from server")
@@ -201,17 +235,36 @@ async def chat(request: ChatRequest):
             generated_text = result.get("text", "")
             logger.info(f"Received response: {generated_text[:50]}...")
             
+            # Count tokens (simple approximation: split by whitespace)
+            # For more accurate counting, use a tokenizer
+            num_tokens = len(generated_text.split())
+            for _ in range(num_tokens):
+                metrics_tracker.record_token()
+            
+            # Get performance metrics
+            perf_metrics = metrics_tracker.get_metrics()
+            logger.info(f"Inference metrics: {perf_metrics}")
+            
             return ChatResponse(
                 generated_text=generated_text,
-                success=True
+                success=True,
+                total_time_ms=perf_metrics.get('total_time_ms'),
+                time_to_first_token_ms=perf_metrics.get('time_to_first_token_ms'),
+                tokens_per_second=perf_metrics.get('tokens_per_second'),
+                num_tokens=perf_metrics.get('num_tokens')
             )
         elif command == "error":
             error_msg = result.get("message", "Unknown error")
             logger.error(f"Server error: {error_msg}")
+            perf_metrics = metrics_tracker.get_metrics()
             return ChatResponse(
                 generated_text="",
                 success=False,
-                error=error_msg
+                error=error_msg,
+                total_time_ms=perf_metrics.get('total_time_ms'),
+                time_to_first_token_ms=perf_metrics.get('time_to_first_token_ms'),
+                tokens_per_second=perf_metrics.get('tokens_per_second'),
+                num_tokens=perf_metrics.get('num_tokens')
             )
         else:
             raise HTTPException(
@@ -225,10 +278,15 @@ async def chat(request: ChatRequest):
         logger.error(f"Error during inference: {e}")
         # Try to reconnect on next request
         disconnect_from_server()
+        perf_metrics = metrics_tracker.get_metrics()
         return ChatResponse(
             generated_text="",
             success=False,
-            error=str(e)
+            error=str(e),
+            total_time_ms=perf_metrics.get('total_time_ms'),
+            time_to_first_token_ms=perf_metrics.get('time_to_first_token_ms'),
+            tokens_per_second=perf_metrics.get('tokens_per_second'),
+            num_tokens=perf_metrics.get('num_tokens')
         )
 
 
@@ -245,4 +303,4 @@ async def reconnect():
 
 if __name__ == "__main__":
     
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=API_PORT)

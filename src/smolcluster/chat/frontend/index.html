@@ -106,6 +106,16 @@
             font-weight: 500;
         }
         
+        .param-badge.metric {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-weight: 600;
+        }
+        
+        .param-badge.metric strong {
+            color: white;
+        }
+        
         .param-badge strong {
             color: #667eea;
         }
@@ -205,7 +215,9 @@
     </div>
 
     <script>
-        const API_URL = 'http://localhost:8080';
+        // Dynamically determine API URL based on current host
+        // Assumes API runs on same host but different port (will fetch from config)
+        let API_URL = 'http://localhost:8080';  // Default, will be updated
         const chatMessages = document.getElementById('chatMessages');
         const chatInput = document.getElementById('chatInput');
         const sendButton = document.getElementById('sendButton');
@@ -220,13 +232,38 @@
             decoding_strategy: 'top_p'
         };
         
+        // Initialize API URL from config
+        async function initializeAPI() {
+            // Try to fetch config from default port first
+            const possiblePorts = [8080, 8000, 5000];
+            for (const port of possiblePorts) {
+                try {
+                    const testURL = `http://${window.location.hostname}:${port}`;
+                    const response = await fetch(`${testURL}/config`);
+                    if (response.ok) {
+                        const config = await response.json();
+                        API_URL = `http://${window.location.hostname}:${config.api_port}`;
+                        console.log('Connected to API:', API_URL);
+                        modelConfig = config;
+                        return true;
+                    }
+                } catch (error) {
+                    // Try next port
+                }
+            }
+            // Fallback to default
+            console.warn('Could not detect API port, using default');
+            return false;
+        }
+        
         // Fetch model config from API
         async function fetchConfig() {
             try {
                 const response = await fetch(`${API_URL}/config`);
                 if (response.ok) {
-                    modelConfig = await response.json();
-                    console.log('Loaded model config:', modelConfig);
+                    const config = await response.json();
+                    modelConfig = config;
+                    console.log('Loaded model config:', config);
                 }
             } catch (error) {
                 console.warn('Failed to fetch config, using defaults');
@@ -313,6 +350,28 @@
                         paramsDiv.appendChild(badge);
                     }
                     
+                    // Add performance metrics
+                    if (params.time_to_first_token_ms !== undefined && params.time_to_first_token_ms > 0) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge metric';
+                        badge.innerHTML = `<strong>⚡ TTFT:</strong> ${params.time_to_first_token_ms}ms`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.tokens_per_second !== undefined && params.tokens_per_second > 0) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge metric';
+                        badge.innerHTML = `<strong>🚀 Speed:</strong> ${params.tokens_per_second} tok/s`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.total_time_ms !== undefined && params.total_time_ms > 0) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge metric';
+                        badge.innerHTML = `<strong>⏱️ Total:</strong> ${params.total_time_ms}ms`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
                     wrapperDiv.appendChild(paramsDiv);
                 }
                 
@@ -387,7 +446,12 @@
                         temperature: modelConfig.temperature,
                         top_p: modelConfig.top_p,
                         top_k: modelConfig.top_k,
-                        decoding_strategy: modelConfig.decoding_strategy
+                        decoding_strategy: modelConfig.decoding_strategy,
+                        // Inference metrics
+                        time_to_first_token_ms: data.time_to_first_token_ms,
+                        tokens_per_second: data.tokens_per_second,
+                        total_time_ms: data.total_time_ms,
+                        num_tokens: data.num_tokens
                     });
                 } else {
                     addMessage(`Error: ${data.error}`, 'error');
@@ -414,13 +478,14 @@
             }
         });
         
-        // Check health on load and periodically
-        fetchConfig();
-        checkHealth();
-        setInterval(checkHealth, 5000);
-        
-        // Focus input on load
-        chatInput.focus();
+        // Initialize on load
+        (async () => {
+            await initializeAPI();
+            await fetchConfig();
+            await checkHealth();
+            setInterval(checkHealth, 5000);
+            chatInput.focus();
+        })();
     </script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 
 # Load environment variables from .env
 if [[ -f ".env" ]]; then
-    export $(grep -v '^#' .env | xargs)
+    export $(grep -v '^#' ../../.env | xargs)
 fi
 
 # Set WANDB_API_KEY for wandb compatibility
@@ -10,7 +10,7 @@ export WANDB_API_KEY="$WANDB_API_TOKEN"
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/model_parallelism/cluster_config_inference.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
@@ -82,7 +82,7 @@ SSH_NODES=("$SERVER" "${WORKERS[@]}")
 # Check SSH connectivity and remote requirements
 echo "🔗 Checking SSH connectivity and remote requirements..."
 if [[ ${#TABLETS[@]} -gt 0 ]]; then
-    echo "ℹ️  Skipping SSH checks for tablets: ${TABLETS[*]} (run locally on device)"
+    echo "ℹ️  Skipping SSH checks for tablets: ${TABLETS[*]} (will check locally)"
 fi
 if [[ "$DRY_RUN" != "true" ]]; then
     for node in "${SSH_NODES[@]}"; do
@@ -151,6 +151,58 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
     done
+    
+    # Check local requirements for tablet workers
+    if [[ ${#TABLETS[@]} -gt 0 ]]; then
+        echo ""
+        echo "🔧 Checking local requirements for tablet proxy workers..."
+        
+        # Check tmux locally
+        if ! command -v tmux &>/dev/null; then
+            echo "❌ Error: tmux is not installed locally. Install with: brew install tmux (macOS)"
+            exit 1
+        fi
+        
+        # Check uv locally
+        if ! command -v uv &>/dev/null; then
+            echo "❌ Error: uv is not installed locally. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+            exit 1
+        fi
+        
+        # Check Promtail locally
+        if command -v promtail &>/dev/null; then
+            echo "🧹 LOCAL: Cleaning up any existing Promtail processes and old logs..."
+            pkill -f promtail 2>/dev/null || true
+            rm -f /tmp/smolcluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml 2>/dev/null || true
+            mkdir -p /tmp/smolcluster-logs
+            sleep 1
+            
+            echo "🚀 LOCAL: Starting Promtail..."
+            nohup promtail -config.file="$PROJECT_DIR/logging/promtail-worker-remote.yaml" > /tmp/promtail.log 2>&1 </dev/null &
+            sleep 2
+            
+            if pgrep -f promtail >/dev/null; then
+                echo "✅ LOCAL: Promtail started successfully"
+            else
+                echo "⚠️  LOCAL: Promtail may not have started. Check /tmp/promtail.log"
+            fi
+        else
+            echo "⚠️  Warning: Promtail not found locally. Centralized logging will not work for tablets."
+            echo "   Install: See logging/SETUP.md"
+        fi
+        
+        # Check venv locally
+        echo "📦 Checking local venv..."
+        if [[ ! -f "$PROJECT_DIR/.venv/bin/python" ]]; then
+            echo "⚠️  Venv not found locally. Creating with Python 3.9..."
+            cd "$PROJECT_DIR" && uv venv --python 3.9.6 .venv && uv pip install -e .
+        else
+            echo "✅ Venv exists locally. Running uv sync..."
+            cd "$PROJECT_DIR" && uv sync
+        fi
+        
+        echo "✅ LOCAL: tmux OK, uv OK, venv OK"
+    fi
 else
     echo "✅ SSH and remote checks skipped (dry run)"
 fi
@@ -254,18 +306,35 @@ SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $RE
 launch_on_node "$SERVER" "$SERVER_CMD" "mp_inference_server"
 
 # Wait a moment for server to start
-echo "⏳ Waiting 3 seconds for server to initialize..."
-sleep 3
+echo "⏳ Waiting a few seconds for server to initialize..."
+sleep 10
 
 # Launch workers
 echo ""
 echo "👷 Launching Model Parallelism inference workers..."
+
+# Launch tablet workers locally
 if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
-    echo "ℹ️  Tablets should run manually: "
+    echo "📱 Launching tablet proxy workers locally..."
     for worker_entry in "${TABLET_WORKERS[@]}"; do
         hostname="${worker_entry%%:*}"
         rank="${worker_entry##*:}"
-        echo "      $hostname: python worker_tablets.py $rank $hostname"
+        
+        session_name="mp_tablet_proxy$rank"
+        log_file="$HOME/${session_name}.log"
+        
+        # Kill existing session if it exists
+        tmux kill-session -t "$session_name" 2>/dev/null || true
+        
+        # Launch locally in tmux
+        TABLET_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $PROJECT_DIR && uv run src/smolcluster/algorithms/ModelParallelism/inference/worker_tablets.py $rank $hostname"
+        
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "   [DRY RUN] Would execute: tmux new -d -s $session_name \"bash -c '$TABLET_CMD 2>&1 | tee $log_file; exec bash'\""
+        else
+            tmux new -d -s "$session_name" "bash -c '$TABLET_CMD 2>&1 | tee $log_file; exec bash'"
+            echo "   ✅ Tablet proxy rank $rank for $hostname (local session: $session_name, logs: $log_file)"
+        fi
     done
 fi
 
@@ -280,18 +349,34 @@ for worker_entry in "${REGULAR_WORKERS[@]}"; do
     echo "   ✅ Rank $rank: $hostname (mp_inference_worker$rank)"
 done
 
-# Reminder for tablet workers
-if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
-    echo ""
-    echo "⚠️  Remember to manually start tablet workers as shown above"
-fi
-
 echo ""
 echo "🎉 Model Parallelism inference launch complete!"
 echo ""
 echo "📊 Check status:"
 echo "   ssh $SERVER 'tmux ls'"
 echo "   ssh $SERVER 'tmux attach -t mp_inference_server'"
+if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
+    echo "   Local tablets: tmux ls (look for mp_tablet_proxy*)"
+fi
 echo ""
 echo "💬 Server will prompt for text input. Attach to server session to interact:"
 echo "   ssh $SERVER -t 'tmux attach -t mp_inference_server'"
+
+# Wait for server to fully initialize before launching API
+echo ""
+echo "⏳ Waiting 30 seconds for inference server to fully initialize..."
+sleep 30
+
+# Launch API and Frontend
+echo ""
+echo "🌐 Launching API and Frontend..."
+if [[ -f "$SCRIPT_DIR/launch_api.sh" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        bash "$SCRIPT_DIR/launch_api.sh" --dry-run
+    else
+        bash "$SCRIPT_DIR/launch_api.sh"
+    fi
+else
+    echo "⚠️  Warning: launch_api.sh not found at $SCRIPT_DIR/launch_api.sh"
+    echo "   Skipping API/Frontend launch"
+fi

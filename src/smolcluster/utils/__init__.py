@@ -6,7 +6,10 @@ from .common_utils import (
     set_gradients,
     set_weights,
     recv_tensor,
-    send_tensor
+    send_tensor,
+    get_inference_metrics,
+    InferenceMetrics,
+    NetworkMetrics
 )
 from .data import get_data_indices
 from .device import get_device
@@ -28,6 +31,9 @@ __all__ = [
     "get_weights",
     "recv_tensor",
     "send_tensor",
+    "get_inference_metrics",
+    "InferenceMetrics",
+    "NetworkMetrics",
     "download_and_convert_model",
     "ensure_model_weights",
 ]
