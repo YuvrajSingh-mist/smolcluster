@@ -159,7 +159,7 @@ async def root():
 @app.get("/config")
 async def get_config():
     """Get API and model configuration."""
-    active_strategy = model_config.get("active_decoding_strategy", "top_p")
+    active_strategy = model_config["active_decoding_strategy"]
     strategies = model_config.get("decoding_strategies", {})
     strategy_params = strategies.get(active_strategy, {})
     
@@ -169,11 +169,10 @@ async def get_config():
         "server_host": SERVER_HOST,
         "server_port": SERVER_PORT,
         "model_name": MODEL_NAME,
-        "max_new_tokens": model_config.get("max_new_tokens", 50),
+        "max_new_tokens": model_config["max_new_tokens"],
         "decoding_strategy": active_strategy,
         "temperature": strategy_params.get("temperature", 1.0),
-        "top_p": strategy_params.get("p", 0.9),
-        "top_k": strategy_params.get("k", 50)
+        f'{active_strategy}' : strategy_params
     }
 
 
@@ -215,10 +214,10 @@ async def chat(request: ChatRequest):
             inference_request = {
                 "command": "inference",
                 "prompt": request.text,
-                "max_tokens": request.max_tokens or model_config.get("max_new_tokens", 50),
-                "temperature": request.temperature or model_config.get("temperature", 0.7),
-                "top_p": request.top_p or model_config.get("top_p", 0.9),
-                "top_k": request.top_k or model_config.get("top_k", 50)
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "top_k": request.top_k
             }
             
             logger.info(f"Sending streaming inference request: {request.text[:50]}...")
@@ -233,7 +232,8 @@ async def chat(request: ChatRequest):
                 response = receive_message(sock)
                 
                 if response is None:
-                    yield f"data: {json.dumps({'error': 'Connection lost', 'done': True})}\n\n"
+                    error_data = {'error': 'Connection lost', 'done': True}
+                    yield f"data: {json.dumps(error_data)}\n\n"
                     break
                 
                 command, result = response
@@ -247,9 +247,10 @@ async def chat(request: ChatRequest):
                     metrics_tracker.record_token()
                     full_text += token_text
                     
-                    # Send token to frontend
-                    yield f"data: {json.dumps({'token': token_text, 'done': False})}\n\n"
-                    logger.info(f"Streamed token {token_idx}: {token_text}")
+                    # Send token to frontend (json.dumps handles escaping)
+                    token_data = {'token': token_text, 'done': False}
+                    yield f"data: {json.dumps(token_data)}\n\n"
+                    logger.info(f"Streamed token {token_idx}: {repr(token_text)}")
                     
                 elif command == "inference_complete":
                     # Generation complete
@@ -267,24 +268,27 @@ async def chat(request: ChatRequest):
                         'tokens_per_second': perf_metrics.get('tokens_per_second'),
                         'num_tokens': perf_metrics.get('num_tokens')
                     }
-                    yield f"data: {json.dumps(final_data)}\\n\\n"
+                    yield f"data: {json.dumps(final_data)}\n\n"
                     break
                     
                 elif command == "error":
                     error_msg = result.get("message", "Unknown error")
                     logger.error(f"Server error: {error_msg}")
-                    yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                    error_data = {'error': error_msg, 'done': True}
+                    yield f"data: {json.dumps(error_data)}\n\n"
                     break
                     
                 else:
                     logger.warning(f"Unexpected command: {command}")
-                    yield f"data: {json.dumps({'error': f'Unexpected response: {command}', 'done': True})}\n\n"
+                    error_data = {'error': f'Unexpected response: {command}', 'done': True}
+                    yield f"data: {json.dumps(error_data)}\n\n"
                     break
                     
         except Exception as e:
             logger.error(f"Error during streaming inference: {e}")
             disconnect_from_server()
-            yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+            error_data = {'error': str(e), 'done': True}
+            yield f"data: {json.dumps(error_data)}\n\n"
     
     return StreamingResponse(generate(), media_type="text/event-stream")
 
