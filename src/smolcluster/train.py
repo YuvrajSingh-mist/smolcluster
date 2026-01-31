@@ -257,7 +257,12 @@ def run_worker(worker_rank: int, hostname: str, algorithm: str = "syncps", resum
     
     # Get server connection info
     host_ip = cluster_config["host_ip"][hostname]
-    port = cluster_config["port"]
+    port_config = cluster_config["port"]
+    if isinstance(port_config, dict):
+        server_hostname = cluster_config["server"]
+        port = port_config.get(server_hostname, port_config.get("default", 65432))
+    else:
+        port = port_config
     
     # Load data with worker's batch size
     logger.info(f"Loading {gpt_config.get('dataset_name', 'dataset')} dataset...")
