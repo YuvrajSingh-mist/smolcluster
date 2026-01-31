@@ -47,9 +47,11 @@ workers:
   regular:
     - hostname: win
       rank: 1
-  tablets:
     - hostname: pi5
       rank: 2
+  # tablets:
+  #   - hostname: pi5
+  #     rank: 2
 
 #Model parallelism specific configs
 num_nodes: 3
