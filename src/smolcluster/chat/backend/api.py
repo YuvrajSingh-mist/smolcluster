@@ -71,6 +71,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = None  # Will use model config default
     top_p: Optional[float] = None  # Will use model config default
     top_k: Optional[int] = None  # Will use model config default
+    decoding_strategy: Optional[str] = None  # Will use model config default
 
 
 class ChatResponse(BaseModel):
@@ -217,7 +218,8 @@ async def chat(request: ChatRequest):
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
                 "top_p": request.top_p,
-                "top_k": request.top_k
+                "top_k": request.top_k,
+                "decoding_strategy": request.decoding_strategy
             }
             
             logger.info(f"Sending streaming inference request: {request.text[:50]}...")

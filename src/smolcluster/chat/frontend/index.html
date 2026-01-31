@@ -481,16 +481,41 @@
                                     const paramsDiv = document.createElement('div');
                                     paramsDiv.className = 'params-info';
                                     
-                                    // Model parameters
+                                    // Model parameters - show temperature
+                                    const strategy = modelConfig.decoding_strategy;
+                                    const strategyParams = modelConfig[strategy] || {};
+                                    const temp = strategyParams.temperature || modelConfig.temperature;
+                                    
                                     const tempBadge = document.createElement('span');
-                                tempBadge.className = 'param-badge';
-                                tempBadge.innerHTML = `<strong>Temp:</strong> ${modelConfig.temperature}`;
-                                paramsDiv.appendChild(tempBadge);
-                                
-                                const topPBadge = document.createElement('span');
-                                topPBadge.className = 'param-badge';
-                                topPBadge.innerHTML = `<strong>Top-p:</strong> ${modelConfig.top_p}`;
-                                paramsDiv.appendChild(topPBadge);
+                                    tempBadge.className = 'param-badge';
+                                    tempBadge.innerHTML = `<strong>Temp:</strong> ${temp}`;
+                                    paramsDiv.appendChild(tempBadge);
+                                    
+                                    // Show strategy-specific parameters
+                                    if (strategy === 'top_p' && strategyParams.p !== undefined) {
+                                        const topPBadge = document.createElement('span');
+                                        topPBadge.className = 'param-badge';
+                                        topPBadge.innerHTML = `<strong>Top-p:</strong> ${strategyParams.p}`;
+                                        paramsDiv.appendChild(topPBadge);
+                                    } else if (strategy === 'top_k' && strategyParams.k !== undefined) {
+                                        const topKBadge = document.createElement('span');
+                                        topKBadge.className = 'param-badge';
+                                        topKBadge.innerHTML = `<strong>Top-k:</strong> ${strategyParams.k}`;
+                                        paramsDiv.appendChild(topKBadge);
+                                    } else if (strategy === 'top_k_top_p') {
+                                        if (strategyParams.k !== undefined) {
+                                            const topKBadge = document.createElement('span');
+                                            topKBadge.className = 'param-badge';
+                                            topKBadge.innerHTML = `<strong>Top-k:</strong> ${strategyParams.k}`;
+                                            paramsDiv.appendChild(topKBadge);
+                                        }
+                                        if (strategyParams.p !== undefined) {
+                                            const topPBadge = document.createElement('span');
+                                            topPBadge.className = 'param-badge';
+                                            topPBadge.innerHTML = `<strong>Top-p:</strong> ${strategyParams.p}`;
+                                            paramsDiv.appendChild(topPBadge);
+                                        }
+                                    }
                                 
                                 // Performance metrics
                                 if (metrics.time_to_first_token_ms) {

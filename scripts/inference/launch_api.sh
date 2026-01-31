@@ -13,6 +13,19 @@ FRONTEND_DIR="$PROJECT_DIR/src/smolcluster/chat/frontend"
 API_PORT=$(yq '.web_interface.api_port' "$CONFIG_FILE")
 FRONTEND_PORT=$(yq '.web_interface.frontend_port' "$CONFIG_FILE")
 
+# Update index.html with correct API_URL before launching
+HTML_FILE="$FRONTEND_DIR/index.html"
+echo "📝 Updating API URL in index.html to use port $API_PORT..."
+# Use sed to replace the default API_URL with the correct one
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS sed syntax
+    sed -i '' "s|let API_URL = 'http://localhost:[0-9]*';|let API_URL = 'http://localhost:$API_PORT';|g" "$HTML_FILE"
+else
+    # Linux sed syntax
+    sed -i "s|let API_URL = 'http://localhost:[0-9]*';|let API_URL = 'http://localhost:$API_PORT';|g" "$HTML_FILE"
+fi
+echo "✅ Updated API_URL to http://localhost:$API_PORT"
+
 # Check for dry-run flag
 DRY_RUN=false
 if [[ "$1" == "--dry-run" ]]; then
