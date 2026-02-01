@@ -3,30 +3,27 @@ import logging
 import math
 import os
 import socket
-import sys
 import threading
 import time
 from pathlib import Path
+from queue import Queue
 
 import torch
 import torchinfo
 import wandb
 from torch.utils.data import DataLoader
 
+from smolcluster.utils.checkpointing import CheckpointManager
 from smolcluster.utils.common_utils import (
     get_weights,
     receive_message,
     send_message,
 )
-
+from smolcluster.utils.logging_utils import setup_cluster_logging
 from smolcluster.utils.quantization import (
     dequantize_model_weights,
     quantize_model_weights,
 )
-from smolcluster.utils.logging_utils import setup_cluster_logging
-from smolcluster.utils.checkpointing import CheckpointManager
-from queue import Queue
-
 
 # Setup logging (will be replaced by setup_cluster_logging in run_edp_server)
 logging.basicConfig(
@@ -59,7 +56,7 @@ def sender_loop(sock, send_queue):
         try:
             msg = send_queue.get(timeout=0.1)
             send_message(sock, msg)
-            
+
         except Exception as e:
             # Queue timeout or socket error
             if isinstance(e, OSError):
@@ -70,33 +67,36 @@ def sender_loop(sock, send_queue):
 
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     """Create learning rate schedule with linear warmup and cosine decay.
-    
+
     Args:
         warmup_iters: Number of warmup iterations
         max_iters: Total training iterations
         learning_rate: Peak learning rate (after warmup)
         min_lr: Minimum learning rate (end of decay)
-    
+
     Returns:
         Function that takes step and returns learning rate
     """
+
     def get_lr(step):
         # Linear warmup
         if step < warmup_iters:
             return learning_rate * (step + 1) / warmup_iters
-        
+
         # Cosine decay after warmup
         if step > max_iters:
             return min_lr
-        
+
         decay_ratio = (step - warmup_iters) / (max_iters - warmup_iters)
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return min_lr + coeff * (learning_rate - min_lr)
-    
+
     return get_lr
 
 
-def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_steps: int) -> bool:
+def should_save_checkpoint(
+    step: int, epoch: int, checkpoint_steps: int, total_steps: int
+) -> bool:
     """Determine if a checkpoint should be saved at the current step."""
     if checkpoint_steps <= 0:
         return False
@@ -105,11 +105,15 @@ def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_s
 
 
 def evaluate(
-    device: torch.device, model: torch.nn.Module, val_loader: DataLoader, criterion: torch.nn.Module, decoder_type_ppl: bool = False
+    device: torch.device,
+    model: torch.nn.Module,
+    val_loader: DataLoader,
+    criterion: torch.nn.Module,
+    decoder_type_ppl: bool = False,
 ) -> tuple[float, float]:
     model.eval()
     total_val_loss = 0.0
-    
+
     val_iter = iter(val_loader)
 
     with torch.no_grad():
@@ -123,9 +127,9 @@ def evaluate(
             data, target = batch
             data, target = data.to(device), target.to(device)
             output = model(data)
-            B,T,C = output.shape
-            output = output.view(B*T, C)
-            target = target.view(B*T)
+            B, T, C = output.shape
+            output = output.view(B * T, C)
+            target = target.view(B * T)
             loss = criterion(output, target)
             total_val_loss += loss.item()
             # _, predicted = torch.max(output.data, 1)
@@ -147,22 +151,22 @@ def compute_leader_loss(
     config: dict,
     device: torch.device,
     use_fp16: bool = False,
-    scaler = None,
+    scaler=None,
 ) -> tuple[torch.nn.Module, torch.Tensor]:
     model.train()
     optimizer.zero_grad()
-    
+
     # Use AMP if enabled
     if use_fp16 and scaler is not None:
         with torch.amp.autocast(device_type=device.type):
             output = model(data)
-            B,T,C = output.shape
-            output = output.view(B*T, C)
-            target = target.view(B*T)
+            B, T, C = output.shape
+            output = output.view(B * T, C)
+            target = target.view(B * T)
             loss = criterion(output, target)
-        
+
         scaler.scale(loss).backward()
-        
+
         # Gradient clipping with scaler
         if config.get("grad_clip_norm", 0.0) != 0.0:
             scaler.unscale_(optimizer)
@@ -170,12 +174,12 @@ def compute_leader_loss(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
     else:
         output = model(data)
-        B,T,C = output.shape
-        output = output.view(B*T, C)
-        target = target.view(B*T)
+        B, T, C = output.shape
+        output = output.view(B * T, C)
+        target = target.view(B * T)
         loss = criterion(output, target)
         loss.backward()
-        
+
         # Gradient clipping
         if config.get("grad_clip_norm", 0.0) != 0.0:
             max_norm = config.get("grad_clip_norm")
@@ -215,10 +219,14 @@ def polyak_average_weights(
     return blended, staleness_factor
 
 
-def process_message(command : str, payload: dict, model: torch.nn.Module, device: torch.device, use_quantization: bool, addr: tuple[str, int]):
-    
-    
-    
+def process_message(
+    command: str,
+    payload: dict,
+    model: torch.nn.Module,
+    device: torch.device,
+    use_quantization: bool,
+    addr: tuple[str, int],
+):
     if command == "polyark_averaging":
         recv_step = payload["step"]
         rank = payload["rank"]
@@ -234,14 +242,13 @@ def process_message(command : str, payload: dict, model: torch.nn.Module, device
             # Dequantize weights back to float32 on the server's device
             device_str = str(device)
             weights = dequantize_model_weights(quantized_weights, device=device_str)
-            
+
             with lock:
                 workers_grads_received[(rank, recv_step, worker_version)] = {
                     "type": "weights",
                     "data": weights,
                 }
         elif "weights" in payload:
-            
             weights = payload["weights"]
             logger.info(
                 f"Received model weights from worker {addr} rank {rank} for step {recv_step} (worker version: {worker_version}, server version: {model_version})"
@@ -251,11 +258,8 @@ def process_message(command : str, payload: dict, model: torch.nn.Module, device
                     "type": "weights",
                     "data": weights,
                 }
-        
-        
-        logger.info(
-            f"Data stored successfully for worker {rank} at step {recv_step}"
-        )
+
+        logger.info(f"Data stored successfully for worker {rank} at step {recv_step}")
 
     elif command == "pull_weights":
         rank = payload["rank"]
@@ -265,7 +269,7 @@ def process_message(command : str, payload: dict, model: torch.nn.Module, device
         )
 
         weights = get_weights(model)
-        
+
         if rank is not None and rank in workers:
             if use_quantization:
                 quantized_weights = quantize_model_weights(weights)
@@ -275,39 +279,39 @@ def process_message(command : str, payload: dict, model: torch.nn.Module, device
                 workers[rank]["send_queue"].put((weights, model_version))
                 logger.info(f"Weights queued for worker {rank}")
         else:
-            logger.warning(f"Worker rank {rank} not found in workers dict, cannot send weights")
+            logger.warning(
+                f"Worker rank {rank} not found in workers dict, cannot send weights"
+            )
 
     elif command == "disconnect":
         logger.info(f"Worker {addr} requested disconnection.")
         #  Remove disconnected worker
         with lock:
             workers.pop(addr, None)
-            
+
+
 def enqeue_bounded_queue(bounded_queue: Queue, message, control: bool = False):
-    
     if control:
-        
         try:
             bounded_queue.put(message)
         except Exception as e:
             logger.error(f"Error while putting data into queue for control tasks: {e}")
             raise
     else:
-  
         try:
             bounded_queue.put_nowait(message)
-            logger.info("Message enqueued successfully.")   
-        
+            logger.info("Message enqueued successfully.")
+
         except Exception:
-            
             try:
-            
-                discarded = bounded_queue.get_nowait()
+                bounded_queue.get_nowait()
                 logger.warning("Bounded queue full, discarding oldest message.")
                 bounded_queue.put_nowait(message)
-    
+
             except Exception:
-                logger.error("Failed to enqueue message after discarding oldest message.")
+                logger.error(
+                    "Failed to enqueue message after discarding oldest message."
+                )
                 raise
 
 
@@ -325,7 +329,7 @@ def run_edp_server(
 ):
     """
     Run EDP parameter server training.
-    
+
     Args:
         model: PyTorch model to train
         optimizer: Optimizer instance
@@ -339,14 +343,14 @@ def run_edp_server(
     """
     global model_version, logger
     shutdown_flag = threading.Event()
-    
+
     # Configure centralized logging (adds file handler to existing module-level logger)
     setup_cluster_logging(
         logger=logger,
         component="server",
         rank=None,
         hostname=hostname,
-        log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
+        log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
     logger.info("🚀 EDP Server starting up")
 
@@ -358,19 +362,25 @@ def run_edp_server(
     use_quantization = cluster_config["use_quantization"]
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     use_fp16 = config.get("use_fp16", False)
-    
-    #Defining the bounded queue
-    data_message_queue_size = cluster_config['data_message_queue_size']
+
+    # Defining the bounded queue
+    data_message_queue_size = cluster_config["data_message_queue_size"]
     data_messages_bounded_queue = Queue(maxsize=data_message_queue_size)
-    control_messages_bounded_queue = Queue(maxsize=cluster_config['control_message_queue_size'])
-    
-    MAX_DATA_MSGS_PER_STEP = 2 #to how much messages from queue to process per step
-    
+    control_messages_bounded_queue = Queue(
+        maxsize=cluster_config["control_message_queue_size"]
+    )
+
+    MAX_DATA_MSGS_PER_STEP = 2  # to how much messages from queue to process per step
+
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
-    scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
+    scaler = (
+        torch.amp.GradScaler(device.type)
+        if use_fp16 and device.type in ["cuda", "mps"]
+        else None
+    )
     if use_fp16:
         logger.info(f"Mixed precision training (fp16) enabled on device: {device.type}")
-    
+
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
     total_steps = num_epochs * len(train_loader)
@@ -380,29 +390,37 @@ def run_edp_server(
         min_lr = config["min_lr"]
         get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
         # Wrap custom LR function in LambdaLR scheduler for proper state saving
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: get_lr_fn(step) / learning_rate)
-        logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=lambda step: get_lr_fn(step) / learning_rate
+        )
+        logger.info(
+            f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}"
+        )
     else:
         logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
-    
+
     # Checkpoint settings
     save_checkpoints = config.get("save_checkpoints", True)
     checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
     checkpoint_steps = config.get("checkpoint_steps", 500)
     # Prioritize command-line resume path over config value
-    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    resume_from_checkpoint = resume_checkpoint_path or config.get(
+        "resume_from_checkpoint", None
+    )
     max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
     save_optimizer_state = config.get("save_optimizer_state", True)
-   
+
     # Initialize checkpoint manager
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir,
         max_checkpoints=max_checkpoints_to_keep,
         save_optimizer_state=save_optimizer_state,
-        prefix="server"
+        prefix="server",
     )
-    logger.info(f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}")
-    
+    logger.info(
+        f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}"
+    )
+
     # Resume from checkpoint if specified
     start_epoch = 0
     start_step = 0
@@ -413,23 +431,27 @@ def run_edp_server(
             model=model,
             optimizer=optimizer if save_optimizer_state else None,
             scheduler=scheduler,  # Load scheduler state if it exists
-            device=device
+            device=device,
         )
         if checkpoint_data:
-            start_epoch = checkpoint_data.get('epoch', 0)
-            start_step = checkpoint_data.get('step', 0)
+            start_epoch = checkpoint_data.get("epoch", 0)
+            start_step = checkpoint_data.get("step", 0)
             # Restore model version for elastic training
-            model_version = checkpoint_data.get('metadata', {}).get('model_version', 0)
-            logger.info(f"Resumed from epoch {start_epoch}, step {start_step}, model_version {model_version}")
+            model_version = checkpoint_data.get("metadata", {}).get("model_version", 0)
+            logger.info(
+                f"Resumed from epoch {start_epoch}, step {start_step}, model_version {model_version}"
+            )
         else:
-            logger.warning(f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch")
-   
+            logger.warning(
+                f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch"
+            )
+
     # Create checkpoint directory
     if save_checkpoints:
         checkpoint_path = Path(checkpoint_dir)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Checkpoints will be saved to: {checkpoint_path.absolute()}")
-       
+
     # Create and bind socket
     HOST_IP = "0.0.0.0"
     port_config = cluster_config["port"]
@@ -438,14 +460,16 @@ def run_edp_server(
         PORT = port_config.get(server_hostname, port_config.get("default", 65432))
     else:
         PORT = port_config
-    
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((HOST_IP, PORT))
     sock.listen(5)
     logger.info(f"Server listening on {HOST_IP}:{PORT}")
-    
+
     # Define handle_worker as nested function with access to model and use_quantization
-    def handle_worker(conn: socket.SocketType, addr: tuple[str, int], bounded_queue: Queue) -> None:
+    def handle_worker(
+        conn: socket.SocketType, addr: tuple[str, int], bounded_queue: Queue
+    ) -> None:
         global model_version
         logger.info(f"Handling worker at {addr}")
 
@@ -456,18 +480,20 @@ def run_edp_server(
             if message is None:
                 logger.info(f"Worker {addr} closed connection")
                 break
-            
-            command , _ = message
-            
+
+            command, _ = message
+
             if command in ["polyark_averaging", "disconnect"]:
-                
                 logger.info(f"Enqueuing {command} to control queue")
-                enqeue_bounded_queue(control_messages_bounded_queue, (message, conn, addr), control=True)
-                
-            elif command == 'pull_weights': #because it has a timeout and a few misses wont cause much trouble
+                enqeue_bounded_queue(
+                    control_messages_bounded_queue, (message, conn, addr), control=True
+                )
+
+            elif (
+                command == "pull_weights"
+            ):  # because it has a timeout and a few misses wont cause much trouble
                 logger.info(f"Enqueueing {command} to data queue")
                 enqeue_bounded_queue(data_messages_bounded_queue, (message, conn, addr))
-         
 
         conn.close()
 
@@ -485,12 +511,14 @@ def run_edp_server(
     )
 
     # Get input size from config (support both MNIST and GPT models)
-    
-    input_size = (batch_size, config['max_seq_len'])
+
+    input_size = (batch_size, config["max_seq_len"])
     input_dtype = [torch.long]
-    
+
     model_summary = str(
-        torchinfo.summary(model, input_size=input_size, device=device, dtypes=input_dtype)
+        torchinfo.summary(
+            model, input_size=input_size, device=device, dtypes=input_dtype
+        )
     )
     logger.info("Model Summary:")
     logger.info(model_summary)
@@ -513,39 +541,53 @@ def run_edp_server(
                     continue
 
                 command, rank, hostname = message
-                
+
                 if command == "register":
                     worker_hostname = hostname
-                    logger.info(f"Worker {rank} (hostname: {worker_hostname}) registered from {client_address}")
-                    
+                    logger.info(
+                        f"Worker {rank} (hostname: {worker_hostname}) registered from {client_address}"
+                    )
+
                     # Get worker-specific batch size from config
-                    batch_size_per_worker = cluster_config.get("batch_size_per_worker", {})
-                    worker_batch_size = batch_size_per_worker.get(worker_hostname, batch_size) if worker_hostname else batch_size
-                    logger.info(f"Assigning batch size {worker_batch_size} to worker {rank} ({worker_hostname})")
-                    
+                    batch_size_per_worker = cluster_config.get(
+                        "batch_size_per_worker", {}
+                    )
+                    worker_batch_size = (
+                        batch_size_per_worker.get(worker_hostname, batch_size)
+                        if worker_hostname
+                        else batch_size
+                    )
+                    logger.info(
+                        f"Assigning batch size {worker_batch_size} to worker {rank} ({worker_hostname})"
+                    )
+
                     # Create send queue and sender thread for this worker
                     send_queue = Queue(maxsize=32)
-                    
+
                     threading.Thread(
                         target=sender_loop,
                         args=(client_socket, send_queue),
-                        daemon=True
+                        daemon=True,
                     ).start()
-                    
+
                     with lock:
                         workers[rank] = {
                             "conn": client_socket,
                             "send_queue": send_queue,
-                            "batch_size": worker_batch_size
+                            "batch_size": worker_batch_size,
                         }
-                    
+
                     # Send start signal with batch size to this worker via queue
                     try:
                         send_queue.put(("start_training", worker_batch_size))
-                        logger.info(f"Queued start_training signal with batch_size={worker_batch_size} for worker {rank}")
+                        logger.info(
+                            f"Queued start_training signal with batch_size={worker_batch_size} for worker {rank}"
+                        )
                     except Exception as e:
-                        logger.error(f"Error queuing start signal for worker {rank}: {e}")
-                    
+                        logger.error(
+                            f"Error queuing start signal for worker {rank}: {e}"
+                        )
+
                     threading.Thread(
                         target=handle_worker,
                         args=(client_socket, client_address, data_message_queue_size),
@@ -581,10 +623,10 @@ def run_edp_server(
     total_steps = num_epochs * len(train_loader)
     total_loss = 0.0
     step_start_time = time.time()
-  
+
     for step in range(start_step, total_steps):
         model.train()
-        
+
         # Update learning rate if scheduler enabled
         if scheduler is not None:
             # Get current LR for logging
@@ -602,14 +644,11 @@ def run_edp_server(
         target = batch[1].to(device)
 
         epoch = step // len(train_loader)
-        
-       
-       
+
         if track_gradients and step % 1000 == 0:
             logger.info("Tracking gradients in wandb...")
             for name, param in model.named_parameters():
                 if param.grad is not None:
-                    
                     grad_norm = torch.norm(param.grad.detach(), 2).item()
                     safe_wandb_log(
                         {
@@ -620,7 +659,6 @@ def run_edp_server(
             logger.info("Gradient tracking complete.")
         start_time = time.time()
         while time.time() - start_time < 0.01:
-            
             try:
                 message, conn, addr = control_messages_bounded_queue.get_nowait()
             except Exception as e:
@@ -629,14 +667,16 @@ def run_edp_server(
 
             command, payload = message
             process_message(command, payload, model, device, use_quantization, addr)
-            
+
         start_time = time.time()
         num_msgs_processed = 0
-        
-        while time.time() - start_time < 0.01 and num_msgs_processed < MAX_DATA_MSGS_PER_STEP:
-            
-        # for _ in range(MAX_MSGS_PER_STEP):
-          
+
+        while (
+            time.time() - start_time < 0.01
+            and num_msgs_processed < MAX_DATA_MSGS_PER_STEP
+        ):
+            # for _ in range(MAX_MSGS_PER_STEP):
+
             try:
                 message, conn, addr = data_messages_bounded_queue.get_nowait()
             except Exception as e:
@@ -645,9 +685,9 @@ def run_edp_server(
 
             command, payload = message
             process_message(command, payload, model, device, use_quantization, addr)
-            
+
             num_msgs_processed += 1
-      
+
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
@@ -685,15 +725,25 @@ def run_edp_server(
                     model.load_state_dict(blended_weights, strict=False)
 
                     current_weights = blended_weights  # Update for next worker
-                    
-                      # Compute leader gradients
+
+                    # Compute leader gradients
                     model, leader_loss = compute_leader_loss(
-                        model, data, target, criterion, optimizer, config, device, use_fp16, scaler
+                        model,
+                        data,
+                        target,
+                        criterion,
+                        optimizer,
+                        config,
+                        device,
+                        use_fp16,
+                        scaler,
                     )
-                    logger.info(f"Epoch {epoch + 1}, Step: {step}: Computed leader loss.")
+                    logger.info(
+                        f"Epoch {epoch + 1}, Step: {step}: Computed leader loss."
+                    )
 
                     total_loss += leader_loss.item()
-                    
+
                     # Gradient clipping (only if not using AMP, since AMP handles it)
                     if not use_fp16:
                         if config.get("grad_clip_norm", 0.0) != 0.0:
@@ -705,37 +755,54 @@ def run_edp_server(
                         scaler.update()
                     else:
                         optimizer.step()
-                        
+
                     logger.info(
                         f"Applied leader gradients with worker {rank}. Step {step} / {total_steps}: Updated to model version {model_version}"
                     )
-                     # Calculate and log PPL for decoder models
+                    # Calculate and log PPL for decoder models
                     if decoder_type_ppl:
                         train_ppl = math.exp(total_loss / (step + 1))
                         if step % 50 == 0:
-                            safe_wandb_log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+                            safe_wandb_log(
+                                {
+                                    "step": step,
+                                    "epoch": epoch + 1,
+                                    "train/ppl": train_ppl,
+                                }
+                            )
 
                     with lock:
                         model_version += 1
 
             del workers_copy
             gc.collect()
-            
+
         else:
-            
             # Compute leader gradients
             model, leader_loss = compute_leader_loss(
-                model, data, target, criterion, optimizer, config, device, use_fp16, scaler
+                model,
+                data,
+                target,
+                criterion,
+                optimizer,
+                config,
+                device,
+                use_fp16,
+                scaler,
             )
-            logger.info(f"Epoch {epoch + 1}, Step: {step} / {total_steps}: Computed leader loss.")
+            logger.info(
+                f"Epoch {epoch + 1}, Step: {step} / {total_steps}: Computed leader loss."
+            )
 
             total_loss += leader_loss.item()
-            
-         # Calculate and log PPL for decoder models
+
+        # Calculate and log PPL for decoder models
         if decoder_type_ppl:
             train_ppl = math.exp(total_loss / (step + 1))
             if step % 50 == 0:
-                safe_wandb_log({"step": step, "epoch": epoch + 1, "train/ppl": train_ppl})
+                safe_wandb_log(
+                    {"step": step, "epoch": epoch + 1, "train/ppl": train_ppl}
+                )
 
         # Gradient clipping (only if not using AMP, since AMP handles it)
         if not use_fp16:
@@ -756,7 +823,6 @@ def run_edp_server(
         with lock:
             model_version += 1
 
-
         logger.info(
             f"Applied leader gradients. Step {step} / {total_steps}: Updated to model version {model_version}"
         )
@@ -764,30 +830,36 @@ def run_edp_server(
         logger.info(
             f"Epoch {epoch + 1}, Step: {step} / {total_steps}: Step loss = {leader_loss.item():.4f}"
         )
-        
+
         # Calculate tokens/sec throughput
         step_end_time = time.time()
         step_time = step_end_time - step_start_time
-        tokens_processed = batch_size * config['max_seq_len']
+        tokens_processed = batch_size * config["max_seq_len"]
         tok_per_sec = tokens_processed / step_time if step_time > 0 else 0
         step_start_time = step_end_time  # Reset for next step
-        
+
         # Save checkpoint based on steps
-        if save_checkpoints and checkpoint_steps > 0 and step > 0 and step % checkpoint_steps == 0:
+        if (
+            save_checkpoints
+            and checkpoint_steps > 0
+            and step > 0
+            and step % checkpoint_steps == 0
+        ):
             checkpoint_file = checkpoint_path / f"checkpoint_step_{step}.pt"
-            torch.save({
-                'step': step,
-                'epoch': epoch + 1,
-                'model_version': model_version,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': total_loss / (step + 1),
-                'config': config,
-            }, checkpoint_file)
+            torch.save(
+                {
+                    "step": step,
+                    "epoch": epoch + 1,
+                    "model_version": model_version,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "loss": total_loss / (step + 1),
+                    "config": config,
+                },
+                checkpoint_file,
+            )
             logger.info(f"💾 Saved checkpoint: {checkpoint_file}")
-            
-            
-           
+
         if step % 50 == 0:
             safe_wandb_log(
                 {
@@ -805,14 +877,15 @@ def run_edp_server(
                     "lr": current_lr,
                     "batch_size": batch_size,
                     "throughput/tok_per_sec": tok_per_sec,
-                  
                 }
             )
 
         if step % eval_steps == 0:
             logger.info(f"Evaluating model at step {step}...")
 
-            val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
+            val_loss, val_ppl = evaluate(
+                device, model, val_loader, criterion, decoder_type_ppl
+            )
 
             safe_wandb_log(
                 {
@@ -825,7 +898,9 @@ def run_edp_server(
                 safe_wandb_log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
 
         # Save checkpoint at regular intervals
-        if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, total_steps):
+        if save_checkpoints and should_save_checkpoint(
+            step, epoch, checkpoint_steps, total_steps
+        ):
             checkpoint_manager.save_checkpoint(
                 model=model,
                 optimizer=optimizer,
@@ -837,10 +912,12 @@ def run_edp_server(
                     "train_loss": total_loss / (step + 1),
                     "val_loss": val_loss if step % eval_steps == 0 else None,
                     "model_version": model_version,
-                    "learning_rate": current_lr
-                }
+                    "learning_rate": current_lr,
+                },
             )
-            logger.info(f"[Step {step}] Checkpoint saved (model_version={model_version})")
+            logger.info(
+                f"[Step {step}] Checkpoint saved (model_version={model_version})"
+            )
 
     logger.info(
         f"Training completed. Total steps: {step + 1}, Final model version: {model_version}"
@@ -856,7 +933,6 @@ def run_edp_server(
 
         start_time = time.time()
         while time.time() - start_time < 0.01:
-            
             try:
                 message, conn, addr = control_messages_bounded_queue.get_nowait()
             except Exception as e:
@@ -865,14 +941,14 @@ def run_edp_server(
 
             command, payload = message
             process_message(command, payload, model, device, use_quantization, addr)
-            
-            
+
         start_time = time.time()
         num_msgs_processed = 0
-        
-        while time.time() - start_time < 0.01 and num_msgs_processed < MAX_DATA_MSGS_PER_STEP:
-        
-            
+
+        while (
+            time.time() - start_time < 0.01
+            and num_msgs_processed < MAX_DATA_MSGS_PER_STEP
+        ):
             try:
                 message, conn, addr = data_messages_bounded_queue.get_nowait()
             except Exception as e:
@@ -881,9 +957,9 @@ def run_edp_server(
 
             command, payload = message
             process_message(command, payload, model, device, use_quantization, addr)
-            
+
             num_msgs_processed += 1
-            
+
         with lock:
             workers_copy = dict(workers_grads_received)
             workers_grads_received.clear()
@@ -919,16 +995,13 @@ def run_edp_server(
 
                     # Update model with blended weights
                     model.load_state_dict(blended_weights, strict=False)
-                    
+
                     current_weights = blended_weights  # Update for next worker
 
                     with lock:
                         model_version += 1
 
-
             del workers_copy
-
-           
 
             with lock:
                 model_version += 1
@@ -936,27 +1009,27 @@ def run_edp_server(
             step += 1
 
             epoch = step // len(train_loader)
-            
+
             gc.collect()
 
             data = data.to(device)
             target = target.to(device)
-            
+
             # Use AMP if enabled (for consistency)
             if use_fp16 and scaler is not None:
                 with torch.amp.autocast(device_type=device.type):
                     output = model(data)
-                    B,T,C = output.shape
-                    target = target.view(B*T)
-                    output = output.view(B*T, C)
+                    B, T, C = output.shape
+                    target = target.view(B * T)
+                    output = output.view(B * T, C)
                     loss = criterion(output, target)
             else:
                 output = model(data)
-                B,T,C = output.shape
-                target = target.view(B*T)
-                output = output.view(B*T, C)
+                B, T, C = output.shape
+                target = target.view(B * T)
+                output = output.view(B * T, C)
                 loss = criterion(output, target)
-            
+
             total_loss += loss.item()
 
             logger.info(f"Step: {step}: Step loss = {loss.item():.4f}")
@@ -983,7 +1056,9 @@ def run_edp_server(
             if step % eval_steps == 0:
                 logger.info(f"Evaluating model at step {step}...")
 
-                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
+                val_loss, val_ppl = evaluate(
+                    device, model, val_loader, criterion, decoder_type_ppl
+                )
 
                 safe_wandb_log(
                     {
@@ -993,12 +1068,14 @@ def run_edp_server(
                     }
                 )
                 if decoder_type_ppl and val_ppl is not None:
-                    safe_wandb_log({"step": step, "epoch": epoch + 1, "val/ppl": val_ppl})
+                    safe_wandb_log(
+                        {"step": step, "epoch": epoch + 1, "val/ppl": val_ppl}
+                    )
 
     shutdown_flag.set()
     sock.close()
     logger.info("Server shutdown complete")
-    
+
     # Cleanup DataLoaders to prevent resource leaks
     del train_loader, val_loader
     gc.collect()
@@ -1009,7 +1086,7 @@ def run_edp_server(
 def main():
     """Legacy main function for backward compatibility."""
     global model_version
-    
+
     # Login to wandb using API key from environment variable
     if "WANDB_API_TOKEN" in os.environ:
         wandb.login(key=os.environ["WANDB_API_TOKEN"], relogin=True)
@@ -1018,7 +1095,6 @@ def main():
     else:
         logger_temp = logging.getLogger("[SERVER-INIT]")
         logger_temp.warning("⚠️  WANDB_API_TOKEN not set - wandb may prompt for login")
-   
 
 
 if __name__ == "__main__":

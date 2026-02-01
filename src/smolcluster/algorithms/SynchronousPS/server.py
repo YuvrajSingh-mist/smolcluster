@@ -1,15 +1,17 @@
 import gc
 import logging
+import math
 import socket
 import threading
 from collections import defaultdict
-import math
-import torch
-import torchinfo
-from torch.utils.data import DataLoader
-import wandb
 from pathlib import Path
 
+import torch
+import torchinfo
+import wandb
+from torch.utils.data import DataLoader
+
+from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
     get_gradients,
     get_weights,
@@ -18,7 +20,6 @@ from smolcluster.utils.common_utils import (
     set_gradients,
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
-from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 
 # Setup logging (will be replaced by setup_cluster_logging in run_syncps_server)
 logging.basicConfig(
@@ -28,30 +29,30 @@ logger = logging.getLogger("[SERVER]")
 
 
 def evaluate(
-    device: torch.device, 
-    model: torch.nn.Module, 
-    val_loader: DataLoader, 
+    device: torch.device,
+    model: torch.nn.Module,
+    val_loader: DataLoader,
     criterion: torch.nn.Module,
-    decoder_type_ppl: bool = False
+    decoder_type_ppl: bool = False,
 ) -> tuple[float, float]:
     """Evaluate model on validation set."""
     model.eval()
     total_val_loss = 0.0
- 
+
     with torch.no_grad():
         for data, target in val_loader:
-    
             data, target = data.to(device), target.to(device)
             output = model(data)
-            B,T,C = output.shape
-            output = output.view(B*T, C)
-            target = target.view(B*T)
+            B, T, C = output.shape
+            output = output.view(B * T, C)
+            target = target.view(B * T)
             loss = criterion(output, target)
             total_val_loss += loss.item()
     avg_loss = total_val_loss / len(val_loader)
     ppl = math.exp(avg_loss) if decoder_type_ppl else None
-    
+
     return avg_loss, ppl
+
 
 def compute_leader_gradients(
     device: torch.device,
@@ -67,9 +68,9 @@ def compute_leader_gradients(
     model.train()
     data, target = data.to(device), target.to(device)
     output = model(data)
-    B,T,C = output.shape
-    output = output.view(B*T, C)
-    target = target.view(B*T)
+    B, T, C = output.shape
+    output = output.view(B * T, C)
+    target = target.view(B * T)
     loss = criterion(output, target)
     loss.backward()
     # Gradient clipping
@@ -81,8 +82,14 @@ def compute_leader_gradients(
     return loss, grads
 
 
-
-def handle_worker(conn: socket.socket, addr: tuple[str, int], workers: dict, grads_received: dict, step_event: threading.Event, lock: threading.Lock) -> None:
+def handle_worker(
+    conn: socket.socket,
+    addr: tuple[str, int],
+    workers: dict,
+    grads_received: dict,
+    step_event: threading.Event,
+    lock: threading.Lock,
+) -> None:
     """Handle individual worker connections and gradient reception."""
     logger.info(f"Handling worker at {addr}")
 
@@ -146,7 +153,7 @@ def run_syncps_server(
 ):
     """
     Run Synchronous Parameter Server training.
-    
+
     Args:
         model: PyTorch model to train
         optimizer: Optimizer instance
@@ -159,14 +166,14 @@ def run_syncps_server(
         criterion: Loss criterion
     """
     global logger
-    
+
     # Configure centralized logging
     setup_cluster_logging(
         logger=logger,
         component="server",
         rank=None,
         hostname=hostname,
-        log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
+        log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
     logger.info("🚀 SyncPS Server starting up")
 
@@ -179,16 +186,18 @@ def run_syncps_server(
     num_workers = cluster_config["num_workers"]
     world_size = num_workers + 1
     rank = 0  # Server is rank 0
-    
+
     # Checkpoint configuration
     save_checkpoints = config.get("save_checkpoints", True)
     checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
     checkpoint_steps = config.get("checkpoint_steps", 500)
     # Prioritize command-line resume path over config value
-    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    resume_from_checkpoint = resume_checkpoint_path or config.get(
+        "resume_from_checkpoint", None
+    )
     max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
     save_optimizer_state = config.get("save_optimizer_state", True)
-    
+
     # Initialize checkpoint manager
     project_root = Path(__file__).parent.parent.parent.parent.parent
     full_checkpoint_dir = project_root / checkpoint_dir / "syncps"
@@ -197,9 +206,9 @@ def run_syncps_server(
         max_checkpoints=max_checkpoints_to_keep,
         save_optimizer=save_optimizer_state,
         rank=rank,
-        algorithm="syncps"
+        algorithm="syncps",
     )
-    
+
     # Resume from checkpoint if specified
     start_epoch = 0
     start_step = 0
@@ -208,7 +217,7 @@ def run_syncps_server(
             checkpoint_path = checkpoint_manager.find_latest_checkpoint()
         else:
             checkpoint_path = resume_from_checkpoint
-        
+
         if checkpoint_path:
             logger.info(f"Resuming from checkpoint: {checkpoint_path}")
             metadata = checkpoint_manager.load_checkpoint(
@@ -216,14 +225,14 @@ def run_syncps_server(
                 model=model,
                 optimizer=optimizer if save_optimizer_state else None,
                 scheduler=None,  # SyncPS doesn't use scheduler, uses custom LR schedule
-                device=device
+                device=device,
             )
-            start_epoch = metadata.get('epoch', 0)
-            start_step = metadata.get('step', 0)
+            start_epoch = metadata.get("epoch", 0)
+            start_step = metadata.get("step", 0)
             logger.info(f"Resumed from epoch={start_epoch}, step={start_step}")
         else:
-            logger.warning(f"No checkpoint found to resume from, starting fresh")
-    
+            logger.warning("No checkpoint found to resume from, starting fresh")
+
     # Create socket
     HOST_IP = "0.0.0.0"
     port_config = cluster_config["port"]
@@ -232,7 +241,7 @@ def run_syncps_server(
         PORT = port_config.get(server_hostname, port_config.get("default", 65432))
     else:
         PORT = port_config
-    
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((HOST_IP, PORT))
     sock.listen(5)
@@ -271,9 +280,16 @@ def run_syncps_server(
                 registered_workers[worker_rank] = client_socket
                 workers[client_address] = client_socket
                 threading.Thread(
-                    target=handle_worker, 
-                    args=(client_socket, client_address, workers, grads_received, step_event, lock),
-                    daemon=True
+                    target=handle_worker,
+                    args=(
+                        client_socket,
+                        client_address,
+                        workers,
+                        grads_received,
+                        step_event,
+                        lock,
+                    ),
+                    daemon=True,
                 ).start()
             else:
                 logger.warning(f"Unexpected message from {client_address}: {command}")
@@ -291,7 +307,7 @@ def run_syncps_server(
 
     logger.info(f"Starting training for {num_epochs} epochs.")
     total_steps = num_epochs * len(train_loader)
-    
+
     for epoch in range(start_epoch, num_epochs):
         model.train()
         total_loss = 0.0
@@ -299,28 +315,33 @@ def run_syncps_server(
 
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            
+
             # Skip batches if resuming mid-epoch
             if step < start_step:
                 continue
-            
-            logger.info(f"[Step {step}  / {total_steps}] Server computing leader gradients")
+
+            logger.info(
+                f"[Step {step}  / {total_steps}] Server computing leader gradients"
+            )
             leader_loss, leader_grads = compute_leader_gradients(
                 device, model, data, target, criterion, optimizer, config
             )
             grads_received[step][rank] = leader_grads
             total_loss += leader_loss.item()
-            logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Leader loss: {leader_loss.item():.4f}")
-            train_ppl = math.exp(loss.item())
-           
-            wandb.log({
+            logger.info(
+                f"[Step {step}  / {num_epochs * len(train_loader)}] Leader loss: {leader_loss.item():.4f}"
+            )
+            train_ppl = math.exp(leader_loss.item())
+
+            wandb.log(
+                {
                     "step": step,
                     "epoch": epoch + 1,
                     "losses/leader_step": leader_loss.item(),
                     "losses/leader_total_train": total_loss / (batch_idx + 1),
-                    "ppl/train": train_ppl
-                })
-            
+                    "ppl/train": train_ppl,
+                }
+            )
 
             # Wait for all workers
             while True:
@@ -346,23 +367,24 @@ def run_syncps_server(
                     grads_received[step], len(grads_received[step])
                 )
 
-               
                 logger.info(
                     f"[Step {step}  / {num_epochs * len(train_loader)}] Applying averaged gradients to server model"
                 )
                 set_gradients(grads_reduced, model)
                 optimizer.step()
-                
-                logger.info(f"[Step {step}  / {num_epochs * len(train_loader)}] Server model updated")
-                
-                 # Send updated weights to workers
+
+                logger.info(
+                    f"[Step {step}  / {num_epochs * len(train_loader)}] Server model updated"
+                )
+
+                # Send updated weights to workers
                 for _worker_addr, worker_socket in workers.items():
                     weights = get_weights(model)
                     send_message(worker_socket, ("model_weights", step, weights))
                     logger.info(
                         f"[Step {step}] Sent updated model weights to worker at {_worker_addr}"
                     )
-                    
+
                 # Cleanup
                 grads_received.pop(step, None)
                 del grads_reduced, leader_grads
@@ -375,53 +397,60 @@ def run_syncps_server(
 
             # Log gradient norms if tracking enabled
             if track_gradients:
-               
                 for name, param in model.named_parameters():
                     if param.grad is not None:
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
-                        wandb.log({
-                            f"gradients/layer_{name}": grad_norm,
-                            "step": step,
-                            "epoch": epoch + 1,
-                        })
-                
+                        wandb.log(
+                            {
+                                f"gradients/layer_{name}": grad_norm,
+                                "step": step,
+                                "epoch": epoch + 1,
+                            }
+                        )
 
             # Log training metrics
-            
-            wandb.log({
+
+            wandb.log(
+                {
                     "step": step,
                     "epoch": epoch + 1,
-                    "lr": optimizer.param_groups[0]['lr'],
+                    "lr": optimizer.param_groups[0]["lr"],
                     "batch_size": batch_size,
-                })
-           
+                }
+            )
 
             # Evaluation
             if step % eval_steps == 0:
-                val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
-                
+                val_loss, val_ppl = evaluate(
+                    device, model, val_loader, criterion, decoder_type_ppl
+                )
+
                 if decoder_type_ppl:
-                    wandb.log({
-                        "step": step,
-                        "epoch": epoch + 1,
-                        "losses/val": val_loss,
-                        "ppl/val": val_ppl,
-                    })
+                    wandb.log(
+                        {
+                            "step": step,
+                            "epoch": epoch + 1,
+                            "losses/val": val_loss,
+                            "ppl/val": val_ppl,
+                        }
+                    )
                     logger.info(
                         f"Step {step}: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                     )
                 else:
-                    wandb.log({
-                        "step": step,
-                        "epoch": epoch + 1,
-                        "losses/val": val_loss,
-                    })
-                    logger.info(
-                        f"Step {step}: Val Loss={val_loss:.4f}"
+                    wandb.log(
+                        {
+                            "step": step,
+                            "epoch": epoch + 1,
+                            "losses/val": val_loss,
+                        }
                     )
-            
+                    logger.info(f"Step {step}: Val Loss={val_loss:.4f}")
+
             # Save checkpoint
-            if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, total_steps):
+            if save_checkpoints and should_save_checkpoint(
+                step, epoch, checkpoint_steps, total_steps
+            ):
                 logger.info(f"Saving checkpoint at step {step}, epoch {epoch + 1}")
                 checkpoint_manager.save_checkpoint(
                     step=step,
@@ -431,19 +460,20 @@ def run_syncps_server(
                     scheduler=None,  # SyncPS doesn't use scheduler
                     loss=leader_loss.item(),
                     metadata={
-                        'batch_idx': batch_idx,
-                        'world_size': world_size,
-                        'val_loss': val_loss if step % eval_steps == 0 else None
-                    }
+                        "batch_idx": batch_idx,
+                        "world_size": world_size,
+                        "val_loss": val_loss if step % eval_steps == 0 else None,
+                    },
                 )
 
         avg_loss = total_loss / len(train_loader)
-       
-        wandb.log({
+
+        wandb.log(
+            {
                 "epoch": epoch + 1,
                 "losses/train_epoch": avg_loss,
-            })
-       
+            }
+        )
 
         logger.info(
             f"Epoch {epoch + 1}/{num_epochs} completed. Avg Loss: {avg_loss:.4f}"
@@ -451,4 +481,3 @@ def run_syncps_server(
 
     logger.info("Training completed successfully!")
     sock.close()
-

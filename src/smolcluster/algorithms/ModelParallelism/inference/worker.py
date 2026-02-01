@@ -4,22 +4,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-import sys
-import yaml
 
+import yaml
 from transformers import AutoConfig, GPT2LMHeadModel
 
-from smolcluster.utils.common_utils import (
-    receive_message,
-    send_message
-)
+from smolcluster.utils.common_utils import receive_message, send_message
 from smolcluster.utils.device import get_device
-from smolcluster.utils.layers import (
-    get_hfmodel_per_node,
-    load_weights_per_node
-)
+from smolcluster.utils.layers import get_hfmodel_per_node, load_weights_per_node
 from smolcluster.utils.model_downloader import ensure_model_weights
-
 
 # Load configs
 CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
@@ -69,14 +61,14 @@ logger = logging.getLogger(f"[WORKER-{local_rank}]")
 logger.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
 
 # Initialize model
-model_name = 'causal_gpt2'  # Set model name
+model_name = "causal_gpt2"  # Set model name
 model_config = nn_config[model_name]  # Get nested config
-hf_model_name = model_config['hf_model_name']
-num_nodes = model_config['num_nodes']
-num_layers = model_config['num_layers']
+hf_model_name = model_config["hf_model_name"]
+num_nodes = model_config["num_nodes"]
+num_layers = model_config["num_layers"]
 
 config = AutoConfig.from_pretrained(hf_model_name)
-if model_name == 'causal_gpt2':
+if model_name == "causal_gpt2":
     model = GPT2LMHeadModel(config)
 else:
     raise ValueError(f"Unsupported model: {model_name}")
@@ -85,7 +77,7 @@ model = model.to(get_device())
 logger.info(f"Model initialized on device: {get_device()}")
 
 # Get weights model name from config
-weights_model_name = model_config.get('weights_model_name', 'gpt2')
+weights_model_name = model_config.get("weights_model_name", "gpt2")
 weights_filename = f"{weights_model_name}.safetensors"
 # Go up 6 levels from worker.py to get project root: inference -> ModelParallelism -> algorithms -> smolcluster -> src -> project_root
 project_root = Path(__file__).parent.parent.parent.parent.parent.parent
@@ -94,8 +86,7 @@ weights_path = project_root / "src" / "data" / weights_filename
 # Each worker downloads weights on their own machine before connecting to server
 logger.info(f"Checking for model weights ({weights_model_name})...")
 weights_path = ensure_model_weights(
-    model_identifier=weights_model_name,
-    weights_path=weights_path
+    model_identifier=weights_model_name, weights_path=weights_path
 )
 logger.info(f"Model weights ready at: {weights_path}")
 
@@ -106,7 +97,7 @@ layer_mapping, out_layers, results = get_hfmodel_per_node(
     num_nodes=num_nodes,
     local_rank=local_rank,
     model_name=model_name,
-    total_layers=num_layers
+    total_layers=num_layers,
 )
 
 
@@ -117,11 +108,12 @@ model_layers = load_weights_per_node(
     layer_mapping=layer_mapping,
     local_rank=local_rank,
     num_nodes=num_nodes,
-    results=results
+    results=results,
 )
 
 model_layers = model_layers.to(get_device())
 logger.info(f"Loaded {len(model_layers)} layers for worker {local_rank}")
+
 
 def connect_to_server(
     host: str, port: int, max_retries: int = 60, retry_delay: float = 3.0
@@ -174,7 +166,6 @@ def connect_to_server(
 
 
 def main():
-    
     # Connect to server with retry logic
     sock = connect_to_server(HOST_IP, PORT)
 
@@ -191,40 +182,52 @@ def main():
             break
 
     logger.info("Waiting for generation requests...")
-    
+
     while True:
-        
         message = receive_message(sock)
         command, payload = message
-        
+
         out = None
-        
-        if command == 'generate_activations':
-        
+
+        if command == "generate_activations":
             logger.info(f"Received command to generate text for rank {local_rank}.")
-            
-           
-            out = payload['activations'].to(get_device())
-            for layer in model_layers: 
+
+            out = payload["activations"].to(get_device())
+            for layer in model_layers:
                 output = layer(out)
                 out = output[0] if isinstance(output, tuple) else output
-    
-            logger.info(f"Finsihed generating activations for local_rank {local_rank} on device {out.device}")
-        
-            logger.info(f"Sending activations from rank {local_rank} to rank {local_rank + 1} on device {out.device}")
-            
-            send_message(sock, ('forward_activations', {"from_rank": local_rank, "to_rank": local_rank + 1, "activations": out.cpu()}))
-            
+
+            logger.info(
+                f"Finsihed generating activations for local_rank {local_rank} on device {out.device}"
+            )
+
+            logger.info(
+                f"Sending activations from rank {local_rank} to rank {local_rank + 1} on device {out.device}"
+            )
+
+            send_message(
+                sock,
+                (
+                    "forward_activations",
+                    {
+                        "from_rank": local_rank,
+                        "to_rank": local_rank + 1,
+                        "activations": out.cpu(),
+                    },
+                ),
+            )
+
             del out
-           
-            
-        elif command == 'down':
+
+        elif command == "down":
             logger.info("Received exit command from server. Shutting down.")
             break
-        
-        
+
     sock.close()
-    logger.info(f"Worker rank {local_rank} inferencing completed and connection closed.")
+    logger.info(
+        f"Worker rank {local_rank} inferencing completed and connection closed."
+    )
+
 
 if __name__ == "__main__":
     main()

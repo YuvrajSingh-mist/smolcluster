@@ -15,7 +15,14 @@ import torch.nn.functional as F
 class BaseTransformerBlock(nn.Module):
     """Standard transformer block with multi-head attention."""
 
-    def __init__(self, model_dim: int, num_heads: int, ff_dim: int, dropout: float = 0.1, num_layers: int  = 4):
+    def __init__(
+        self,
+        model_dim: int,
+        num_heads: int,
+        ff_dim: int,
+        dropout: float = 0.1,
+        num_layers: int = 4,
+    ):
         """Initialize the transformer block.
 
         Args:
@@ -31,19 +38,18 @@ class BaseTransformerBlock(nn.Module):
         self.head_dim = model_dim // num_heads
         self.num_layers = num_layers
         assert model_dim % num_heads == 0, "model_dim must be divisible by num_heads"
-        
+
         self.ln1 = nn.LayerNorm(model_dim)
-        
+
         # QKV projections (combined for efficiency)
         self.qkv_proj = nn.Linear(model_dim, 3 * model_dim)
         self.out_proj = nn.Linear(model_dim, model_dim)
-        
+
         self.ln2 = nn.LayerNorm(model_dim)
         self.ffn = nn.Sequential(
             nn.Linear(model_dim, ff_dim),
             nn.GELU(),
             nn.Linear(ff_dim, model_dim),
-            
         )
         self.dropout = nn.Dropout(dropout)
 
@@ -52,31 +58,31 @@ class BaseTransformerBlock(nn.Module):
 
         Args:
             x (torch.Tensor): Input tensor of shape (batch_size, seq_len, model_dim).
-            
+
         Returns:
             torch.Tensor: Output tensor after self-attention and FFN.
         """
         batch_size, seq_len, _ = x.shape
-        
+
         # Self-attention with residual
-        
+
         # Compute Q, K, V
         qkv = self.qkv_proj(x)
         qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch, heads, seq_len, head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
-        
+
         # Scaled dot-product attention with causal masking
         attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        
+
         # Reshape and project
         attn_out = attn_out.transpose(1, 2).reshape(batch_size, seq_len, self.model_dim)
         attn_out = self.out_proj(attn_out)
         x = x + self.ln1(self.dropout(attn_out))
-        scaled_residual = x * (self.num_layers ** -0.5)
+        scaled_residual = x * (self.num_layers**-0.5)
         # FFN with residual
         x = x + self.ln2(self.ffn(scaled_residual))
-        scaled_residual_2 = x * (self.num_layers ** -0.5)
+        scaled_residual_2 = x * (self.num_layers**-0.5)
         return scaled_residual_2
 
 
@@ -117,10 +123,12 @@ class BaseTransformer(nn.Module):
         self.position_embedding = nn.Embedding(max_seq_len, model_dim)
         self.embedding_dropout = nn.Dropout(dropout)
 
-        self.blocks = nn.ModuleList([
-            BaseTransformerBlock(model_dim, num_heads, ff_dim, dropout, num_layers)
-            for _ in range(num_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                BaseTransformerBlock(model_dim, num_heads, ff_dim, dropout, num_layers)
+                for _ in range(num_layers)
+            ]
+        )
 
         self.ln_f = nn.LayerNorm(model_dim)
         self.lm_head = nn.Linear(model_dim, vocab_size, bias=False)

@@ -1,21 +1,18 @@
 """Centralized logging configuration for smolcluster."""
+
 import logging
-import os
-import sys
 from pathlib import Path
 from typing import Optional
-
-from smolcluster.utils.logging_startup import ensure_logging_infrastructure
 
 
 class RankFilter(logging.Filter):
     """Add rank information to log records."""
-    
+
     def __init__(self, rank: Optional[int] = None, component: str = "server"):
         super().__init__()
         self.rank = rank if rank is not None else -1
         self.component = component
-    
+
     def filter(self, record):
         record.rank = self.rank
         record.component = self.component
@@ -33,7 +30,7 @@ def setup_cluster_logging(
     """
     Add file logging to existing logger with structured format for Loki.
     Does NOT start infrastructure - assumes Promtail is running to ship logs.
-    
+
     Args:
         logger: Existing logger to configure
         component: "server" or "worker"
@@ -44,49 +41,53 @@ def setup_cluster_logging(
     """
     # Create log directory
     Path(log_dir).mkdir(parents=True, exist_ok=True)
-    
+
     # Determine log file name
     if component == "server":
         log_file = Path(log_dir) / f"server-{hostname or 'unknown'}.log"
     else:
         log_file = Path(log_dir) / f"worker-rank{rank}-{hostname or 'unknown'}.log"
-    
+
     # Check if file handler already exists for this logger
     for handler in logger.handlers:
-        if isinstance(handler, logging.FileHandler) and handler.baseFilename == str(log_file):
+        if isinstance(handler, logging.FileHandler) and handler.baseFilename == str(
+            log_file
+        ):
             logger.info(f"📝 Logging already configured for: {log_file}")
             return
-    
+
     # Add rank filter
     rank_filter = RankFilter(rank=rank, component=component)
     logger.addFilter(rank_filter)
-    
+
     # File handler (structured for Loki)
-    file_handler = logging.FileHandler(log_file, mode='a')
+    file_handler = logging.FileHandler(log_file, mode="a")
     file_handler.setLevel(level)
-    
+
     # Structured format: timestamp | level | rank:X | step:Y | message
     # This makes it easy for Loki to parse and add labels
     if component == "server":
         file_formatter = logging.Formatter(
-            '%(asctime)s | %(levelname)s | rank:server | %(message)s'
+            "%(asctime)s | %(levelname)s | rank:server | %(message)s"
         )
     else:
         file_formatter = logging.Formatter(
-            f'%(asctime)s | %(levelname)s | rank:{rank} | %(message)s'
+            f"%(asctime)s | %(levelname)s | rank:{rank} | %(message)s"
         )
-    
+
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
-    
+
     logger.info(f"📝 Logging initialized: {log_file}")
     logger.info(f"Component: {component}, Rank: {rank}, Hostname: {hostname}")
 
 
-def log_step(logger: logging.Logger, step: int, message: str, level: int = logging.INFO):
+def log_step(
+    logger: logging.Logger, step: int, message: str, level: int = logging.INFO
+):
     """
     Log a message with step information for better Loki filtering.
-    
+
     Args:
         logger: Logger instance
         step: Training step number
@@ -101,11 +102,11 @@ def log_metric(
     step: int,
     metric_name: str,
     value: float,
-    extra_info: Optional[str] = None
+    extra_info: Optional[str] = None,
 ):
     """
     Log a metric in a structured way.
-    
+
     Args:
         logger: Logger instance
         step: Training step

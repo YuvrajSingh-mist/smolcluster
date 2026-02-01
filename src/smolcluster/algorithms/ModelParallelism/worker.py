@@ -2,55 +2,53 @@ import logging
 import math
 import socket
 import subprocess
-import sys
 import time
-from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
+
 import torch
-from torch.utils.data import DataLoader
 import wandb
+from torch.utils.data import DataLoader
 
-
+from smolcluster.utils.checkpointing import CheckpointManager
 from smolcluster.utils.common_utils import (
     get_network_metrics,
     receive_message,
     send_message,
 )
-from smolcluster.utils.layers import (
-    get_model_per_node
-)
+from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
-from smolcluster.utils.checkpointing import CheckpointManager
 
 
 def evaluate(
-    device: torch.device, 
-    model: torch.nn.Module, 
-    val_loader: DataLoader, 
+    device: torch.device,
+    model: torch.nn.Module,
+    val_loader: DataLoader,
     criterion: torch.nn.Module,
-    decoder_type_ppl: bool = False
+    decoder_type_ppl: bool = False,
 ) -> tuple[float, Optional[float]]:
     """Evaluate model on validation set."""
     model.eval()
     total_val_loss = 0.0
- 
+
     with torch.no_grad():
         for data, target in val_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
             B, T, C = output.shape
-            output = output.view(B*T, C)
-            target = target.view(B*T)
+            output = output.view(B * T, C)
+            target = target.view(B * T)
             loss = criterion(output, target)
             total_val_loss += loss.item()
-    
+
     avg_loss = total_val_loss / len(val_loader)
     ppl = math.exp(avg_loss) if decoder_type_ppl else None
-    
+
     return avg_loss, ppl
 
 
-def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_steps: int) -> bool:
+def should_save_checkpoint(
+    step: int, epoch: int, checkpoint_steps: int, total_steps: int
+) -> bool:
     """Determine if a checkpoint should be saved at the current step."""
     if checkpoint_steps <= 0:
         return False
@@ -62,7 +60,6 @@ def compute_worker_activations(
     device: torch.device,
     model: torch.nn.Module,
     data: torch.Tensor,
-    
 ) -> torch.Tensor:
     """Compute activations for worker node."""
     model.train()
@@ -77,7 +74,6 @@ def compute_loss(
     criterion: Any,
     device: torch.device,
 ) -> Any:
-    
     """Compute loss for given data and target."""
     # # model.eval()
     # data, target = data.to(get_device()), target.to(get_device())
@@ -86,18 +82,18 @@ def compute_loss(
     act = act.to(device)
     target = target.to(device)
     B, T, C = act.shape
-    output = act.view(B*T, C)
-    target = target.view(B*T)
+    output = act.view(B * T, C)
+    target = target.view(B * T)
     loss = criterion(output, target)
- 
+
     return loss
 
 
 def clear_gpu_cache(device: torch.device) -> None:
     """Clear GPU cache for both MPS and CUDA devices."""
-    if device.type == 'mps':
+    if device.type == "mps":
         torch.mps.empty_cache()
-    elif device.type == 'cuda':
+    elif device.type == "cuda":
         torch.cuda.empty_cache()
 
 
@@ -174,7 +170,7 @@ def run_modelparallelism_worker(
 ):
     """
     Run Model Parallelism worker for distributed GPT training.
-    
+
     Args:
         model: PyTorch model to train
         train_loader: Training data loader
@@ -189,87 +185,90 @@ def run_modelparallelism_worker(
         port: Server port
     """
     global logger
-    
+
     # Configure centralized logging
     setup_cluster_logging(
         logger=logger,
         component="worker",
         rank=worker_rank,
         hostname=hostname,
-        log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
+        log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
     logger.info(f"🚀 ModelParallelism Worker {worker_rank} starting up")
-    
+
     # Extract configuration
-    batch_size = config["batch_size"]
+    config["batch_size"]
     num_epochs = config["num_epochs"]
-    eval_steps = config["eval_steps"]
+    config["eval_steps"]
     track_gradients = config.get("track_gradients", False)
-    decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
-    
+    config.get("decoder_type", {}).get("ppl", False)
+
     # Set parameters
     local_rank = worker_rank  # Worker rank is already correct (1, 2, etc.)
-    num_workers = cluster_config["num_workers"]
+    cluster_config["num_workers"]
     num_nodes = cluster_config["num_nodes"]
-    model_name = cluster_config["model_name"]
-    
+    cluster_config["model_name"]
+
     # Use provided host_ip and port (from train.py)
     HOST_IP = host_ip
     PORT = port
-    
+
     # Network configuration
     buffer_size_mb = cluster_config.get("buffer_size", {}).get(hostname, 4)
     track_network_metrics = cluster_config.get("track_network_metrics", False)
     metrics_log_interval = cluster_config.get("metrics_log_interval", 50)
     logger.info(f"Network buffer size: {buffer_size_mb}MB")
     logger.info(f"Network metrics tracking: {track_network_metrics}")
-    
+
     # Update logger with rank
     logger = logging.getLogger(f"[WORKER-{local_rank}]")
-    
-    logger.info(f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}")
-    
+
+    logger.info(
+        f"Worker {local_rank} starting. Connecting to server at {HOST_IP}:{PORT}"
+    )
+
     # Initialize model
     model = model.to(device)
     logger.info(f"Model initialized on device: {device}")
-    
+
     # Load model layers for this worker
-    num_layers = config['num_layers']
+    num_layers = config["num_layers"]
     logger.info(f"Loading worker's share of model layers (rank {local_rank})...")
-    
+
     model_layers, out_layers = get_model_per_node(
-        model,
-        num_nodes=num_nodes,
-        local_rank=local_rank,
-        total_layers=num_layers
+        model, num_nodes=num_nodes, local_rank=local_rank, total_layers=num_layers
     )
-    
+
     model_layers = model_layers.to(device)
     logger.info(f"Loaded {len(model_layers)} layers for worker {local_rank}")
-    
+
     # Create optimizer for worker's layers only
     learning_rate = config["learning_rate"]
     optimizer = torch.optim.AdamW(model_layers.parameters(), lr=learning_rate)
     logger.info(f"Created optimizer for worker {local_rank} with lr={learning_rate}")
-    
+
     # Initialize checkpointing
     save_checkpoints = config.get("save_checkpoints", True)
     checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
     checkpoint_steps = config.get("checkpoint_steps", 500)
     # Prioritize command-line resume path over config value
-    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    resume_from_checkpoint = resume_checkpoint_path or config.get(
+        "resume_from_checkpoint", None
+    )
     max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
     save_optimizer_state = config.get("save_optimizer_state", True)
-    
+
     # Initialize checkpoint manager
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir,
         max_checkpoints=max_checkpoints_to_keep,
         save_optimizer_state=save_optimizer_state,
-        prefix=f"worker_{local_rank}"
+        prefix=f"worker_{local_rank}",
     )
-    logger.info(f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}")
-    
+    logger.info(
+        f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}"
+    )
+
     # Resume from checkpoint if specified
     start_epoch = 0
     start_step = 0
@@ -282,21 +281,23 @@ def run_modelparallelism_worker(
             model=temp_model,
             optimizer=optimizer if save_optimizer_state else None,
             scheduler=None,  # MP doesn't use scheduler
-            device=device
+            device=device,
         )
         # Copy loaded state back to model_layers
         for i, layer in enumerate(model_layers):
             layer.load_state_dict(temp_model[i].state_dict())
         if checkpoint_data:
-            start_epoch = checkpoint_data.get('epoch', 0)
-            start_step = checkpoint_data.get('step', 0)
+            start_epoch = checkpoint_data.get("epoch", 0)
+            start_step = checkpoint_data.get("step", 0)
             logger.info(f"Resumed from epoch {start_epoch}, step {start_step}")
         else:
-            logger.warning(f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch")
-    
+            logger.warning(
+                f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch"
+            )
+
     # Connect to server
     sock = connect_to_server(HOST_IP, PORT)
-    
+
     # Register with the server
     logger.info(f"Registering as worker {local_rank} with server...")
     send_message(sock, ("register", local_rank))
@@ -312,36 +313,40 @@ def run_modelparallelism_worker(
     act_in_cache = {}
     act_out_cache = {}
     target_cache = {}
-    
+
     logger.info("Starting training loop...")
-    
+
     for epoch in range(start_epoch, num_epochs):
         model_layers.train()
         total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
-        
+
         for batch_idx, (data, target) in enumerate(train_loader):
             step = epoch * len(train_loader) + batch_idx
-            
+
             # Skip batches if resuming mid-epoch
             if step < start_step:
                 continue
-                
-            logger.info(f"[Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server")
+
+            logger.info(
+                f"[Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server"
+            )
             data = data.to(device)
             target = target.to(device)
-            
+
             # Receive message from server
             message = receive_message(sock)
             command, recv_step, payload = message
-            
+
             # Handle evaluation messages (doesn't affect step count)
-            while command == 'evaluate_forward':
-                logger.info(f"[Eval] Worker {local_rank} received evaluation activations")
-                
+            while command == "evaluate_forward":
+                logger.info(
+                    f"[Eval] Worker {local_rank} received evaluation activations"
+                )
+
                 # Get activations from previous node
-                eval_activations = payload['activations'].to(device)
-                
+                eval_activations = payload["activations"].to(device)
+
                 # Forward through this worker's layers (no gradients for eval)
                 with torch.no_grad():
                     model_layers.eval()
@@ -350,95 +355,119 @@ def run_modelparallelism_worker(
                         out = layer(out)
                         out = out[0] if isinstance(out, tuple) else out
                     model_layers.train()
-                
-                logger.info(f"[Eval] Worker {local_rank} sending evaluation activations")
-                
+
+                logger.info(
+                    f"[Eval] Worker {local_rank} sending evaluation activations"
+                )
+
                 # Send activations to server
-                send_message(sock, ('eval_activations', 0, {
-                    "activations": out.detach().cpu()
-                }))
-                
+                send_message(
+                    sock, ("eval_activations", 0, {"activations": out.detach().cpu()})
+                )
+
                 clear_gpu_cache(device)
-                
+
                 # Get next message (should be training message)
                 message = receive_message(sock)
                 command, recv_step, payload = message
-            
+
             assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
-            
-            if command == 'generate_activations_train':
-                logger.info(f"[Step {step}] Received command to generate activations for rank {local_rank}.")
-                
+
+            if command == "generate_activations_train":
+                logger.info(
+                    f"[Step {step}] Received command to generate activations for rank {local_rank}."
+                )
+
                 # Get activations from previous node
-                act_in = payload['activations'].to(device)
-                if payload.get('targets') is not None:
-                    target_cache[step] = payload['targets']
-                act_in.requires_grad_(True) #has activations from all prev layers
-                
+                act_in = payload["activations"].to(device)
+                if payload.get("targets") is not None:
+                    target_cache[step] = payload["targets"]
+                act_in.requires_grad_(True)  # has activations from all prev layers
+
                 out = act_in
                 # Forward through this worker's layers
-                for layer in model_layers: 
+                for layer in model_layers:
                     out = layer(out)
                     out = out[0] if isinstance(out, tuple) else out
 
                 act_out = out
-                
+
                 # Cache activations WITH computation graph (no detach for act_in!)
                 act_in_cache[(step, local_rank)] = act_in
                 act_out_cache[(step, local_rank)] = act_out
-                
+
                 # Clear unnecessary intermediate tensors
                 clear_gpu_cache(device)
-                
-                logger.info(f"[Step {step}] Finished generating activations for local_rank {local_rank}")
-            
-                logger.info(f"[Step {step}] Sending activations from rank {local_rank} to rank {local_rank + 1}")
-                
+
+                logger.info(
+                    f"[Step {step}] Finished generating activations for local_rank {local_rank}"
+                )
+
+                logger.info(
+                    f"[Step {step}] Sending activations from rank {local_rank} to rank {local_rank + 1}"
+                )
+
                 # Send detached copy to next worker/server
-                send_message(sock, ('forward_activations', step, {
-                    "from_rank": local_rank, 
-                    "to_rank": local_rank + 1, 
-                    "activations": act_out.detach().cpu()
-                }))
-                
+                send_message(
+                    sock,
+                    (
+                        "forward_activations",
+                        step,
+                        {
+                            "from_rank": local_rank,
+                            "to_rank": local_rank + 1,
+                            "activations": act_out.detach().cpu(),
+                        },
+                    ),
+                )
+
                 # Don't delete - keep in cache for backward
-            
-             # Receive activations from server/previous worker
+
+            # Receive activations from server/previous worker
             message = receive_message(sock)
             command, recv_step, payload = message
-            
+
             assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
-            
-            
-            if command == 'generate_gradients':
-                logger.info(f"[Step {step}] Received command to compute gradients for rank {local_rank}.")
-                
+
+            if command == "generate_gradients":
+                logger.info(
+                    f"[Step {step}] Received command to compute gradients for rank {local_rank}."
+                )
+
                 # Restore activations from cache (has computation graph)
                 act_in = act_in_cache[(step, local_rank)]
                 act_out = act_out_cache[(step, local_rank)]
-                
+
                 target_for_loss = target_cache.pop(step, None)
                 if target_for_loss is None:
                     target_for_loss = target
                 else:
                     target_for_loss = target_for_loss.to(device)
-                    
+
                 loss = compute_loss(act_out, target_for_loss, criterion, device)
                 total_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                logger.info(f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}")
-                
-                wandb.log({
-                    "step": step,
-                    f"losses/train_{local_rank}": total_loss / (batch_idx + 1),
-                    "epoch": epoch + 1,
-                })
-                logger.info(f"[Step {step}] Training loss: {total_loss / (batch_idx + 1):.4f}")
-                
+                logger.info(
+                    f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}"
+                )
+
+                wandb.log(
+                    {
+                        "step": step,
+                        f"losses/train_{local_rank}": total_loss / (batch_idx + 1),
+                        "epoch": epoch + 1,
+                    }
+                )
+                logger.info(
+                    f"[Step {step}] Training loss: {total_loss / (batch_idx + 1):.4f}"
+                )
+
                 # Save checkpoint at regular intervals
-                if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, num_epochs * len(train_loader)):
+                if save_checkpoints and should_save_checkpoint(
+                    step, epoch, checkpoint_steps, num_epochs * len(train_loader)
+                ):
                     # Wrap model_layers in Sequential for proper state_dict saving
                     temp_model = torch.nn.Sequential(*model_layers)
                     checkpoint_manager.save_checkpoint(
@@ -451,99 +480,118 @@ def run_modelparallelism_worker(
                         metadata={
                             "train_loss": total_loss / (batch_idx + 1),
                             "worker_rank": local_rank,
-                            "learning_rate": optimizer.param_groups[0]['lr']
-                        }
+                            "learning_rate": optimizer.param_groups[0]["lr"],
+                        },
                     )
                     logger.info(f"[Step {step}] Worker {local_rank} checkpoint saved")
-                
+
                 # Send input gradients to previous worker
-                send_message(sock, ('forward_gradients', step, {
-                    "from_rank": local_rank, 
-                    "to_rank": local_rank - 1, 
-                    "gradients": act_in.grad.detach().cpu()
-                }))
-                
-            
+                send_message(
+                    sock,
+                    (
+                        "forward_gradients",
+                        step,
+                        {
+                            "from_rank": local_rank,
+                            "to_rank": local_rank - 1,
+                            "gradients": act_in.grad.detach().cpu(),
+                        },
+                    ),
+                )
+
                 # Clean up activations cache after backward pass
                 del act_in_cache[(step, local_rank)]
                 del act_out_cache[(step, local_rank)]
                 clear_gpu_cache(device)
-            
-            
-            elif command == 'forward_gradients':
-                
+
+            elif command == "forward_gradients":
                 rank, recv_grads = payload["to_rank"], payload["gradients"]
-                logger.info(f"[Step {step}] Received gradients for rank {rank}.")  
-                
+                logger.info(f"[Step {step}] Received gradients for rank {rank}.")
+
                 if rank == local_rank:
-                    logger.info(f"[Step {step}] Computing backward pass for rank {local_rank}")
-                    
+                    logger.info(
+                        f"[Step {step}] Computing backward pass for rank {local_rank}"
+                    )
+
                     # Restore activations from cache (has computation graph)
                     act_in = act_in_cache[(step, local_rank)]
                     act_out = act_out_cache[(step, local_rank)]
-                    
+
                     # Apply received gradients to activations
                     torch.autograd.backward(act_out, recv_grads.to(device))
 
-                send_message(sock, ('forward_gradients', step, {
-                    "from_rank": local_rank, 
-                    "to_rank": local_rank - 1, 
-                    "gradients": act_in.grad.detach().cpu()
-                }))
-                
+                send_message(
+                    sock,
+                    (
+                        "forward_gradients",
+                        step,
+                        {
+                            "from_rank": local_rank,
+                            "to_rank": local_rank - 1,
+                            "gradients": act_in.grad.detach().cpu(),
+                        },
+                    ),
+                )
+
                 # Clean up activations after backward
                 del act_in_cache[(step, local_rank)]
                 del act_out_cache[(step, local_rank)]
                 clear_gpu_cache(device)
-                 
-                
-            elif command == 'down':
+
+            elif command == "down":
                 logger.info("Received exit command from server. Shutting down.")
                 break
-            
-          
-            
-            
+
             # Clear GPU memory after optimizer step
             clear_gpu_cache(device)
-            
+
             # Log gradient norms if tracking enabled
             if track_gradients:
                 for name, param in model_layers.named_parameters():
                     if param.grad is not None:
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
-                        wandb.log({
-                            f"gradients/worker_{local_rank}_layer_{name}": grad_norm,
-                            "step": step,
-                            "epoch": epoch + 1,
-                        })
-            
+                        wandb.log(
+                            {
+                                f"gradients/worker_{local_rank}_layer_{name}": grad_norm,
+                                "step": step,
+                                "epoch": epoch + 1,
+                            }
+                        )
+
             # Log network metrics if tracking enabled
             if track_network_metrics and step % metrics_log_interval == 0:
                 network_stats = get_network_metrics(reset=True)
                 if network_stats:
-                    wandb.log({
-                        f"network/worker_{local_rank}_send_bandwidth_mbps": network_stats.get("send_bandwidth_mbps", 0),
-                        f"network/worker_{local_rank}_recv_bandwidth_mbps": network_stats.get("recv_bandwidth_mbps", 0),
-                        f"network/worker_{local_rank}_avg_send_latency_ms": network_stats.get("avg_send_latency_ms", 0),
-                        f"network/worker_{local_rank}_avg_recv_latency_ms": network_stats.get("avg_recv_latency_ms", 0),
-                        f"network/worker_{local_rank}_avg_buffer_size_kb": network_stats.get("avg_buffer_size_kb", 0),
-                        f"network/worker_{local_rank}_max_buffer_size_kb": network_stats.get("max_buffer_size_kb", 0),
-                        "step": step,
-                        "epoch": epoch + 1,
-                    })
+                    wandb.log(
+                        {
+                            f"network/worker_{local_rank}_send_bandwidth_mbps": network_stats.get(
+                                "send_bandwidth_mbps", 0
+                            ),
+                            f"network/worker_{local_rank}_recv_bandwidth_mbps": network_stats.get(
+                                "recv_bandwidth_mbps", 0
+                            ),
+                            f"network/worker_{local_rank}_avg_send_latency_ms": network_stats.get(
+                                "avg_send_latency_ms", 0
+                            ),
+                            f"network/worker_{local_rank}_avg_recv_latency_ms": network_stats.get(
+                                "avg_recv_latency_ms", 0
+                            ),
+                            f"network/worker_{local_rank}_avg_buffer_size_kb": network_stats.get(
+                                "avg_buffer_size_kb", 0
+                            ),
+                            f"network/worker_{local_rank}_max_buffer_size_kb": network_stats.get(
+                                "max_buffer_size_kb", 0
+                            ),
+                            "step": step,
+                            "epoch": epoch + 1,
+                        }
+                    )
                     logger.info(
                         f"[Worker {local_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
                     )
-            
-           
-        logger.info(
-            f"Epoch {epoch + 1}/{num_epochs} completed."
-        )
-        
+
+        logger.info(f"Epoch {epoch + 1}/{num_epochs} completed.")
+
     sock.close()
     logger.info("Worker training completed and connection closed.")
-
-
-

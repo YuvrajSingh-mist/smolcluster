@@ -4,15 +4,15 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-import sys
+
 import yaml
+
 from smolcluster.utils.common_utils import (
     receive_message,
-    send_message,
     recv_tensor,
+    send_message,
     send_tensor,
 )
-
 
 # Load configs
 CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
@@ -47,7 +47,9 @@ SERVER_HOSTNAME = cluster_config["server"]
 SERVER_IP = cluster_config["host_ip"][SERVER_HOSTNAME]
 SERVER_PORT_CONFIG = cluster_config["port"]
 if isinstance(SERVER_PORT_CONFIG, dict):
-    SERVER_PORT = SERVER_PORT_CONFIG.get(SERVER_HOSTNAME, SERVER_PORT_CONFIG.get("default", 65432))
+    SERVER_PORT = SERVER_PORT_CONFIG.get(
+        SERVER_HOSTNAME, SERVER_PORT_CONFIG.get("default", 65432)
+    )
 else:
     SERVER_PORT = SERVER_PORT_CONFIG
 
@@ -56,7 +58,9 @@ TABLET_IP = cluster_config["host_ip"][HOSTNAME]
 TABLET_PORT_CONFIG = cluster_config["port"]
 
 if isinstance(TABLET_PORT_CONFIG, dict):
-    TABLET_PORT = TABLET_PORT_CONFIG.get(HOSTNAME, TABLET_PORT_CONFIG.get("default", 8000))
+    TABLET_PORT = TABLET_PORT_CONFIG.get(
+        HOSTNAME, TABLET_PORT_CONFIG.get("default", 8000)
+    )
 else:
     TABLET_PORT = TABLET_PORT_CONFIG
 
@@ -71,18 +75,23 @@ logger.info(f"  -> Server connection: {SERVER_IP}:{SERVER_PORT}")
 logger.info(f"  -> Tablet device connection: {TABLET_IP}:{TABLET_PORT}")
 
 # Initialize model
-model_name = 'causal_gpt2'  # Set model name
+model_name = "causal_gpt2"  # Set model name
 model_config = nn_config[model_name]  # Get nested config
 
 # Note: Tablet proxy doesn't load model - actual tablet device does the computation
 logger.info(f"Tablet proxy configured for {model_name} model")
 
+
 def connect_to_service(
-    host: str, port: int, service_name: str, max_retries: int = 60, retry_delay: float = 3.0
+    host: str,
+    port: int,
+    service_name: str,
+    max_retries: int = 60,
+    retry_delay: float = 3.0,
 ) -> socket.socket:
     """Connect to a service (server or tablet device) with retry logic."""
     logger.info(f"Connecting to {service_name} at {host}:{port}...")
-    
+
     # Ping to warm up network
     try:
         subprocess.run(
@@ -135,11 +144,10 @@ def connect_to_service(
 
 
 def main():
-    
     # Connect to server with retry logic
     logger.info(f"Tablet proxy {local_rank} connecting to server...")
     server_sock = connect_to_service(SERVER_IP, SERVER_PORT, "Server")
-    
+
     # Connect to tablet device
     logger.info(f"Tablet proxy {local_rank} connecting to tablet device {HOSTNAME}...")
     tablet_sock = connect_to_service(TABLET_IP, TABLET_PORT, f"Tablet-{HOSTNAME}")
@@ -156,47 +164,62 @@ def main():
             break
 
     logger.info("Tablet proxy waiting to forward generation requests...")
-    
+
     while True:
         message = receive_message(server_sock)
         command, payload = message
-        
-        if command == 'generate_activations':
-        
-            logger.info(f"Tablet proxy {local_rank} received activations from server, forwarding to tablet device {HOSTNAME}...")
-            
+
+        if command == "generate_activations":
+            logger.info(
+                f"Tablet proxy {local_rank} received activations from server, forwarding to tablet device {HOSTNAME}..."
+            )
+
             # Forward activations to tablet device for computation
-            activations = payload['activations']
+            activations = payload["activations"]
             send_tensor(tablet_sock, activations)
-            
-            
-            logger.info("Activations sent to tablet device, waiting for processed results...")
+
+            logger.info(
+                "Activations sent to tablet device, waiting for processed results..."
+            )
             # Receive processed activations back from tablet device
             processed_activations = recv_tensor(tablet_sock)
-            
-            logger.info(f"Tablet proxy {local_rank} received processed activations from tablet device {HOSTNAME}")
-            
+
+            logger.info(
+                f"Tablet proxy {local_rank} received processed activations from tablet device {HOSTNAME}"
+            )
+
             # Forward results back to server
-            logger.info(f"Tablet proxy {local_rank} forwarding activations to server (rank {local_rank} -> {local_rank + 1})")
-            
-            send_message(server_sock, ('forward_activations', {
-                "from_rank": local_rank, 
-                "to_rank": local_rank + 1, 
-                "activations": processed_activations,
-                "tablet_device": HOSTNAME  # Include tablet device info
-            }))
-           
-            
-        elif command == 'down':
-            logger.info("Received exit command from server. Shutting down tablet proxy.")
+            logger.info(
+                f"Tablet proxy {local_rank} forwarding activations to server (rank {local_rank} -> {local_rank + 1})"
+            )
+
+            send_message(
+                server_sock,
+                (
+                    "forward_activations",
+                    {
+                        "from_rank": local_rank,
+                        "to_rank": local_rank + 1,
+                        "activations": processed_activations,
+                        "tablet_device": HOSTNAME,  # Include tablet device info
+                    },
+                ),
+            )
+
+        elif command == "down":
+            logger.info(
+                "Received exit command from server. Shutting down tablet proxy."
+            )
             # Forward shutdown to tablet device
-            send_message(tablet_sock, ('down', None))
+            send_message(tablet_sock, ("down", None))
             break
-        
-    
+
     server_sock.close()
     tablet_sock.close()
-    logger.info(f"Tablet proxy {local_rank} ({HOSTNAME}) completed and connections closed.")
+    logger.info(
+        f"Tablet proxy {local_rank} ({HOSTNAME}) completed and connections closed."
+    )
+
 
 if __name__ == "__main__":
     main()

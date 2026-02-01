@@ -1,14 +1,15 @@
-"""  
+"""
 FastAPI backend for chat application with Model Parallelism server.
 Handles user input and communicates with the distributed inference server.
 """
-import asyncio
+
 import json
 import logging
 import socket
 import time
 from pathlib import Path
 from typing import Optional
+
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException
@@ -16,7 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from smolcluster.utils.common_utils import send_message, receive_message, get_inference_metrics
+from smolcluster.utils.common_utils import (
+    get_inference_metrics,
+    receive_message,
+    send_message,
+)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +37,7 @@ with open(CONFIG_DIR / "model_parallelism" / "cluster_config_inference.yaml") as
     cluster_config = yaml.safe_load(f)
 
 # Get active model config (default to causal_gpt2)
-MODEL_NAME = 'causal_gpt2'
+MODEL_NAME = "causal_gpt2"
 model_config = model_configs[MODEL_NAME]
 
 app = FastAPI(title="SmolCluster Chat API")
@@ -88,17 +93,19 @@ class ChatResponse(BaseModel):
 def connect_to_server():
     """Establish connection to Model Parallelism server with retry logic."""
     global server_socket
-    
+
     for attempt in range(1, MAX_CONNECTION_RETRIES + 1):
         try:
             if server_socket is None:
-                logger.info(f"Attempt {attempt}/{MAX_CONNECTION_RETRIES}: Connecting to {SERVER_HOST}:{SERVER_PORT}...")
+                logger.info(
+                    f"Attempt {attempt}/{MAX_CONNECTION_RETRIES}: Connecting to {SERVER_HOST}:{SERVER_PORT}..."
+                )
                 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 server_socket.settimeout(10)  # 10 second timeout
                 server_socket.connect((SERVER_HOST, SERVER_PORT))
                 server_socket.settimeout(None)  # Remove timeout after connection
                 logger.info(f"Connected to server at {SERVER_HOST}:{SERVER_PORT}")
-                
+
                 # Register as client
                 send_message(server_socket, ("register_client", 0))
                 response = receive_message(server_socket)
@@ -107,18 +114,23 @@ def connect_to_server():
                     return server_socket
                 else:
                     raise Exception(f"Failed to register with server: {response}")
-                    
+
             return server_socket
         except Exception as e:
             logger.warning(f"Attempt {attempt}/{MAX_CONNECTION_RETRIES} failed: {e}")
             server_socket = None
-            
+
             if attempt < MAX_CONNECTION_RETRIES:
                 logger.info(f"Retrying in {RETRY_DELAY} seconds...")
                 time.sleep(RETRY_DELAY)
             else:
-                logger.error(f"Failed to connect after {MAX_CONNECTION_RETRIES} attempts")
-                raise HTTPException(status_code=503, detail=f"Server unavailable after {MAX_CONNECTION_RETRIES} attempts: {str(e)}")
+                logger.error(
+                    f"Failed to connect after {MAX_CONNECTION_RETRIES} attempts"
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Server unavailable after {MAX_CONNECTION_RETRIES} attempts: {str(e)}",
+                ) from e
 
 
 def disconnect_from_server():
@@ -128,7 +140,7 @@ def disconnect_from_server():
         try:
             send_message(server_socket, ("disconnect", None))
             server_socket.close()
-        except:
+        except Exception:
             pass
         server_socket = None
         logger.info("Disconnected from server")
@@ -163,7 +175,7 @@ async def get_config():
     active_strategy = model_config["active_decoding_strategy"]
     strategies = model_config.get("decoding_strategies", {})
     strategy_params = strategies.get(active_strategy, {})
-    
+
     return {
         "api_port": API_PORT,
         "frontend_port": cluster_config["web_interface"]["frontend_port"],
@@ -173,7 +185,7 @@ async def get_config():
         "max_new_tokens": model_config["max_new_tokens"],
         "decoding_strategy": active_strategy,
         "temperature": strategy_params.get("temperature", 1.0),
-        f'{active_strategy}' : strategy_params
+        f"{active_strategy}": strategy_params,
     }
 
 
@@ -192,25 +204,26 @@ async def health():
 async def chat(request: ChatRequest):
     """
     Stream tokens from model parallelism server with accurate TTFT measurement.
-    
+
     Args:
         request: ChatRequest with text and generation parameters
-        
+
     Returns:
         StreamingResponse with Server-Sent Events
     """
+
     async def generate():
         # Get inference metrics tracker
         metrics_tracker = get_inference_metrics()
         metrics_tracker.reset()
-        
+
         try:
             # Ensure connection
             sock = connect_to_server()
             if sock is None:
                 yield f"data: {json.dumps({'error': 'Could not connect to server', 'done': True})}\n\n"
                 return
-            
+
             # Send inference request to server
             inference_request = {
                 "command": "inference",
@@ -219,79 +232,84 @@ async def chat(request: ChatRequest):
                 "temperature": request.temperature,
                 "top_p": request.top_p,
                 "top_k": request.top_k,
-                "decoding_strategy": request.decoding_strategy
+                "decoding_strategy": request.decoding_strategy,
             }
-            
+
             logger.info(f"Sending streaming inference request: {request.text[:50]}...")
-            
+
             # Start timing
             metrics_tracker.start_inference()
             send_message(sock, ("inference", inference_request))
-            
+
             # Stream tokens as they arrive
             full_text = ""
             while True:
                 response = receive_message(sock)
-                
+
                 if response is None:
-                    error_data = {'error': 'Connection lost', 'done': True}
+                    error_data = {"error": "Connection lost", "done": True}
                     yield f"data: {json.dumps(error_data)}\n\n"
                     break
-                
+
                 command, result = response
-                
+
                 if command == "token":
                     # Received a new token
                     token_text = result.get("text", "")
                     token_idx = result.get("token_idx", 0)
-                    
+
                     # Record token for metrics
                     metrics_tracker.record_token()
                     full_text += token_text
-                    
+
                     # Send token to frontend (json.dumps handles escaping)
-                    token_data = {'token': token_text, 'done': False}
+                    token_data = {"token": token_text, "done": False}
                     yield f"data: {json.dumps(token_data)}\n\n"
                     logger.info(f"Streamed token {token_idx}: {repr(token_text)}")
-                    
+
                 elif command == "inference_complete":
                     # Generation complete
                     metrics_tracker.end_inference()
                     perf_metrics = metrics_tracker.get_metrics()
-                    
+
                     logger.info(f"Streaming complete. Metrics: {perf_metrics}")
-                    
+
                     # Send final metrics
                     final_data = {
-                        'done': True,
-                        'full_text': full_text,
-                        'total_time_ms': perf_metrics.get('total_time_ms'),
-                        'time_to_first_token_ms': perf_metrics.get('time_to_first_token_ms'),
-                        'tokens_per_second': perf_metrics.get('tokens_per_second'),
-                        'num_tokens': perf_metrics.get('num_tokens')
+                        "done": True,
+                        "full_text": full_text,
+                        "total_time_ms": perf_metrics.get("total_time_ms"),
+                        "time_to_first_token_ms": perf_metrics.get(
+                            "time_to_first_token_ms"
+                        ),
+                        "tokens_per_second": perf_metrics.get("tokens_per_second"),
+                        "num_tokens": perf_metrics.get("num_tokens"),
                     }
                     yield f"data: {json.dumps(final_data)}\n\n"
                     break
-                    
+
                 elif command == "error":
                     error_msg = result.get("message", "Unknown error")
                     logger.error(f"Server error: {error_msg}")
-                    error_data = {'error': error_msg, 'done': True}
+                    error_data = {"error": error_msg, "done": True}
                     yield f"data: {json.dumps(error_data)}\n\n"
                     break
-                    
+
                 else:
                     logger.warning(f"Unexpected command: {command}")
-                    error_data = {'error': f'Unexpected response: {command}', 'done': True}
+                    error_data = {
+                        "error": f"Unexpected response: {command}",
+                        "done": True,
+                    }
                     yield f"data: {json.dumps(error_data)}\n\n"
                     break
-                    
+
         except Exception as e:
             logger.error(f"Error during streaming inference: {e}")
             disconnect_from_server()
-            error_data = {'error': str(e), 'done': True}
+            error_data = {"error": str(e), "done": True}
             yield f"data: {json.dumps(error_data)}\n\n"
-    
+
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
@@ -303,9 +321,8 @@ async def reconnect():
         connect_to_server()
         return {"status": "reconnected"}
     except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 if __name__ == "__main__":
-    
     uvicorn.run(app, host="0.0.0.0", port=API_PORT)

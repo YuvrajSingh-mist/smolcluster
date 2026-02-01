@@ -9,26 +9,22 @@ import time
 from pathlib import Path
 
 import torch
-import torchvision
 import wandb
 import yaml
 
 from smolcluster.data.prepare_dataset import prepare_dataset
-from smolcluster.models.SimpleNN import SimpleMNISTModel
+from smolcluster.utils.checkpointing import CheckpointManager
 from smolcluster.utils.common_utils import (
     get_weights,
     receive_message,
     send_message,
 )
-from smolcluster.utils.data import get_data_indices
-from smolcluster.utils.device import get_device
+from smolcluster.utils.logging_utils import setup_cluster_logging
 from smolcluster.utils.quantization import (
     calculate_compression_ratio,
     dequantize_model_weights,
     quantize_model_weights,
 )
-from smolcluster.utils.logging_utils import setup_cluster_logging
-from smolcluster.utils.checkpointing import CheckpointManager
 
 # Setup logging (will be replaced by setup_cluster_logging in run_edp_worker)
 logging.basicConfig(
@@ -52,33 +48,36 @@ recv_model_version = -1
 
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     """Create learning rate schedule with linear warmup and cosine decay.
-    
+
     Args:
         warmup_iters: Number of warmup iterations
         max_iters: Total training iterations
         learning_rate: Peak learning rate (after warmup)
         min_lr: Minimum learning rate (end of decay)
-    
+
     Returns:
         Function that takes step and returns learning rate
     """
+
     def get_lr(step):
         # Linear warmup
         if step < warmup_iters:
             return learning_rate * (step + 1) / warmup_iters
-        
+
         # Cosine decay after warmup
         if step > max_iters:
             return min_lr
-        
+
         decay_ratio = (step - warmup_iters) / (max_iters - warmup_iters)
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return min_lr + coeff * (learning_rate - min_lr)
-    
+
     return get_lr
 
 
-def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_steps: int) -> bool:
+def should_save_checkpoint(
+    step: int, epoch: int, checkpoint_steps: int, total_steps: int
+) -> bool:
     """Determine if a checkpoint should be saved at the current step."""
     if checkpoint_steps <= 0:
         return False
@@ -89,14 +88,14 @@ def should_save_checkpoint(step: int, epoch: int, checkpoint_steps: int, total_s
 def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
     model.eval()
     total_loss = 0.0
-    
+
     with torch.no_grad():
         for data, target in val_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            B,T,C = output.shape
-            output = output.view(B*T, C)
-            target = target.view(B*T)
+            B, T, C = output.shape
+            output = output.view(B * T, C)
+            target = target.view(B * T)
             loss = criterion(output, target)
             total_loss += loss.item()
             # _, predicted = torch.max(output.data, 1)
@@ -105,7 +104,7 @@ def evaluate(device, model, val_loader, criterion, decoder_type_ppl=False):
     avg_loss = total_loss / len(val_loader)
     ppl = math.exp(avg_loss) if decoder_type_ppl else None
     model.train()
-    
+
     # accuracy = 100 * correct / total
     return avg_loss, ppl
 
@@ -177,7 +176,7 @@ def run_edp_worker(
 ):
     """
     Run EDP worker training.
-    
+
     Args:
         model: PyTorch model to train
         optimizer: Optimizer instance
@@ -193,17 +192,17 @@ def run_edp_worker(
         port: Server port
     """
     global model_version, recv_model_version, logger
-    
+
     # Configure centralized logging (adds file handler to existing module-level logger)
     setup_cluster_logging(
         logger=logger,
         component="worker",
         rank=worker_rank,
         hostname=hostname,
-        log_dir=config.get("log_dir", "/tmp/smolcluster-logs")
+        log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
     logger.info(f"🚀 EDP Worker {worker_rank} starting up")
-    
+
     batch_size = config["batch_size"]
     num_epochs = config["num_epochs"]
     eval_steps = config["eval_steps"]
@@ -214,12 +213,16 @@ def run_edp_worker(
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     use_fp16 = config.get("use_fp16", False)
     polyark_average_update = cluster_config["polyark_average_update"]
-    
+
     # Initialize AMP scaler if fp16 enabled (supports both CUDA and MPS)
-    scaler = torch.amp.GradScaler(device.type) if use_fp16 and device.type in ['cuda', 'mps'] else None
+    scaler = (
+        torch.amp.GradScaler(device.type)
+        if use_fp16 and device.type in ["cuda", "mps"]
+        else None
+    )
     if use_fp16:
         logger.info(f"Mixed precision training (fp16) enabled on device: {device.type}")
-    
+
     # Learning rate scheduler setup
     use_lr_scheduler = config.get("use_lr_scheduler", False)
     total_steps = num_epochs * len(train_loader)
@@ -229,8 +232,12 @@ def run_edp_worker(
         min_lr = config["min_lr"]
         get_lr_fn = get_lr_schedule(warmup_iters, total_steps, learning_rate, min_lr)
         # Wrap custom LR function in LambdaLR scheduler for proper state saving
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: get_lr_fn(step) / learning_rate)
-        logger.info(f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}")
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=lambda step: get_lr_fn(step) / learning_rate
+        )
+        logger.info(
+            f"LR scheduler enabled: warmup={warmup_iters}, max_iters={total_steps}, peak_lr={learning_rate}, min_lr={min_lr}"
+        )
     else:
         logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
 
@@ -254,19 +261,23 @@ def run_edp_worker(
     checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
     checkpoint_steps = config.get("checkpoint_steps", 500)
     # Prioritize command-line resume path over config value
-    resume_from_checkpoint = resume_checkpoint_path or config.get("resume_from_checkpoint", None)
+    resume_from_checkpoint = resume_checkpoint_path or config.get(
+        "resume_from_checkpoint", None
+    )
     max_checkpoints_to_keep = config.get("max_checkpoints_to_keep", 3)
     save_optimizer_state = config.get("save_optimizer_state", True)
-    
+
     # Initialize checkpoint manager
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=checkpoint_dir,
         max_checkpoints=max_checkpoints_to_keep,
         save_optimizer_state=save_optimizer_state,
-        prefix=f"worker_{worker_rank}"
+        prefix=f"worker_{worker_rank}",
     )
-    logger.info(f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}")
-    
+    logger.info(
+        f"Checkpoint manager initialized: save_checkpoints={save_checkpoints}, checkpoint_steps={checkpoint_steps}, dir={checkpoint_dir}"
+    )
+
     # Resume from checkpoint if specified
     start_epoch = 0
     start_step = 0
@@ -277,17 +288,23 @@ def run_edp_worker(
             model=model,
             optimizer=optimizer if save_optimizer_state else None,
             scheduler=scheduler,  # Load scheduler state if it exists
-            device=device
+            device=device,
         )
         if checkpoint_data:
-            start_epoch = checkpoint_data.get('epoch', 0)
-            start_step = checkpoint_data.get('step', 0)
+            start_epoch = checkpoint_data.get("epoch", 0)
+            start_step = checkpoint_data.get("step", 0)
             # Restore model version for elastic training
-            model_version = checkpoint_data.get('metadata', {}).get('model_version', 0)
-            recv_model_version = checkpoint_data.get('metadata', {}).get('recv_model_version', -1)
-            logger.info(f"Resumed from epoch {start_epoch}, step {start_step}, model_version {model_version}")
+            model_version = checkpoint_data.get("metadata", {}).get("model_version", 0)
+            recv_model_version = checkpoint_data.get("metadata", {}).get(
+                "recv_model_version", -1
+            )
+            logger.info(
+                f"Resumed from epoch {start_epoch}, step {start_step}, model_version {model_version}"
+            )
         else:
-            logger.warning(f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch")
+            logger.warning(
+                f"Could not load checkpoint from {resume_from_checkpoint}, starting from scratch"
+            )
 
     # Connect to server with retry logic
     sock = connect_to_server(host_ip, port)
@@ -295,87 +312,110 @@ def run_edp_worker(
     # Register with the server with retry logic
     MAX_REGISTRATION_RETRIES = 5
     registration_successful = False
-    
+
     for attempt in range(1, MAX_REGISTRATION_RETRIES + 1):
-        logger.info(f"Registration attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Registering as worker {worker_rank} (hostname: {hostname}) with server...")
+        logger.info(
+            f"Registration attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Registering as worker {worker_rank} (hostname: {hostname}) with server..."
+        )
         try:
             send_message(sock, ("register", worker_rank, hostname))
-            
+
             # Wait for start signal from server
-            logger.info(f"Waiting for start_training signal with batch_size from server (attempt {attempt})...")
+            logger.info(
+                f"Waiting for start_training signal with batch_size from server (attempt {attempt})..."
+            )
             start_time = time.time()
             received_start_signal = False
             worker_batch_size = batch_size  # Default to config batch size
-            
+
             while time.time() - start_time < 10:
                 sock.settimeout(0.1)
                 try:
                     recv_command = receive_message(sock)
-                    
-                    if isinstance(recv_command, tuple) and recv_command[0] == "start_training":
+
+                    if (
+                        isinstance(recv_command, tuple)
+                        and recv_command[0] == "start_training"
+                    ):
                         worker_batch_size = recv_command[1]
-                        logger.info(f"✅ Received start_training command with batch_size={worker_batch_size} from server.")
+                        logger.info(
+                            f"✅ Received start_training command with batch_size={worker_batch_size} from server."
+                        )
                         received_start_signal = True
                         registration_successful = True
                         break
-                    
+
                 except Exception as e:
-                    logger.debug(f"No message received yet, continuing to wait... Exception: {e}")
-            
+                    logger.debug(
+                        f"No message received yet, continuing to wait... Exception: {e}"
+                    )
+
             sock.settimeout(None)  # Reset to blocking
-            
+
             if received_start_signal:
                 break  # Successfully registered and received start signal
             else:
-                logger.warning(f"❌ Attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Did not receive start signal within timeout")
+                logger.warning(
+                    f"❌ Attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Did not receive start signal within timeout"
+                )
                 if attempt < MAX_REGISTRATION_RETRIES:
-                    logger.info(f"Retrying registration in 2 seconds...")
+                    logger.info("Retrying registration in 2 seconds...")
                     time.sleep(2)
         except Exception as e:
-            logger.error(f"❌ Attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Registration error: {e}")
+            logger.error(
+                f"❌ Attempt {attempt}/{MAX_REGISTRATION_RETRIES}: Registration error: {e}"
+            )
             if attempt < MAX_REGISTRATION_RETRIES:
-                logger.info(f"Retrying registration in 2 seconds...")
+                logger.info("Retrying registration in 2 seconds...")
                 time.sleep(2)
-    
+
     if not registration_successful:
-        logger.error(f"❌ FATAL: Failed to register with server after {MAX_REGISTRATION_RETRIES} attempts!")
+        logger.error(
+            f"❌ FATAL: Failed to register with server after {MAX_REGISTRATION_RETRIES} attempts!"
+        )
         sock.close()
         wandb.finish()
-        raise RuntimeError(f"Worker could not register with server after {MAX_REGISTRATION_RETRIES} attempts. Server may not be ready or connection issue.")
+        raise RuntimeError(
+            f"Worker could not register with server after {MAX_REGISTRATION_RETRIES} attempts. Server may not be ready or connection issue."
+        )
 
     logger.info(
         f"Data loaders ready. Train size: {len(train_loader)}, Test size: {len(val_loader)}"
     )
 
     total_steps = num_epochs * len(train_loader)
-    
+
     # Recreate data loaders with worker-specific batch size if different
     if worker_batch_size != batch_size:
-        logger.info(f"Recreating data loaders with worker-specific batch_size={worker_batch_size}")
-        
+        logger.info(
+            f"Recreating data loaders with worker-specific batch_size={worker_batch_size}"
+        )
+
         train_loader, val_loader, _, _ = prepare_dataset(
-            config, 
+            config,
             world_size=1,  # Worker handles its own data
             seed=cluster_config.get("seed", 42),
             rank=0,
-            batch_size=worker_batch_size
+            batch_size=worker_batch_size,
         )
-        logger.info(f"Data loaders updated. Train size: {len(train_loader)}, Val size: {len(val_loader)}")
+        logger.info(
+            f"Data loaders updated. Train size: {len(train_loader)}, Val size: {len(val_loader)}"
+        )
         total_steps = num_epochs * len(train_loader)
-    
+
     logger.info("Starting training loop...")
 
     # Initialize iterator for continuous training
     train_iter = iter(train_loader)
     # Main training loop
     model = model.to(device)
-    
+
     step_start_time = time.time()
-    
+
     for step in range(start_step, total_steps):
         model.train()
         epoch = step // len(train_loader)
-        
+
         # Update learning rate if scheduler enabled
         if scheduler is not None:
             # Get current LR for logging
@@ -391,56 +431,55 @@ def run_edp_worker(
             batch = next(train_iter)
 
         logger.info("Performing local forward and backward pass.")
-        
+
         optimizer.zero_grad()
-        
+
         data, target = batch[0].to(device), batch[1].to(device)
 
         # Use AMP if enabled
         if use_fp16 and scaler is not None:
             with torch.amp.autocast(device_type=device.type):
                 output = model(data)
-                B,T,C = output.shape
-                output = output.view(B*T, C)
-                target = target.view(B*T)
+                B, T, C = output.shape
+                output = output.view(B * T, C)
+                target = target.view(B * T)
                 loss = criterion(output, target)
-            
+
             scaler.scale(loss).backward()
-            
+
             # Gradient clipping with scaler
             if config.get("grad_clip_norm", 0.0) != 0.0:
                 scaler.unscale_(optimizer)
                 max_norm = config["grad_clip_norm"]
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-            
+
             scaler.step(optimizer)
             scaler.update()
         else:
             output = model(data)
-            B,T,C = output.shape
-            output = output.view(B*T, C)
-            target = target.view(B*T)
-            
+            B, T, C = output.shape
+            output = output.view(B * T, C)
+            target = target.view(B * T)
+
             loss = criterion(output, target)
             loss.backward()
-            
+
             # Gradient clipping to prevent exploding gradients
             if config.get("grad_clip_norm", 0.0) != 0.0:
                 max_norm = config["grad_clip_norm"]
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-                
+
             optimizer.step()  # Local SGD: workers apply updates independently
-        
+
         # Step the scheduler after optimizer
         if scheduler is not None:
             scheduler.step()
-        
+
         logger.info("Local forward and backward pass complete.")
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
 
         if step % polyark_average_update == 0:
-            
             logger.info(f"Sending for performing Polyak averaging at step {step}.")
             if use_quantization:
                 quantized_weights = quantize_model_weights(weights)
@@ -455,7 +494,7 @@ def run_edp_worker(
                 logger.info(
                     "Local forward and backward pass done. Sending quantized model weights to server."
                 )
-                
+
                 send_message(
                     sock,
                     (
@@ -470,7 +509,6 @@ def run_edp_worker(
                 )
                 logger.info("Quantized model weights sent to server.")
             else:
-                
                 logger.info(
                     "Local forward and backward pass done. Sending model weights to server."
                 )
@@ -489,66 +527,63 @@ def run_edp_worker(
                         ),
                     )
                     logger.info("Model weights sent to server for polyark averaging.")
-                    
+
                     # backoff_interval = random.choice([10, 20, 30, 40, 50])
                     # polyark_average_update = backoff_interval
-                    
+
                 except Exception as e:
-                    
-                    logger.error(
-                        f"Error sending weights to server: {e}"
-                    )
-                    
+                    logger.error(f"Error sending weights to server: {e}")
+
                     logger.info("Will retry polyark averaging in the next interval.")
                     # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
                     backoff_interval = random.choice([10, 20, 30, 40, 50])
                     polyark_average_update = backoff_interval
-                    logger.info(f"Backoff: next polyark averaging at interval {backoff_interval}")
-    
+                    logger.info(
+                        f"Backoff: next polyark averaging at interval {backoff_interval}"
+                    )
+
                 # finally:
                 #     sock.setblocking(True)
-                    
 
         if step % worker_update_interval == 0 and step != 0:
             logger.info(f"Pulling weights from server at step {step}.")
-            
+
             # sock.setblocking(False)
-            
+
             try:
-                
-                send_message(sock, ("pull_weights", {"rank" : worker_rank, "model_version": model_version}))
+                send_message(
+                    sock,
+                    (
+                        "pull_weights",
+                        {"rank": worker_rank, "model_version": model_version},
+                    ),
+                )
                 logger.info("Requested weights from server.")
-                
+
                 # backoff_interval = random.choice([10, 20, 30, 40, 50])
                 # worker_update_interval = backoff_interval
-                    
+
             except Exception as e:
-                logger.error(
-                    f"Error requesting weights from server: {e}"
-                )
+                logger.error(f"Error requesting weights from server: {e}")
                 logger.info("Will retry pulling weights in the next interval.")
                 # Backoff with random interval [10, 20, 30, 40, 50] to desynchronize
                 backoff_interval = random.choice([10, 20, 30, 40, 50])
                 worker_update_interval = backoff_interval
                 logger.info(f"Backoff: next weight pull at interval {backoff_interval}")
                 continue
-            
+
             # finally:
             #     sock.setblocking(True)
 
-
             sock.settimeout(1.0)  # Wait up to 1 second for weights
-            
+
             try:
                 weights, new_version = receive_message(sock)
 
                 if use_quantization:
-                    dequant_weights = dequantize_model_weights(
-                        weights, device=device
-                    )
+                    dequant_weights = dequantize_model_weights(weights, device=device)
                     model.load_state_dict(dequant_weights, strict=False)
                 else:
-                    
                     model.load_state_dict(weights, strict=False)
 
                 recv_model_version = new_version
@@ -557,7 +592,7 @@ def run_edp_worker(
                 )
             except socket.timeout:
                 logger.warning("Timeout while pulling weights from server.")
-                
+
             except BlockingIOError:
                 logger.error(
                     "non-blocking socket error while pulling weights from server."
@@ -588,13 +623,15 @@ def run_edp_worker(
         # Calculate tokens/sec throughput
         step_end_time = time.time()
         step_time = step_end_time - step_start_time
-        tokens_processed = batch_size * config['max_seq_len']
+        tokens_processed = batch_size * config["max_seq_len"]
         tok_per_sec = tokens_processed / step_time if step_time > 0 else 0
         step_start_time = step_end_time  # Reset for next step
 
         # Run evaluation every eval_steps
         if step % eval_steps == 0:
-            val_loss, val_ppl = evaluate(device, model, val_loader, criterion, decoder_type_ppl)
+            val_loss, val_ppl = evaluate(
+                device, model, val_loader, criterion, decoder_type_ppl
+            )
             safe_wandb_log(
                 {
                     "step": step,
@@ -610,9 +647,7 @@ def run_edp_worker(
                 safe_wandb_log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
                 if val_ppl is not None:
                     safe_wandb_log({"step": step, "epoch": epoch, "val/ppl": val_ppl})
-            logger.info(
-                f"Evaluation at step {step}: Val Loss={val_loss:.4f}"
-            )
+            logger.info(f"Evaluation at step {step}: Val Loss={val_loss:.4f}")
         else:
             # Log training loss only
             safe_wandb_log(
@@ -629,7 +664,9 @@ def run_edp_worker(
                 safe_wandb_log({"step": step, "epoch": epoch, "train/ppl": train_ppl})
 
         # Save checkpoint at regular intervals
-        if save_checkpoints and should_save_checkpoint(step, epoch, checkpoint_steps, total_steps):
+        if save_checkpoints and should_save_checkpoint(
+            step, epoch, checkpoint_steps, total_steps
+        ):
             checkpoint_manager.save_checkpoint(
                 model=model,
                 optimizer=optimizer,
@@ -643,15 +680,17 @@ def run_edp_worker(
                     "worker_rank": worker_rank,
                     "model_version": model_version,
                     "recv_model_version": recv_model_version,
-                    "learning_rate": current_lr
-                }
+                    "learning_rate": current_lr,
+                },
             )
-            logger.info(f"[Step {step}] Worker {worker_rank} checkpoint saved (model_version={model_version})")
+            logger.info(
+                f"[Step {step}] Worker {worker_rank} checkpoint saved (model_version={model_version})"
+            )
 
         logger.info(f"Epoch: {epoch} , Step {step}/{total_steps} completed.")
 
     logger.info("Training complete. Closing connection.")
-    
+
     # Finish wandb tracking
     wandb.finish()
     logger.info(f"Worker {worker_rank} wandb tracking finished.")
@@ -664,7 +703,7 @@ def run_edp_worker(
 def main():
     """Legacy main function for backward compatibility."""
     global model_version, recv_model_version, logger
-    
+
     # Login to wandb using API key from environment variable
     if "WANDB_API_TOKEN" in os.environ:
         wandb.login(key=os.environ["WANDB_API_TOKEN"], relogin=True)
@@ -677,40 +716,41 @@ def main():
     # Load configs
     CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
     with open(CONFIG_DIR / "nn_config.yaml") as f:
-        nn_config = yaml.safe_load(f)
+        yaml.safe_load(f)
 
     with open(CONFIG_DIR / "cluster_config_edp.yaml") as f:
         cluster_config = yaml.safe_load(f)
 
     # Extract values with defaults
-    NUM_WORKERS = cluster_config["num_workers"]
-  
+    cluster_config["num_workers"]
 
     # Get worker name from command-line arguments (e.g., "worker1", "worker2")
     if len(sys.argv) > 1:
         WORKER_NAME = sys.argv[1]
     else:
-        WORKER_NAME = input(f"Enter worker name (e.g., worker1): ")
+        WORKER_NAME = input("Enter worker name (e.g., worker1): ")
 
     if len(sys.argv) > 2:
-        HOSTNAME = sys.argv[2]
+        sys.argv[2]
     else:
-        HOSTNAME = input("Enter worker hostname: ")
+        input("Enter worker hostname: ")
 
     # Extract rank from worker name (e.g., "worker1" -> 1)
     import re
-    match = re.search(r'(\d+)', WORKER_NAME)
+
+    match = re.search(r"(\d+)", WORKER_NAME)
     if match:
         local_rank = int(match.group(1))
     else:
         # Fallback if no number found
-        local_rank = int(input(f"Could not parse rank from '{WORKER_NAME}'. Enter worker rank: "))
-    
+        local_rank = int(
+            input(f"Could not parse rank from '{WORKER_NAME}'. Enter worker rank: ")
+        )
+
     # Update global logger with rank-specific name
     logger = logging.getLogger(f"[WORKER-{local_rank}]")
     logger.setLevel(logging.INFO)
-    
-   
+
 
 if __name__ == "__main__":
     main()
