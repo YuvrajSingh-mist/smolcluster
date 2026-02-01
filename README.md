@@ -1,6 +1,8 @@
-# SmolCluster
+# Smolcluster
 
-A distributed deep learning framework for training neural networks across heterogeneous hardware using PyTorch and socket-based communication.
+**Website:** [smolcluster.com](https://smolcluster.com)
+
+A distributed deep learning library for training neural networks across heterogeneous hardware using PyTorch and socket-based communication.
 
 ## Features
 
