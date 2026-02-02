@@ -686,9 +686,9 @@ def run_modelparallelism_server(
                             "ppl/val": val_ppl,
                         }
                     )
-                    logger.info(
-                        f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
-                    )
+                    eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
+                    logger.info(eval_msg)
+                    print(eval_msg)
                 else:
                     wandb.log(
                         {
@@ -697,7 +697,9 @@ def run_modelparallelism_server(
                             "losses/val": val_loss,
                         }
                     )
-                    logger.info(f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}")
+                    eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
+                    logger.info(eval_msg)
+                    print(eval_msg)
 
             # Save checkpoint at regular intervals
             if save_checkpoints and should_save_checkpoint(

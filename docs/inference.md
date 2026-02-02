@@ -1,12 +1,29 @@
 # Model Parallelism Inference
 
-This guide explains how to deploy distributed GPT inference using Model Parallelism across multiple nodes in the SmolCluster.
+This guide explains how to deploy distributed GPT inference using Model Parallelism across multiple nodes in the Smolcluster.
 
 ## Overview
 
 Model Parallelism enables large language model inference by splitting model layers across multiple workers, allowing inference on models that exceed a single device's memory capacity. The system uses a leader-worker architecture where activations are sequentially forwarded through distributed transformer layers.
 
+## Supported Deployment Configurations
+
+### Configuration 1: Mac Mini Cluster (CPU-based)
+- **Server (Rank 0)**: Mac mini - Layers 0-4
+- **Worker 1 (Rank 1)**: Mac mini - Layers 5-9
+- **Worker 2 (Rank 2)**: Raspberry Pi / Mac mini - Layers 10-11
+- **Client**: FastAPI backend + Web/React frontend
+
+### Configuration 2: iPad + Mac Mini Hybrid Cluster (CoreML + CPU)
+- **Server (Rank 0)**: Mac mini M4 - Layers 0-3 (CPU/PyTorch)
+- **Worker 1 (Rank 1)**: iPad - Layers 4-7 (CoreML accelerated)
+- **Worker 2 (Rank 2)**: Mac mini M4 - Layers 8-11 (CPU/PyTorch)
+- **Controller**: MacBook - FastAPI backend + Web frontend
+- **Benefits**: Leverages iPad's Neural Engine for middle layers, offloading computation from Mac minis
+
 ## Architecture
+
+### Standard Configuration (Mac Mini Cluster)
 
 ```
 ┌─────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
@@ -19,35 +36,71 @@ Model Parallelism enables large language model inference by splitting model laye
                                     Activations Flow (CPU Tensors)
 ```
 
+### Hybrid Configuration (iPad + Mac Mini with MacBook Controller)
+
+![iPad Hybrid Architecture](../images/ipad_arch.png)
+
+**Data Flow:**
+1. **User Input**: User types prompt in React frontend (browser on MacBook)
+2. **API Processing**: FastAPI backend on MacBook receives prompt via HTTP POST
+3. **Cluster Connection**: API establishes socket connection to server (Mac mini M4 Rank 0)
+4. **Tokenization**: Server tokenizes input and processes through layers 0-3
+5. **Activation Forwarding**: Activations sent to iPad (Rank 1) via network
+6. **CoreML Processing**: iPad runs layers 4-7 using Neural Engine acceleration
+7. **Final Layers**: iPad forwards to Mac mini M4 (Rank 2) for layers 8-11
+8. **Token Generation**: Rank 2 generates next token, sends back through chain
+9. **Streaming Response**: API streams generated tokens back to frontend in real-time
+
 **Components:**
-- **Server (Rank 0)**: Manages client connections, coordinates workers, handles tokenization, and sampling
-- **Workers (Rank 1+)**: Process activations through their assigned model layers
-- **FastAPI Backend**: REST API for chat applications
-- **Frontend**: Web interface for user interaction
+- **MacBook Controller**: Hosts FastAPI backend and React frontend, manages user interaction
+- **Server (Mac mini M4, Rank 0)**: Entry point, tokenization, layers 0-3, coordinates workers
+- **Worker 1 (iPad, Rank 1)**: CoreML-accelerated middle layers 4-7, Swift app handles networking
+- **Worker 2 (Mac mini M4, Rank 2)**: Final layers 8-11, language model head, token sampling
+- **Network**: Thunderbolt between Mac minis, WiFi for iPad, all on same subnet
 
 ## Configuration
 
 ### Model Configuration
 
-Edit `src/smolcluster/configs/model_parallelism/model_config.yaml`:
+Edit `src/smolcluster/configs/model_parallelism/model_config_inference.yaml`:
 
+**Standard Configuration (3 Mac minis):**
 ```yaml
 causal_gpt2:
   hf_model_name: "gpt2"
   weights_model_name: "gpt2"  # Auto-downloads from HuggingFace
   num_layers: 12
   num_nodes: 3  # Server + 2 workers
-  max_new_tokens: 50
+  max_new_tokens: 256
   
   # Decoding strategies
   active_decoding_strategy: "top_k"
   decoding_strategies:
-    greedy: {}
-    sampling:
+    top_k:
       temperature: 1.0
-    top_p:
-      temperature: 1.0
-      p: 0.9
+      k: 40
+```
+
+**Hybrid Configuration (iPad + 2 Mac mini M4):**
+```yaml
+causal_gpt2:
+  hf_model_name: "gpt2"
+  weights_model_name: "gpt2"
+  num_layers: 12
+  num_nodes: 3  # Mac mini (server) + iPad (worker 1) + Mac mini (worker 2)
+  max_new_tokens: 256
+  
+  # Layer distribution for hybrid setup
+  layer_distribution:
+    rank_0: [0, 1, 2, 3]        # Mac mini M4 - First 4 layers
+    rank_1: [4, 5, 6, 7]        # iPad CoreML - Middle 4 layers
+    rank_2: [8, 9, 10, 11]      # Mac mini M4 - Last 4 layers
+  
+  # CoreML-specific settings for iPad
+  use_coreml_rank1: true        # Enable CoreML for worker 1 (iPad)
+  
+  active_decoding_strategy: "top_k"
+  decoding_strategies:
     top_k:
       temperature: 1.0
       k: 40
@@ -55,14 +108,17 @@ causal_gpt2:
 
 **Key Parameters:**
 - `num_nodes`: Total nodes (server + workers)
-- `num_layers`: Total transformer layers to distribute
+- `num_layers`: Total transformer layers to distribute (GPT-2 has 12)
+- `layer_distribution`: Custom layer assignment per rank (for hybrid setups)
+- `use_coreml_rank1`: Enable CoreML acceleration on iPad worker
 - `weights_model_name`: Model identifier for auto-downloading safetensors
 - `active_decoding_strategy`: Default strategy (overridable via API)
 
 ### Cluster Configuration
 
-Edit `src/smolcluster/configs/cluster_config_syncps.yaml`:
+Edit `src/smolcluster/configs/model_parallelism/cluster_config_inference.yaml`:
 
+**Standard Configuration:**
 ```yaml
 host_ip:
   mini1: "10.10.0.1"    # Server
@@ -75,90 +131,90 @@ workers: [mini2, pi5]
 server: mini1
 ```
 
+**Hybrid Configuration (iPad + Mac mini with MacBook controller):**
+```yaml
+host_ip:
+  mini1: "10.10.0.1"     # Server (Mac mini M4 - Rank 0)
+  ipad: "10.10.0.5"      # Worker 1 (iPad - Rank 1, WiFi/Thunderbolt network)
+  mini2: "10.10.0.2"     # Worker 2 (Mac mini M4 - Rank 2)
+  macbook: "10.10.0.3"   # Controller (MacBook - FastAPI backend)
+
+port: 65432
+num_workers: 2
+workers: [ipad, mini2]
+server: mini1
+
+# Web interface configuration
+web_interface:
+  api_host: "10.10.0.3"  # MacBook IP
+  api_port: 8000         # FastAPI backend port
+  frontend_port: 3000    # React frontend port
+```
+
+### CoreML Model Conversion for iPad
+
+To enable CoreML acceleration on iPad, you need to convert the GPT-2 layers to CoreML format:
+
+**1. Export PyTorch layers to CoreML (run on Mac):**
+
+```bash
+cd src/smolcluster/utils
+python convert_to_coreml.py --model gpt2 --rank 1 --layers 4,5,6,7
+```
+
+This generates `gpt2_rank1.mlpackage` containing layers 4-7 optimized for iPad's Neural Engine.
+
+**2. Copy CoreML model to iPad:**
+
+```bash
+# Transfer via AirDrop or copy to iPad app bundle
+cp src/data/coremlmodel/gpt2_rank1.mlpackage ~/iPad/GPT2Node/Models/
+```
+
+**3. iPad Swift App Configuration:**
+
+The iPad runs a Swift app (`ios/frontend/swift_app/GPT2Node/`) that:
+- Loads CoreML model on startup
+- Listens for socket connections from server
+- Receives activations, runs inference, forwards to next rank
+- Optimizes Neural Engine usage for low latency
+
+**CoreML Model Structure:**
+```
+gpt2_rank1.mlpackage/
+├── Data/
+│   └── weights/          # Quantized weights for layers 4-7
+├── Manifest.json
+└── Metadata/
+    └── com.apple.CoreML/
+        └── model.mlmodel  # Neural Network architecture
+```
+
 ### Model Weights
 
-Weights are automatically downloaded on first run from HuggingFace. Supported models:
+Weights are automatically downloaded on first run from HuggingFace. Supported models are in `src/smolcluster/configs/model_weights.yaml`:
 
-```yaml
-# src/smolcluster/configs/model_weights.yaml
-models:
-  gpt2:
-    url: "https://huggingface.co/openai-community/gpt2/resolve/main/model.safetensors"
-    filename: "gpt2.safetensors"
-  gpt2-medium:
-    url: "https://huggingface.co/openai-community/gpt2-medium/resolve/main/model.safetensors"
-    filename: "gpt2-medium.safetensors"
-```
 
 **Storage:** Downloaded to `src/data/<filename>`
 
-## Deployment
 
-### 1. Start Inference Server
+**Single-Script Deployment:**
 
-On the server node (e.g., mini1):
-
-```bash
-cd ~/Desktop/smolcluster
-python -m smolcluster.algorithms.ModelParallelism.inference.server
-```
-
-**Server Output:**
-```
-[LEADER] Server will bind to IP: 0.0.0.0, Port: 65432
-[LEADER] Checking for model weights (gpt2)...
-[LEADER] Model weights ready at: /Users/.../src/data/gpt2.safetensors
-[LEADER] Model initialized on device: mps
-[LEADER] Loading server's share of model layers (rank 0)...
-[LEADER] Server loaded 4 layers
-[LEADER] Server listening on 0.0.0.0:65432
-```
-
-### 2. Start Workers
-
-On each worker node (e.g., mini2, pi5):
+For convenience, use the provided launch script to start the entire distributed inference stack with one command:
 
 ```bash
-cd ~/Desktop/smolcluster
-python -m smolcluster.algorithms.ModelParallelism.inference.worker <RANK> <HOSTNAME>
+cd ~/Desktop/smolcluster/scripts/inference
+./launch_mp_inference.sh
 ```
 
-**Example:**
-```bash
-# Worker 1 on mini2
-python -m smolcluster.algorithms.ModelParallelism.inference.worker 1 mini2
+This script automatically:
+1. Starts the inference server on Rank 0 (Mac mini)
+2. SSH into workers and starts worker processes on Rank 1, 2, ... (iPad, Mac mini)
+3. Launches FastAPI backend on controller (MacBook)
+4. Starts frontend server on `http://localhost:3000`
+5. Configures all network connections and layer distributions
 
-# Worker 2 on pi5
-python -m smolcluster.algorithms.ModelParallelism.inference.worker 2 pi5
-```
 
-**Worker Output:**
-```
-[WORKER-1] Worker 1 starting. Connecting to server at 10.10.0.1:65432
-[WORKER-1] Model initialized on device: mps
-[WORKER-1] Checking for model weights (gpt2)...
-[WORKER-1] Model weights ready at: /Users/.../src/data/gpt2.safetensors
-[WORKER-1] Loaded 4 layers for worker 1
-[WORKER-1] Connected to server at 10.10.0.1:65432 on attempt 1
-[WORKER-1] Registering as worker 1 with server...
-[WORKER-1] Received start_inference command from server.
-[WORKER-1] Waiting for generation requests...
-```
-
-### 3. Start FastAPI Backend
-
-On any node with network access to the server:
-
-```bash
-cd ~/Desktop/smolcluster
-python -m smolcluster.chat.backend.api
-```
-
-**Configuration in `chat/backend/api.py`:**
-```python
-SERVER_HOST = "10.10.0.1"  # Update to server IP
-SERVER_PORT = 65432
-```
 
 **API Endpoints:**
 - `POST /chat`: Submit inference requests
@@ -166,250 +222,11 @@ SERVER_PORT = 65432
 - `GET /health`: Health check
 - `POST /reconnect`: Reconnect to inference server
 
-### 4. Access Frontend
-
-Open `src/smolcluster/chat/frontend/index.html` in a browser, or serve it:
-
-```bash
-cd src/smolcluster/chat/frontend
-python -m http.server 8080
-# Access at http://localhost:8080
-```
-
 **Frontend Features:**
 - Real-time chat interface
 - Parameter display (tokens, temperature, top-p, top-k, strategy)
 - Message history
 - Auto-reconnect on disconnect
-
-## API Usage
-
-### Chat Request
-
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "What is distributed computing?",
-    "max_tokens": 30,
-    "temperature": 0.8,
-    "top_k": 40
-  }'
-```
-
-**Response:**
-```json
-{
-  "response": "Distributed computing is a field of computer science that studies distributed systems...",
-  "config": {
-    "tokens_generated": 30,
-    "temperature": 0.8,
-    "top_k": 40,
-    "decoding_strategy": "top_k"
-  }
-}
-```
-
-### Get Configuration
-
-```bash
-curl http://localhost:8000/config
-```
-
-**Response:**
-```json
-{
-  "max_tokens": 50,
-  "temperature": 1.0,
-  "top_k": 40,
-  "active_strategy": "top_k"
-}
-```
-
-## Inference Flow
-
-1. **Client Sends Prompt** → FastAPI backend via REST
-2. **Backend Forwards** → Server socket connection
-3. **Server Tokenizes** → Converts text to input IDs
-4. **Server Processes** → Forward through rank 0 layers
-5. **Server → Worker 1** → Sends activations (CPU tensors)
-6. **Worker 1 Processes** → Forward through rank 1 layers
-7. **Worker 1 → Worker 2** → Sends activations
-8. **Worker 2 → Server** → Returns final activations
-9. **Server Samples Token** → Using configured decoding strategy
-10. **Repeat Steps 4-9** → For `max_new_tokens` iterations
-11. **Server Decodes** → Token IDs to text (excluding prompt)
-12. **Backend Returns** → Generated text to client
-
-## Decoding Strategies
-
-### Greedy Decoding
-```python
-# Always selects highest probability token
-decoding_strategy: "greedy"
-```
-
-### Sampling with Temperature
-```python
-decoding_strategy: "sampling"
-temperature: 1.0  # Higher = more random
-```
-
-### Top-p (Nucleus) Sampling
-```python
-decoding_strategy: "top_p"
-temperature: 1.0
-p: 0.9  # Cumulative probability threshold
-```
-
-### Top-k Sampling
-```python
-decoding_strategy: "top_k"
-temperature: 1.0
-k: 40  # Consider top-k most probable tokens
-```
-
-## Layer Distribution
-
-Layers are automatically distributed based on `num_nodes`. Example for GPT-2 (12 layers, 3 nodes):
-
-| Node | Rank | Layers | Count |
-|------|------|--------|-------|
-| Server (mini1) | 0 | Embedding + 0-3 | 4 |
-| Worker 1 (mini2) | 1 | 4-7 | 4 |
-| Worker 2 (pi5) | 2 | 8-11 | 4 |
-
-**Distribution Logic:**
-```python
-# Automatic distribution in utils/layers.py
-layers_per_node = num_layers // num_nodes
-start_layer = rank * layers_per_node
-end_layer = (rank + 1) * layers_per_node
-```
-
-## Troubleshooting
-
-### Worker Cannot Connect
-
-**Symptom:** Worker times out connecting to server
-
-**Solution:**
-- Verify server IP in `cluster_config_syncps.yaml`
-- Check firewall rules: `sudo ufw allow 65432/tcp`
-- Test connectivity: `ping <server_ip>` from worker
-- Ensure server is listening: Check server logs for "Server listening"
-
-### Model Weights Not Found
-
-**Symptom:** `FileNotFoundError: model.safetensors`
-
-**Solution:**
-- Check internet connection
-- Verify `model_weights.yaml` has correct URLs
-- Manually download: `python -m smolcluster.utils.model_downloader gpt2`
-- Check disk space in `src/data/`
-
-### Memory Errors
-
-**Symptom:** `RuntimeError: CUDA out of memory` or similar
-
-**Solution:**
-- Increase `num_nodes` to distribute layers across more devices
-- Use smaller model: Change `weights_model_name` to `gpt2` instead of `gpt2-xl`
-- Reduce batch size (inference uses batch_size=1 by default)
-
-### Incorrect Generation Output
-
-**Symptom:** Gibberish or repetitive output
-
-**Solution:**
-- Check temperature: Lower values (0.7-0.9) for coherent text
-- Adjust top_k or top_p for better diversity
-- Verify all workers loaded correct layer ranges (check logs)
-- Ensure all nodes use same `weights_model_name`
-
-### API Connection Refused
-
-**Symptom:** FastAPI cannot reach inference server
-
-**Solution:**
-- Update `SERVER_HOST` in `chat/backend/api.py`
-- Ensure inference server started before FastAPI
-- Check server socket is bound: `netstat -an | grep 65432`
-- Verify CORS settings for cross-origin requests
-
-## Performance Considerations
-
-**Latency:** Each layer transition adds network overhead. For optimal performance:
-- Use high-bandwidth connections (Thunderbolt > Ethernet > WiFi)
-- Minimize `num_nodes` while fitting memory constraints
-- Consider layer-specific distribution for balanced compute
-
-**Throughput:** Single-token generation is sequential. For batch inference:
-- Modify server to batch prompts
-- Process multiple tokens in parallel (future enhancement)
-
-**Memory:** Each worker stores:
-- Assigned model layers (~350MB per 4 GPT-2 layers)
-- Intermediate activations (~1-10MB depending on sequence length)
-
-## Advanced Configuration
-
-### Custom Layer Distribution
-
-Override default distribution in `utils/layers.py`:
-
-```python
-# Example: Asymmetric distribution
-layer_mapping = {
-    0: [0, 1, 2],      # Server: 3 layers
-    1: [3, 4, 5, 6],   # Worker 1: 4 layers
-    2: [7, 8, 9, 10, 11]  # Worker 2: 5 layers
-}
-```
-
-### Multi-Model Support
-
-Add models to `model_config.yaml`:
-
-```yaml
-gpt2_large:
-  hf_model_name: "gpt2-large"
-  weights_model_name: "gpt2-large"
-  num_layers: 36
-  num_nodes: 6  # More layers need more nodes
-```
-
-### Custom Decoding Strategy
-
-Add to `utils/decoding.py`:
-
-```python
-def custom_sampling(logits, temperature, **kwargs):
-    # Your custom sampling logic
-    pass
-```
-
-Register in `sample_next_token()` function.
-
-## Production Deployment
-
-### Security
-- Use TLS for API endpoints (nginx reverse proxy)
-- Implement authentication (JWT tokens)
-- Restrict CORS origins in FastAPI
-- Use private network for inter-node communication
-
-### Monitoring
-- Enable centralized logging (Promtail → Loki → Grafana)
-- Track latency per token generation
-- Monitor memory usage per worker
-- Set up alerts for worker disconnections
-
-### Scaling
-- Horizontal: Add more workers for larger models
-- Vertical: Use GPU workers for faster compute
-- Load balancing: Deploy multiple server instances
 
 ## References
 

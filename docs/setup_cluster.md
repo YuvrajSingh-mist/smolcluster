@@ -346,17 +346,6 @@ Host pi5
    sudo systemctl start ssh
    ```
 
-## Persistent SSH sessions
-
-Use `tmux` to prevent session drops:
-
-```bash
-ssh mini1
-tmux new -s train
-python train.py --rank 0
-# Detach: Ctrl+B then D
-```
-
 ## Part 5: Training Launch
 
 ### Automated Launch (Recommended)
@@ -373,27 +362,6 @@ This script:
 - Launches workers on configured nodes
 - Uses tmux for persistent sessions
 - Handles connection retries automatically
-
-### Manual Launch (Testing)
-
-**On Mac mini 1 (Server):**
-```bash
-cd ~/smolcluster/src/smolcluster/ElasticDistributedTraining
-../../../.venv/bin/python server.py mini1
-```
-
-**On workers:**
-```bash
-# Pi 4 (rank 1)
-cd ~/smolcluster/src/smolcluster/ElasticDistributedTraining
-../../../.venv/bin/python worker.py 1 pi4
-
-# Pi 5 (rank 2)
-../../../.venv/bin/python worker.py 2 pi5
-
-# MacBook (rank 3)
-../../../.venv/bin/python worker.py 3 macbook
-```
 
 ## Part 6: Troubleshooting
 
@@ -516,23 +484,35 @@ ping -c 100 10.10.0.1 | tail -1
 # Expect: avg < 0.5ms
 ```
 
-## Summary: Network Design Principles
+---
 
-✅ **What makes this work:**
-- Thunderbolt fabric = fast, flat L2 network for Macs
-- Separate Ethernet subnets = no L2 ambiguity
-- Specific routes = explicit traffic control
-- Mac gateways forward packets from Ethernet → Thunderbolt
-- Pis keep internet via Wi-Fi (default route unchanged)
+## iPad + Mac Mini Hybrid Inference Cluster Setup
 
-🎯 **Cluster topology analogy:**
-- Thunderbolt = InfiniBand/RoCE fabric
-- Macs = compute nodes with NICs
-- Pis = edge/leaf nodes
-- Ethernet links = ToR (Top-of-Rack) uplinks
-- Static routes = explicit fabric routing (not BGP, but same idea)
+This section covers the setup for distributed GPT-2 inference using **iPad (CoreML) + 2× Mac mini M4** with a MacBook controller.
 
-This is **production-grade cluster networking** at small scale.
+### Network Topology
+
+![iPad Hybrid Architecture](../images/ipad_arch.png)
+
+**Hardware:**
+- **Mac mini M4 #1** (Rank 0/Server): Tokenization, layers 0-3, coordination
+- **iPad** (Rank 1/Worker 1): CoreML-accelerated layers 4-7
+- **Mac mini M4 #2** (Rank 2/Worker 2): Layers 8-11, LM head, sampling
+- **MacBook** (Controller): FastAPI backend + HTML/CSS/JS frontend
+
+### Network Configuration
+
+Connect Mac minis via Thunderbolt, join iPad and MacBook to same WiFi network. Configure static IPs as shown in topology diagram.
+
+### Layer Distribution
+
+- **Rank 0** (Mac mini M4 #1): Layers 0-3 (embedding + first 4 transformer blocks)
+- **Rank 1** (iPad CoreML): Layers 4-7 (middle 4 transformer blocks, Neural Engine accelerated)
+- **Rank 2** (Mac mini M4 #2): Layers 8-11 (final 4 transformer blocks + LM head)
+
+### Setup Instructions
+
+See [Inference Guide](inference.md) for detailed setup, CoreML conversion, and deployment instructions.
 
 ---
 
@@ -542,5 +522,6 @@ This is **production-grade cluster networking** at small scale.
 - Uses Weights & Biases for experiment tracking
 - Network topology inspired by real HPC and datacenter cluster designs
 - Elastic training inspired by federated learning research
+- CoreML integration for iOS/iPadOS acceleration
 
 **MIT License** - see LICENSE file for details
