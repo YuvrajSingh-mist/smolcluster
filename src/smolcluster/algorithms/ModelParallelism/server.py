@@ -10,6 +10,7 @@ import torch
 import torchinfo
 import wandb
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
@@ -61,7 +62,7 @@ def evaluate(
     total_val_loss = 0.0
 
     with torch.no_grad():
-        for data, target in val_loader:
+        for data, target in tqdm(val_loader, desc="Evaluating", leave=False, ncols=80):
             data = data.to(device)
             target = target.to(device)
 
@@ -410,12 +411,25 @@ def run_modelparallelism_server(
     act_out_cache = {}
 
     logger.info(f"Starting training for {num_epochs} epochs.")
-    for epoch in range(start_epoch, num_epochs):
+    # Create epoch progress bar
+    epoch_pbar = tqdm(range(start_epoch, num_epochs), desc="Training Epochs", ncols=100)
+    
+    for epoch in epoch_pbar:
         model_layers.train()
 
+        epoch_pbar.set_description(f"Epoch {epoch + 1}/{num_epochs}")
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
-        for batch_idx, (data, target) in enumerate(train_loader):
+        # Create batch progress bar for this epoch
+        batch_pbar = tqdm(
+            enumerate(train_loader),
+            total=len(train_loader),
+            desc=f"Epoch {epoch + 1}",
+            leave=False,
+            ncols=100
+        )
+        
+        for batch_idx, (data, target) in batch_pbar:
             step = epoch * len(train_loader) + batch_idx
 
             # Skip batches if resuming mid-epoch
@@ -603,6 +617,12 @@ def run_modelparallelism_server(
             # Clear GPU memory after optimizer step
             clear_gpu_cache(device)
 
+            # Update batch progress bar with current metrics
+            batch_pbar.set_postfix({
+                'lr': f'{current_lr:.2e}',
+                'step': step
+            })
+            
             # Log training metrics
             wandb.log(
                 {
@@ -689,6 +709,9 @@ def run_modelparallelism_server(
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                     logger.info(eval_msg)
                     print(eval_msg)
+                    # Update progress bars
+                    epoch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
+                    batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
                 else:
                     wandb.log(
                         {
@@ -700,6 +723,9 @@ def run_modelparallelism_server(
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     logger.info(eval_msg)
                     print(eval_msg)
+                    # Update progress bars
+                    epoch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
+                    batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
 
             # Save checkpoint at regular intervals
             if save_checkpoints and should_save_checkpoint(
@@ -729,7 +755,13 @@ def run_modelparallelism_server(
 
             gc.collect()
             activations = None
+        
+        # Close batch progress bar for this epoch
+        batch_pbar.close()
 
+    # Close epoch progress bar
+    epoch_pbar.close()
+    
     for _rank, worker_socket, _addr in sorted(worker_queue):
         send_message(worker_socket, "down")
 

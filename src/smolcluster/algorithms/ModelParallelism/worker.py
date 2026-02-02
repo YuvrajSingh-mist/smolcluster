@@ -8,6 +8,7 @@ from typing import Any, Optional
 import torch
 import wandb
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from smolcluster.utils.checkpointing import CheckpointManager
 from smolcluster.utils.common_utils import (
@@ -316,12 +317,25 @@ def run_modelparallelism_worker(
 
     logger.info("Starting training loop...")
 
-    for epoch in range(start_epoch, num_epochs):
+    # Create epoch progress bar
+    epoch_pbar = tqdm(range(start_epoch, num_epochs), desc=f"Worker {local_rank} Epochs", ncols=100)
+    
+    for epoch in epoch_pbar:
         model_layers.train()
         total_loss = 0.0
+        epoch_pbar.set_description(f"Worker {local_rank} - Epoch {epoch + 1}/{num_epochs}")
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
-        for batch_idx, (data, target) in enumerate(train_loader):
+        # Create batch progress bar for this epoch
+        batch_pbar = tqdm(
+            enumerate(train_loader),
+            total=len(train_loader),
+            desc=f"Worker {local_rank} - Epoch {epoch + 1}",
+            leave=False,
+            ncols=100
+        )
+        
+        for batch_idx, (data, target) in batch_pbar:
             step = epoch * len(train_loader) + batch_idx
 
             # Skip batches if resuming mid-epoch
@@ -453,16 +467,24 @@ def run_modelparallelism_worker(
                     f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}"
                 )
 
+                avg_loss = total_loss / (batch_idx + 1)
                 wandb.log(
                     {
                         "step": step,
-                        f"losses/train_{local_rank}": total_loss / (batch_idx + 1),
+                        f"losses/train_{local_rank}": avg_loss,
                         "epoch": epoch + 1,
                     }
                 )
                 logger.info(
-                    f"[Step {step}] Training loss: {total_loss / (batch_idx + 1):.4f}"
+                    f"[Step {step}] Training loss: {avg_loss:.4f}"
                 )
+                
+                # Update progress bars
+                batch_pbar.set_postfix({
+                    'loss': f'{avg_loss:.4f}',
+                    'step': step
+                })
+                epoch_pbar.set_postfix({'loss': f'{avg_loss:.4f}'})
 
                 # Save checkpoint at regular intervals
                 if save_checkpoints and should_save_checkpoint(
@@ -591,7 +613,12 @@ def run_modelparallelism_worker(
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
                     )
 
+        # Close batch progress bar for this epoch
+        batch_pbar.close()
         logger.info(f"Epoch {epoch + 1}/{num_epochs} completed.")
 
+    # Close epoch progress bar
+    epoch_pbar.close()
+    
     sock.close()
     logger.info("Worker training completed and connection closed.")
