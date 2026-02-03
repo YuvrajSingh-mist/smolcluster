@@ -3,10 +3,10 @@ import heapq
 import logging
 import math
 import socket
-import time
 from pathlib import Path
 from typing import Optional
 
+from smolcluster.algorithms.ModelParallelism.inference.server import RANK
 import torch
 import torchinfo
 import wandb
@@ -21,11 +21,6 @@ from smolcluster.utils.common_utils import (
 )
 from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
-
-
-def get_tensor_size_mb(tensor: torch.Tensor) -> float:
-    """Calculate tensor size in megabytes."""
-    return tensor.numel() * tensor.element_size() / (1024 * 1024)
 
 
 def compute_leader_activations(
@@ -184,15 +179,18 @@ logging.basicConfig(
 logger = logging.getLogger("[LEADER]")
 
 
-def run_modelparallelism_server(
-    model,
+def run_modelparallelism_worker(
+   model,
     train_loader,
     val_loader,
     config,
     cluster_config,
+    worker_rank,
     hostname,
     device,
     criterion,
+    host_ip,
+    port,
     resume_checkpoint_path=None,
 ):
     """
@@ -231,7 +229,7 @@ def run_modelparallelism_server(
     cluster_config["num_workers"]
     model_name = cluster_config["model_name"]
     recv_grads = None
-    RANK = 0
+    # RANK = 0
     NUM_WORKERS = cluster_config["num_workers"]
 
     num_nodes = cluster_config["num_nodes"]
@@ -254,7 +252,7 @@ def run_modelparallelism_server(
         checkpoint_dir=str(full_checkpoint_dir),
         max_checkpoints=max_checkpoints_to_keep,
         save_optimizer=save_optimizer_state,
-        rank=RANK,
+        rank=worker_rank,
         algorithm="mp",
     )
 
@@ -295,10 +293,10 @@ def run_modelparallelism_server(
 
     # Load model layers for server (rank 0)
     num_layers = config["num_layers"]
-    logger.info(f"Loading server's share of model layers (rank {RANK})...")
+    logger.info(f"Loading server's share of model layers (rank {worker_rank})...")
 
     model_layers, out_layers = get_model_per_node(
-        model, num_nodes=num_nodes, local_rank=RANK, total_layers=num_layers
+        model, num_nodes=num_nodes, local_rank=worker_rank, total_layers=num_layers
     )
 
     model_layers = model_layers.to(device)
@@ -413,22 +411,16 @@ def run_modelparallelism_server(
     logger.info(f"Starting training for {model_name}.")
 
     # Initialize activation caches
-    # act_in_cache = {}
+    act_in_cache = {}
     act_out_cache = {}
 
     logger.info(f"Starting training for {num_epochs} epochs.")
-    
-    # Initialize data transfer tracking
-    activation_send_times = []
-    activation_send_sizes = []
-    gradient_recv_times = []
-    gradient_recv_sizes = []
-    
     # Create epoch progress bar
     epoch_pbar = tqdm(range(start_epoch, num_epochs), desc="Training Epochs", ncols=100)
     
     for epoch in epoch_pbar:
         model_layers.train()
+        total_loss = 0.0
 
         epoch_pbar.set_description(f"Epoch {epoch + 1}/{num_epochs}")
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
@@ -460,156 +452,282 @@ def run_modelparallelism_server(
             tqdm.write(
                 f"[LEADER] [Step {step}  / {num_epochs * len(train_loader)}] Server computing leader activations"
             )
-            leader_activations = compute_leader_activations(device, model_layers, data)
-            leader_activations.requires_grad_(True)
-            # act_in = None
+            
             act_out = None
             activations = None
 
-            # Clear GPU cache before caching activations
-            clear_gpu_cache(device)
 
-            # Cache server's activations WITH computation graph (no detach!)
-            # act_in_cache[(step, RANK)] = data
-            act_out_cache[(step, RANK)] = leader_activations
-            activations = leader_activations
-
-            # logger.info("Finsihed generating activations for local_rank 0")
-
-            # activations = leader_activations
-            # Send generation request to all workers in rank order (1, 2, ...)
-            for rank, worker_socket, _addr in sorted(worker_queue):
-                tqdm.write(f"[LEADER] [Step {step}] Sending activations to worker rank {rank}")
+            if worker_rank == 0:
+                leader_activations = compute_leader_activations(device, model_layers, data)
+                leader_activations.requires_grad_(True)
+            
                 
-                # Track activation send size and time
-                act_size_mb = get_tensor_size_mb(activations.detach().cpu())
-                act_send_start = time.time()
+                # Clear GPU cache before caching activations
+                clear_gpu_cache(device)
+
+                # Cache server's activations WITH computation graph (no detach!)
+                # act_in_cache[(step, RANK)] = data
+                act_out_cache[(step, worker_rank)] = leader_activations
+                activations = leader_activations
+                
+                next_rank = RANK + 1
+                next_target_socket = next(s for r, s, _ in worker_queue if r == next_rank) 
+                tqdm.write(f"[LEADER] [Step {step}] Sending activations to worker rank {next_rank}")
                 
                 send_message(
-                    worker_socket,
+                    next_target_socket,
                     (
-                        "generate_activations_train",
+                        "generate_and_forward_activations",
                         step,
                         {
                             "activations": activations.detach().cpu(),
                             "targets": target.detach().cpu()
-                            if rank == NUM_WORKERS
-                            else None,
                         },
                     ),
                 )
                 
-                act_send_time = time.time() - act_send_start
-                activation_send_times.append(act_send_time)
-                activation_send_sizes.append(act_size_mb)
-
-                message = receive_message(worker_socket)
-
+            elif worker_rank == NUM_WORKERS:
+                
+                message = receive_message(sock)
                 command, recv_step, payload = message
-
+                
                 assert recv_step == step, (
                     f"Step mismatch: expected {step}, got {recv_step}"
                 )
-
                 if command == "forward_activations":
-                    activations = payload["activations"].to(device)
+                    act_in = payload["activations"].to(device)
                     from_rank = payload["from_rank"]
                     to_rank = payload["to_rank"]
                     tqdm.write(
                         f"[LEADER] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
                     )
-
-                    # Clear GPU cache after moving activations to device
-                    clear_gpu_cache(device)
-
-                    # Cache worker's output activations
-                    act_out_cache[(step, from_rank)] = activations
-
-                else:
-                    logger.error(
-                        f"Unexpected command from worker {rank}: {command}. Cannot continue."
+                
+                act_in.requires_grad_(True)
+                # Forward through local model layers
+                out = act_in
+                for layer in model_layers:
+                    output = layer(out)
+                    out = output[0] if isinstance(output, tuple) else output
+                activations = out
+                
+                act_out_cache[(step, worker_rank)] = activations
+                act_in_cache[(step, from_rank)] = act_in
+                tqdm.write(
+                    f"[WORKER-{worker_rank}] [Step {step}] Finished generating activations for local_rank {worker_rank}"
+                )
+                    # Compute training loss
+                loss = compute_train_loss(
+                    final_activations=activations,
+                    target=target,
+                    criterion=criterion,
+                    device=device,
+                )
+                total_loss += loss
+                tqdm.write(f"[WORKER-{worker_rank}] [Step {step}] Training loss: {loss:.4f}")
+                
+                avg_loss = total_loss / (batch_idx + 1)
+                wandb.log({
+                    "step": step,
+                    f"losses/train_{worker_rank}": avg_loss,
+                    "epoch": epoch + 1,
+                })
+                
+                # Update progress bars
+                batch_pbar.set_postfix({
+                    'loss': f'{avg_loss:.4f}',
+                    'step': step
+                })
+                epoch_pbar.set_postfix({'loss': f'{avg_loss:.4f}'})
+                
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                # Save checkpoint at regular intervals
+                if save_checkpoints and should_save_checkpoint(
+                    step, epoch, checkpoint_steps, num_epochs * len(train_loader)
+                ):
+                    # Wrap model_layers in Sequential for proper state_dict saving
+                    temp_model = torch.nn.Sequential(*model_layers)
+                    checkpoint_manager.save_checkpoint(
+                        model=temp_model,
+                        optimizer=optimizer,
+                        scheduler=None,  # MP doesn't use scheduler
+                        step=step,
+                        epoch=epoch,
+                        loss=loss,
+                        metadata={
+                            "train_loss": total_loss / (batch_idx + 1),
+                            "worker_rank": worker_rank,
+                            "learning_rate": optimizer.param_groups[0]["lr"],
+                        },
                     )
-                    break
-
-          
-            # Clear GPU cache before backward phase
-            clear_gpu_cache(device)
-
-            for rank, worker_socket, _addr in sorted(worker_queue, reverse=True):
-                if rank == NUM_WORKERS:
-                    tqdm.write(
-                        f"[LEADER] [Step {step}] Sending generate_gradients command to last worker rank {rank}"
-                    )
-                    send_message(
-                        worker_socket,
-                        (
-                            "generate_gradients",
-                            step,
-                            {
-                                "gradients": None,
-                            },
-                        ),
-                    )
-
-                # Receiving the last worker nodes activations
-                grad_recv_start = time.time()
-                message = receive_message(worker_socket)
-                grad_recv_time = time.time() - grad_recv_start
-
-                command, recv_step, payload = message
-
-                assert recv_step == step, (
-                    f"Step mismatch: expected {step}, got {recv_step}"
+                    logger.info(f"[Step {step}] Worker {worker_rank} checkpoint saved")
+                
+                send_message(sock,
+                    (
+                        "generate_gradients",
+                        step,
+                        {
+                            "gradients": activations.grad.detach().cpu(),
+                        },
+                    ),
+                )
+                
+            # else:
+            message = receive_message(sock)
+            command, recv_step, payload = message
+            
+            assert recv_step == step, (
+                f"Step mismatch: expected {step}, got {recv_step}"
+            )
+            if command == "forward_activations":
+                act_in = payload["activations"].to(device)
+                from_rank = payload["from_rank"]
+                to_rank = payload["to_rank"]
+                tqdm.write(
+                    f"[LEADER] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
+                )
+                act_in.requires_grad_(True)
+                # Forward through local model layers
+                out = act_in
+                for layer in model_layers:
+                    output = layer(out)
+                    out = output[0] if isinstance(output, tuple) else output
+                
+                activations = out
+                act_out_cache[(step, worker_rank)] = activations                    
+                act_in_cache[(step, from_rank)] = act_in
+                
+                
+                tqdm.write(
+                    f"[WORKER-{worker_rank}] [Step {step}] Finished generating activations for local_rank {worker_rank}"
                 )
 
-                if command == "forward_gradients":
-                    recv_grads = payload["gradients"]
-                    to_rank = payload["to_rank"]
-                    from_rank = payload["from_rank"]
+                tqdm.write(
+                    f"[WORKER-{worker_rank}] [Step {step}] Sending activations from rank {worker_rank} to rank {worker_rank + 1}"
+                )
+                
+                
+                next_rank = to_rank + 1
+                next_target_socket = next(s for r, s, _ in worker_queue if r == next_rank) 
+                tqdm.write(f"[LEADER] [Step {step}] Sending activations to worker rank {next_rank}")
+                send_message(
+                    next_target_socket,
+                    (
+                        "generate_and_forward_activations",
+                        step,
+                        {
+                            "activations": activations.detach().cpu(),
+                            "targets": target.detach().cpu()
+                        },
+                    ),
+                )
+                
+                logger.info(f"[WORKER-{worker_rank}] [Step {step}] Sent activations for step {step} from rank {from_rank} to rank {next_rank}")
+                # Clear GPU cache after moving activations to device
+                clear_gpu_cache(device)
+
+                # Cache worker's output activations
+                act_in_cache[(step, from_rank)] = activations
+            
+            elif command == 'generate_gradients':
+                tqdm.write(
+                    f"[WORKER-{worker_rank}] [Step {step}] Received generate_gradients command, starting backward pass"
+                )
+                # Retrieve cached activations for this step
+                act_out = act_out_cache[(step, worker_rank)]
                     
-                    # Track gradient receive size
-                    grad_size_mb = get_tensor_size_mb(recv_grads)
-                    gradient_recv_times.append(grad_recv_time)
-                    gradient_recv_sizes.append(grad_size_mb)
-                    
-                    tqdm.write(
-                        f"[LEADER] [Step {step}] Received gradients forwarded to server from worker {from_rank} for {to_rank}"
-                    )
+                # Compute gradients locally
+                optimizer.zero_grad()
+                torch.autograd.backward(act_out, recv_grads.to(device))
+                
+                # Clear GPU cache after backward pass
+                clear_gpu_cache(device)
 
-                    if to_rank == RANK:
-                        tqdm.write(f"[LEADER] [Step {step}] Computing backward pass for server")
-                        # Restore server's activations from cache (has computation graph)
-                        act_out = act_out_cache[(step, RANK)]
-                        act_out = act_out.to(device)
+                # Forward gradients to previous worker
+                prev_rank = worker_rank - 1
+                prev_target_socket = next(s for r, s, _ in worker_queue if r == prev_rank) 
+                tqdm.write(
+                    f"[WORKER-{worker_rank}] [Step {step}] Forwarding gradients to worker rank {prev_rank}"
+                )
+                send_message(
+                    prev_target_socket,
+                    (
+                        "forward_gradients",
+                        step,
+                        {"gradients": act_out_cache[(step, prev_rank)].grad.detach().cpu(), "to_rank": prev_rank},
+                    ),
+                )
+            
 
-                        optimizer.zero_grad()
-                        # Backward - this updates model parameters
-                        torch.autograd.backward(act_out, recv_grads.to(device))
-                        optimizer.step()
+            # for rank, worker_socket, _addr in sorted(worker_queue, reverse=True):
+            #     if rank == NUM_WORKERS:
+            #         tqdm.write(
+            #             f"[LEADER] [Step {step}] Sending generate_gradients command to last worker rank {rank}"
+            #         )
+            #         send_message(
+            #             worker_socket,
+            #             (
+            #                 "generate_gradients",
+            #                 step,
+            #                 {
+            #                     "gradients": None,
+            #                 },
+            #             ),
+            #         )
 
-                        # Clean up server activation cache
-                        if (step, RANK) in act_out_cache:
-                            del act_out_cache[(step, RANK)]
+            #     # Receiving the last worker nodes activations
+            #     message = receive_message(worker_socket)
 
-                        # Clear GPU cache after backward pass
-                        clear_gpu_cache(device)
+            #     command, recv_step, payload = message
 
-                    else:
-                        target_socket = next(
-                            (s for r, s, _ in worker_queue if r == to_rank), None
-                        )
-                        if target_socket:
-                            tqdm.write(
-                                f"[LEADER] [Step {step}] Forwarding gradients to worker rank {to_rank} from {from_rank} via current rank {rank}"
-                            )
-                            send_message(
-                                target_socket,
-                                (
-                                    "forward_gradients",
-                                    step,
-                                    {"gradients": recv_grads, "to_rank": to_rank},
-                                ),
-                            )
+            #     assert recv_step == step, (
+            #         f"Step mismatch: expected {step}, got {recv_step}"
+            #     )
+
+            #     if command == "forward_gradients":
+            #         recv_grads = payload["gradients"]
+            #         to_rank = payload["to_rank"]
+            #         from_rank = payload["from_rank"]
+            #         tqdm.write(
+            #             f"[LEADER] [Step {step}] Received gradients forwarded to server from worker {from_rank} for {to_rank}"
+            #         )
+
+            #         if to_rank == RANK:
+            #             tqdm.write(f"[LEADER] [Step {step}] Computing backward pass for server")
+            #             # Restore server's activations from cache (has computation graph)
+            #             act_out = act_out_cache[(step, RANK)]
+            #             act_out = act_out.to(device)
+
+            #             optimizer.zero_grad()
+            #             # Backward - this updates model parameters
+            #             torch.autograd.backward(act_out, recv_grads.to(device))
+            #             optimizer.step()
+
+            #             # Clean up server activation cache
+            #             if (step, RANK) in act_out_cache:
+            #                 del act_out_cache[(step, RANK)]
+
+            #             # Clear GPU cache after backward pass
+            #             clear_gpu_cache(device)
+
+            #         else:
+            #             target_socket = next(
+            #                 (s for r, s, _ in worker_queue if r == to_rank), None
+            #             )
+            #             if target_socket:
+            #                 tqdm.write(
+            #                     f"[LEADER] [Step {step}] Forwarding gradients to worker rank {to_rank} from {from_rank} via current rank {rank}"
+            #                 )
+            #                 send_message(
+            #                     target_socket,
+            #                     (
+            #                         "forward_gradients",
+            #                         step,
+            #                         {"gradients": recv_grads, "to_rank": to_rank},
+            #                     ),
+            #                 )
 
             # Clean up any remaining cached activations from this step
             keys_to_delete = [key for key in act_out_cache.keys() if key[0] == step]
@@ -663,62 +781,40 @@ def run_modelparallelism_server(
                                 "step": step,
                                 "epoch": epoch + 1,
                             }
-                        ) 
-            
+                        )
+
             # Log network metrics if tracking enabled
             if track_network_metrics and step % metrics_log_interval == 0:
                 network_stats = get_network_metrics(reset=True)
                 if network_stats:
                     wandb.log(
                         {
-                            "network/send_bandwidth_mbps": network_stats.get(
+                            f"network/worker_{worker_rank}_send_bandwidth_mbps": network_stats.get(
                                 "send_bandwidth_mbps", 0
                             ),
-                            "network/recv_bandwidth_mbps": network_stats.get(
+                            f"network/worker_{worker_rank}_recv_bandwidth_mbps": network_stats.get(
                                 "recv_bandwidth_mbps", 0
                             ),
-                            "network/avg_send_latency_ms": network_stats.get(
+                            f"network/worker_{worker_rank}_avg_send_latency_ms": network_stats.get(
                                 "avg_send_latency_ms", 0
                             ),
-                            "network/avg_recv_latency_ms": network_stats.get(
+                            f"network/worker_{worker_rank}_avg_recv_latency_ms": network_stats.get(
                                 "avg_recv_latency_ms", 0
                             ),
-                            "network/avg_buffer_size_kb": network_stats.get(
+                            f"network/worker_{worker_rank}_avg_buffer_size_kb": network_stats.get(
                                 "avg_buffer_size_kb", 0
                             ),
-                            "network/max_buffer_size_kb": network_stats.get(
+                            f"network/worker_{worker_rank}_max_buffer_size_kb": network_stats.get(
                                 "max_buffer_size_kb", 0
-                            ),
-                            "network/total_send_mb": network_stats.get(
-                                "total_send_mb", 0
-                            ),
-                            "network/total_recv_mb": network_stats.get(
-                                "total_recv_mb", 0
                             ),
                             "step": step,
                             "epoch": epoch + 1,
                         }
                     )
-                      # Calculate activation bandwidth (Mbps)
-                    total_act_mb = sum(activation_send_sizes[-metrics_log_interval:])
-                    total_act_time = sum(activation_send_times[-metrics_log_interval:])
-                    act_bandwidth_mbps = (total_act_mb * 8) / total_act_time if total_act_time > 0 else 0
-                    
-                    # Calculate gradient bandwidth (Mbps)
-                    total_grad_mb = sum(gradient_recv_sizes[-metrics_log_interval:])
-                    total_grad_time = sum(gradient_recv_times[-metrics_log_interval:])
-                    grad_bandwidth_mbps = (total_grad_mb * 8) / total_grad_time if total_grad_time > 0 else 0
-                    
-                    wandb.log({
-                        "bandwidth/activation_send_mbps": act_bandwidth_mbps,
-                        "bandwidth/gradient_recv_mbps": grad_bandwidth_mbps,
-                        "data_size/activation_mb": total_act_mb / len(activation_send_sizes[-metrics_log_interval:]),
-                        "data_size/gradient_mb": total_grad_mb / len(gradient_recv_sizes[-metrics_log_interval:]) if len(gradient_recv_sizes[-metrics_log_interval:]) > 0 else 0,
-                        "step": step,
-                        "epoch": epoch + 1,
-                    })
-                
                     logger.info(
+                        f"[Worker {worker_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
+                        f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
+                    )
                         f"[Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Buffer={network_stats.get('avg_buffer_size_kb', 0):.2f}KB"

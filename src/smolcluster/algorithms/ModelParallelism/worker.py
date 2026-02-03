@@ -20,6 +20,11 @@ from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
 
+def get_tensor_size_mb(tensor: torch.Tensor) -> float:
+    """Calculate tensor size in megabytes."""
+    return tensor.numel() * tensor.element_size() / (1024 * 1024)
+
+
 def evaluate(
     device: torch.device,
     model: torch.nn.Module,
@@ -316,6 +321,16 @@ def run_modelparallelism_worker(
     target_cache = {}
 
     logger.info("Starting training loop...")
+    
+    # Initialize data transfer tracking
+    activation_recv_times = []
+    activation_recv_sizes = []
+    activation_send_times = []
+    activation_send_sizes = []
+    gradient_recv_times = []
+    gradient_recv_sizes = []
+    gradient_send_times = []
+    gradient_send_sizes = []
 
     # Create epoch progress bar
     epoch_pbar = tqdm(range(start_epoch, num_epochs), desc=f"Worker {local_rank} Epochs", ncols=100)
@@ -342,20 +357,22 @@ def run_modelparallelism_worker(
             if step < start_step:
                 continue
 
-            logger.info(
-                f"[Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server"
+            tqdm.write(
+                f"[WORKER-{local_rank}] [Step {step} / {num_epochs * len(train_loader)}] Waiting for activations from server"
             )
             data = data.to(device)
             target = target.to(device)
 
             # Receive message from server
+            act_recv_start = time.time()
             message = receive_message(sock)
+            act_recv_time = time.time() - act_recv_start
             command, recv_step, payload = message
 
             # Handle evaluation messages (doesn't affect step count)
             while command == "evaluate_forward":
-                logger.info(
-                    f"[Eval] Worker {local_rank} received evaluation activations"
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Eval] Worker {local_rank} received evaluation activations"
                 )
 
                 # Get activations from previous node
@@ -370,8 +387,8 @@ def run_modelparallelism_worker(
                         out = out[0] if isinstance(out, tuple) else out
                     model_layers.train()
 
-                logger.info(
-                    f"[Eval] Worker {local_rank} sending evaluation activations"
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Eval] Worker {local_rank} sending evaluation activations"
                 )
 
                 # Send activations to server
@@ -388,12 +405,17 @@ def run_modelparallelism_worker(
             assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
 
             if command == "generate_activations_train":
-                logger.info(
-                    f"[Step {step}] Received command to generate activations for rank {local_rank}."
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Step {step}] Received command to generate activations for rank {local_rank}."
                 )
 
                 # Get activations from previous node
                 act_in = payload["activations"].to(device)
+                
+                # Track activation receive size
+                act_recv_size_mb = get_tensor_size_mb(payload["activations"])
+                activation_recv_times.append(act_recv_time)
+                activation_recv_sizes.append(act_recv_size_mb)
                 if payload.get("targets") is not None:
                     target_cache[step] = payload["targets"]
                 act_in.requires_grad_(True)  # has activations from all prev layers
@@ -413,14 +435,18 @@ def run_modelparallelism_worker(
                 # Clear unnecessary intermediate tensors
                 clear_gpu_cache(device)
 
-                logger.info(
-                    f"[Step {step}] Finished generating activations for local_rank {local_rank}"
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Step {step}] Finished generating activations for local_rank {local_rank}"
                 )
 
-                logger.info(
-                    f"[Step {step}] Sending activations from rank {local_rank} to rank {local_rank + 1}"
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Step {step}] Sending activations from rank {local_rank} to rank {local_rank + 1}"
                 )
 
+                # Track activation send size and time
+                act_send_size_mb = get_tensor_size_mb(act_out.detach().cpu())
+                act_send_start = time.time()
+                
                 # Send detached copy to next worker/server
                 send_message(
                     sock,
@@ -434,6 +460,10 @@ def run_modelparallelism_worker(
                         },
                     ),
                 )
+                
+                act_send_time = time.time() - act_send_start
+                activation_send_times.append(act_send_time)
+                activation_send_sizes.append(act_send_size_mb)
 
                 # Don't delete - keep in cache for backward
 
@@ -444,8 +474,8 @@ def run_modelparallelism_worker(
             assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
 
             if command == "generate_gradients":
-                logger.info(
-                    f"[Step {step}] Received command to compute gradients for rank {local_rank}."
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Step {step}] Received command to compute gradients for rank {local_rank}."
                 )
 
                 # Restore activations from cache (has computation graph)
@@ -463,9 +493,13 @@ def run_modelparallelism_worker(
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                logger.info(
-                    f"[Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}"
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}"
                 )
+                
+                # Track gradient send size and time
+                grad_send_size_mb = get_tensor_size_mb(act_in.grad.detach().cpu())
+                grad_send_start = time.time()
 
                 avg_loss = total_loss / (batch_idx + 1)
                 wandb.log(
@@ -475,8 +509,8 @@ def run_modelparallelism_worker(
                         "epoch": epoch + 1,
                     }
                 )
-                logger.info(
-                    f"[Step {step}] Training loss: {avg_loss:.4f}"
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Step {step}] Training loss: {avg_loss:.4f}"
                 )
                 
                 # Update progress bars
@@ -520,6 +554,10 @@ def run_modelparallelism_worker(
                         },
                     ),
                 )
+                
+                grad_send_time = time.time() - grad_send_start
+                gradient_send_times.append(grad_send_time)
+                gradient_send_sizes.append(grad_send_size_mb)
 
                 # Clean up activations cache after backward pass
                 del act_in_cache[(step, local_rank)]
@@ -528,11 +566,11 @@ def run_modelparallelism_worker(
 
             elif command == "forward_gradients":
                 rank, recv_grads = payload["to_rank"], payload["gradients"]
-                logger.info(f"[Step {step}] Received gradients for rank {rank}.")
+                tqdm.write(f"[WORKER-{local_rank}] [Step {step}] Received gradients for rank {rank}.")
 
                 if rank == local_rank:
-                    logger.info(
-                        f"[Step {step}] Computing backward pass for rank {local_rank}"
+                    tqdm.write(
+                        f"[WORKER-{local_rank}] [Step {step}] Computing backward pass for rank {local_rank}"
                     )
 
                     # Restore activations from cache (has computation graph)
@@ -580,6 +618,7 @@ def run_modelparallelism_worker(
                             }
                         )
 
+            
             # Log network metrics if tracking enabled
             if track_network_metrics and step % metrics_log_interval == 0:
                 network_stats = get_network_metrics(reset=True)
@@ -608,6 +647,39 @@ def run_modelparallelism_worker(
                             "epoch": epoch + 1,
                         }
                     )
+                    
+                        # Calculate activation receive bandwidth (Mbps)
+                    recent_act_recv_sizes = activation_recv_sizes[-metrics_log_interval:]
+                    recent_act_recv_times = activation_recv_times[-metrics_log_interval:]
+                    total_act_recv_mb = sum(recent_act_recv_sizes)
+                    total_act_recv_time = sum(recent_act_recv_times)
+                    act_recv_bandwidth_mbps = (total_act_recv_mb * 8) / total_act_recv_time if total_act_recv_time > 0 else 0
+                    
+                    # Calculate activation send bandwidth (Mbps)
+                    recent_act_send_sizes = activation_send_sizes[-metrics_log_interval:]
+                    recent_act_send_times = activation_send_times[-metrics_log_interval:]
+                    total_act_send_mb = sum(recent_act_send_sizes)
+                    total_act_send_time = sum(recent_act_send_times)
+                    act_send_bandwidth_mbps = (total_act_send_mb * 8) / total_act_send_time if total_act_send_time > 0 else 0
+                    
+                    # Calculate gradient send bandwidth (Mbps)
+                    recent_grad_send_sizes = gradient_send_sizes[-metrics_log_interval:]
+                    recent_grad_send_times = gradient_send_times[-metrics_log_interval:]
+                    total_grad_send_mb = sum(recent_grad_send_sizes)
+                    total_grad_send_time = sum(recent_grad_send_times)
+                    grad_send_bandwidth_mbps = (total_grad_send_mb * 8) / total_grad_send_time if total_grad_send_time > 0 else 0
+                    
+                    wandb.log({
+                        f"bandwidth/worker_{local_rank}_activation_recv_mbps": act_recv_bandwidth_mbps,
+                        f"bandwidth/worker_{local_rank}_activation_send_mbps": act_send_bandwidth_mbps,
+                        f"bandwidth/worker_{local_rank}_gradient_send_mbps": grad_send_bandwidth_mbps,
+                        f"data_size/worker_{local_rank}_activation_recv_mb": total_act_recv_mb / len(recent_act_recv_sizes) if len(recent_act_recv_sizes) > 0 else 0,
+                        f"data_size/worker_{local_rank}_activation_send_mb": total_act_send_mb / len(recent_act_send_sizes) if len(recent_act_send_sizes) > 0 else 0,
+                        f"data_size/worker_{local_rank}_gradient_send_mb": total_grad_send_mb / len(recent_grad_send_sizes) if len(recent_grad_send_sizes) > 0 else 0,
+                        "step": step,
+                        "epoch": epoch + 1,
+                    })
+                
                     logger.info(
                         f"[Worker {local_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
