@@ -45,9 +45,9 @@ num_workers: 2
 server: mini1  # Server hostname
 workers:
   regular:
-    - hostname: win
+    - hostname: mini2
       rank: 1
-    - hostname: pi5
+    - hostname: mini3
       rank: 2
   # tablets:
   #   - hostname: pi5
