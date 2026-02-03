@@ -483,9 +483,9 @@ def main():
         sys.exit(1)
 
     # Validate algorithm
-    if algorithm not in ["edp", "syncps", "mp"]:
+    if algorithm not in ["edp", "syncps", "mp", "mp_without_ps"]:
         print(
-            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', or 'mp'"
+            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', or 'mp_without_ps'"
         )
         sys.exit(1)
 

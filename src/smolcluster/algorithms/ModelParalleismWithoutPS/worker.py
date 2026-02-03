@@ -28,7 +28,7 @@ def compute_leader_activations(
     model_layers: list[torch.nn.Module],
     data: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute gradients for leader/server node."""
+    """Compute gradients for worker rank 0 (leader node)."""
 
     data = data.to(device)
     out = None
@@ -56,7 +56,7 @@ def evaluate(
 ) -> tuple[float, Optional[float]]:
     """Evaluate model on validation set using distributed model layers.
 
-    Activations flow through server layers -> worker 1 -> worker 2 -> back to server
+    Activations flow through worker 0 layers -> worker 1 -> worker 2 -> back to worker 0
     for loss computation, matching the training forward pass.
     """
     model_layers.eval()
@@ -67,7 +67,7 @@ def evaluate(
             data = data.to(device)
             target = target.to(device)
 
-            # Server computes its layer activations
+            # Worker rank 0 computes its layer activations
             activations = compute_leader_activations(device, model_layers, data)
 
             # Forward through workers in rank order
@@ -172,7 +172,7 @@ def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     return get_lr
 
 
-# Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_server)
+# Setup logging (will be replaced by setup_cluster_logging in run_modelparallelism_without_ps_worker)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -194,7 +194,7 @@ def run_modelparallelism_without_ps_worker(
     resume_checkpoint_path=None,
 ):
     """
-    Run Synchronous Parameter Server training.
+    Run Model Parallelism without Parameter Server training (peer-to-peer workers).
 
     Args:
         model: PyTorch model to train
@@ -202,7 +202,7 @@ def run_modelparallelism_without_ps_worker(
         val_loader: Validation data loader
         config: Training configuration dict (nn_config)
         cluster_config: Cluster configuration dict
-        hostname: Server hostname
+        hostname: Worker hostname
         device: Device to run on
         criterion: Loss criterion
     """
@@ -211,12 +211,12 @@ def run_modelparallelism_without_ps_worker(
     # Configure centralized logging
     setup_cluster_logging(
         logger=logger,
-        component="server",
-        rank=None,
+        component="worker",
+        rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
-    logger.info("🚀 ModelParallelism Server starting up")
+    logger.info(f"🚀 ModelParallelism Worker rank {worker_rank} starting up")
 
     # Extract configuration
     batch_size = config["batch_size"]
@@ -273,12 +273,13 @@ def run_modelparallelism_without_ps_worker(
     HOST_IP = "0.0.0.0"
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
-        server_hostname = cluster_config["server"]
-        PORT = port_config.get(server_hostname, port_config.get("default", 65432))
+        # Get port for worker rank 0 (first worker in config)
+        worker_0_hostname = cluster_config["workers"]["regular"][0]["hostname"]
+        PORT = port_config.get(worker_0_hostname, port_config.get("default", 65432))
     else:
         PORT = port_config
 
-    logger.info(f"Server will bind to IP: {HOST_IP}, Port: {PORT}")
+    logger.info(f"Worker rank {worker_rank} will bind to IP: {HOST_IP}, Port: {PORT}")
     workers = {}
 
     # Load tokenizer
@@ -291,20 +292,20 @@ def run_modelparallelism_without_ps_worker(
     logger.info(model_summary)
     wandb.log({"model_structure": model_summary})
 
-    # Load model layers for server (rank 0)
+    # Load model layers for this worker rank
     num_layers = config["num_layers"]
-    logger.info(f"Loading server's share of model layers (rank {worker_rank})...")
+    logger.info(f"Loading worker rank {worker_rank}'s share of model layers...")
 
     model_layers, out_layers = get_model_per_node(
         model, num_nodes=num_nodes, local_rank=worker_rank, total_layers=num_layers
     )
 
     model_layers = model_layers.to(device)
-    logger.info(f"Server loaded {len(model_layers)} layers")
+    logger.info(f"Worker rank {worker_rank} loaded {len(model_layers)} layers")
 
-    # Create optimizer for server's layers only
+    # Create optimizer for this worker's layers only
     optimizer = torch.optim.AdamW(model_layers.parameters(), lr=learning_rate)
-    logger.info(f"Created optimizer for server with lr={learning_rate}")
+    logger.info(f"Created optimizer for worker rank {worker_rank} with lr={learning_rate}")
 
     # Learning rate scheduler setup (after optimizer creation)
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -335,7 +336,7 @@ def run_modelparallelism_without_ps_worker(
 
         if checkpoint_path:
             logger.info(f"Resuming from checkpoint: {checkpoint_path}")
-            # Create a temporary model with only server layers for loading
+            # Create a temporary model with only this worker's layers for loading
             temp_model = torch.nn.Sequential(*model_layers)
             metadata = checkpoint_manager.load_checkpoint(
                 checkpoint_path=checkpoint_path,
@@ -359,7 +360,7 @@ def run_modelparallelism_without_ps_worker(
     # Bind the socket to the host and port
     sock.bind((HOST_IP, PORT))
     sock.listen(5)
-    logger.info(f"Server listening on {HOST_IP}:{PORT}")
+    logger.info(f"Worker rank {worker_rank} listening on {HOST_IP}:{PORT}")
 
     # Accept connections and wait for registration
     # Use priority queue to maintain workers sorted by rank
@@ -450,7 +451,7 @@ def run_modelparallelism_without_ps_worker(
                 current_lr = learning_rate
 
             tqdm.write(
-                f"[LEADER] [Step {step}  / {num_epochs * len(train_loader)}] Server computing leader activations"
+                f"[LEADER] [Step {step}  / {num_epochs * len(train_loader)}] Worker rank 0 computing leader activations"
             )
             
             act_out = None
@@ -465,7 +466,7 @@ def run_modelparallelism_without_ps_worker(
                 # Clear GPU cache before caching activations
                 clear_gpu_cache(device)
 
-                # Cache server's activations WITH computation graph (no detach!)
+                # Cache worker rank 0's activations WITH computation graph (no detach!)
                 # act_in_cache[(step, RANK)] = data
                 act_out_cache[(step, worker_rank)] = leader_activations
                 activations = leader_activations
