@@ -278,14 +278,22 @@ def run_worker(
     # Setup parameters
     num_workers = cluster_config["num_workers"]
     seed = cluster_config.get("seed", 42)
-    world_size = num_workers + 1
+    # For mp_without_ps, world_size is just num_workers (no separate server)
+    # For other algorithms, world_size includes server (num_workers + 1)
+    world_size = num_workers if algorithm == "mp_without_ps" else num_workers + 1
 
     # Get server connection info
     host_ip = cluster_config["host_ip"][hostname]
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
-        server_hostname = cluster_config["server"]
-        port = port_config.get(server_hostname, port_config.get("default", 65432))
+        # For mp_without_ps, get worker rank 0's hostname; for others, use server
+        if algorithm == "mp_without_ps":
+            coordinator_hostname = next(
+                w["hostname"] for w in cluster_config["workers"]["regular"] if w["rank"] == 0
+            )
+        else:
+            coordinator_hostname = cluster_config["server"]
+        port = port_config.get(coordinator_hostname, port_config.get("default", 65432))
     else:
         port = port_config
 
