@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from smolcluster.algorithms.ModelParallelism.inference.server import RANK
 import torch
 import torchinfo
 import wandb
@@ -177,7 +176,7 @@ def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("[LEADER]")
+logger = None  # Will be set in run_modelparallelism_without_ps_worker
 
 
 def run_modelparallelism_without_ps_worker(
@@ -208,6 +207,9 @@ def run_modelparallelism_without_ps_worker(
         criterion: Loss criterion
     """
     global logger
+
+    # Setup logger for this worker rank
+    logger = logging.getLogger(f"[WORKER-{worker_rank}]")
 
     # Configure centralized logging
     setup_cluster_logging(
@@ -283,8 +285,7 @@ def run_modelparallelism_without_ps_worker(
         PORT = port_config
 
     logger.info(f"Worker rank {worker_rank} will bind to IP: {HOST_IP}, Port: {PORT}")
-    workers = {}
-
+    
     # Load tokenizer
     model = model.to(device)
     logger.info(f"Model initialized on device: {device}")
@@ -495,7 +496,7 @@ def run_modelparallelism_without_ps_worker(
                 current_lr = learning_rate
 
             tqdm.write(
-                f"[LEADER] [Step {step}  / {num_epochs * len(train_loader)}] Worker rank 0 computing leader activations"
+                f"[WORKER-{worker_rank}] [Step {step}  / {num_epochs * len(train_loader)}] Worker rank 0 computing leader activations"
             )
             
             act_out = None
@@ -517,7 +518,7 @@ def run_modelparallelism_without_ps_worker(
                 
                 next_rank = RANK + 1
                 next_target_socket = next(s for r, s, _ in worker_queue if r == next_rank) 
-                tqdm.write(f"[LEADER] [Step {step}] Sending activations to worker rank {next_rank}")
+                tqdm.write(f"[WORKER-{worker_rank}] [Step {step}] Sending activations to worker rank {next_rank}")
                 
                 send_message(
                     next_target_socket,
@@ -544,7 +545,7 @@ def run_modelparallelism_without_ps_worker(
                     from_rank = payload["from_rank"]
                     to_rank = payload["to_rank"]
                     tqdm.write(
-                        f"[LEADER] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
+                        f"[WORKER-{worker_rank}] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
                     )
                 
                 act_in.requires_grad_(True)
@@ -631,7 +632,7 @@ def run_modelparallelism_without_ps_worker(
                 from_rank = payload["from_rank"]
                 to_rank = payload["to_rank"]
                 tqdm.write(
-                    f"[LEADER] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
+                    f"[WORKER-{worker_rank}] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
                 )
                 act_in.requires_grad_(True)
                 # Forward through local model layers
@@ -656,7 +657,7 @@ def run_modelparallelism_without_ps_worker(
                 
                 next_rank = to_rank + 1
                 next_target_socket = next(s for r, s, _ in worker_queue if r == next_rank) 
-                tqdm.write(f"[LEADER] [Step {step}] Sending activations to worker rank {next_rank}")
+                tqdm.write(f"[WORKER-{worker_rank}] [Step {step}] Sending activations to worker rank {next_rank}")
                 send_message(
                     next_target_socket,
                     (

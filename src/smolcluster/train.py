@@ -184,6 +184,12 @@ def run_server(
     )
 
     # Run server with selected algorithm
+    if algorithm == "mp_without_ps":
+        logger.error(
+            "❌ FATAL: mp_without_ps algorithm does not use a server. Only launch workers."
+        )
+        sys.exit(1)
+    
     logger.info(f"Starting {algo_name} server...")
     if algorithm == "edp":
         run_edp_server(
