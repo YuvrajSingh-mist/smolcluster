@@ -273,8 +273,10 @@ def run_modelparallelism_without_ps_worker(
     HOST_IP = "0.0.0.0"
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
-        # Get port for worker rank 0 (first worker in config)
-        worker_0_hostname = cluster_config["workers"]["regular"][0]["hostname"]
+        # Get port for worker with rank 0
+        worker_0_hostname = next(
+            w["hostname"] for w in cluster_config["workers"]["regular"] if w["rank"] == 0
+        )
         PORT = port_config.get(worker_0_hostname, port_config.get("default", 65432))
     else:
         PORT = port_config
