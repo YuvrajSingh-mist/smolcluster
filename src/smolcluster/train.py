@@ -29,6 +29,9 @@ from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
 from smolcluster.algorithms.ModelParallelism.server import run_modelparallelism_server
 from smolcluster.algorithms.ModelParallelism.worker import run_modelparallelism_worker
+from smolcluster.algorithms.ModelParalleismWithoutPS.worker import (
+    run_modelparallelism_without_ps_worker,
+)
 from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
@@ -376,6 +379,21 @@ def run_worker(
             port=port,
             resume_checkpoint_path=resume_checkpoint_path,
         )
+    elif algorithm == "mp_without_ps":
+        run_modelparallelism_without_ps_worker(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            worker_rank=local_rank,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+            host_ip=host_ip,
+            port=port,
+            resume_checkpoint_path=resume_checkpoint_path,
+        )
     else:  # syncps
         run_syncps_worker(
             model=model,
@@ -404,7 +422,7 @@ def main():
     parser.add_argument(
         "-a",
         "--algorithm",
-        choices=["edp", "syncps", "mp"],
+        choices=["edp", "syncps", "mp", "mp_without_ps"],
         default="syncps",
         help="Training algorithm to use (default: syncps)",
     )

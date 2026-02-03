@@ -280,9 +280,9 @@ for worker_entry in "${REGULAR_WORKERS[@]}"; do
     
     # Launch regular worker via SSH
     if [[ -n "$RESUME_CHECKPOINT" ]]; then
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp --resume-checkpoint '$RESUME_CHECKPOINT'"
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp_without_ps --resume-checkpoint '$RESUME_CHECKPOINT'"
     else
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp"
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp_without_ps"
     fi
     launch_on_node "$hostname" "$WORKER_CMD" "worker$rank"
     echo "   ✅ Rank $rank: $hostname (worker$rank)"

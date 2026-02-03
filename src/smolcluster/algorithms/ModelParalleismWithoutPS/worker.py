@@ -179,7 +179,7 @@ logging.basicConfig(
 logger = logging.getLogger("[LEADER]")
 
 
-def run_modelparallelism_worker(
+def run_modelparallelism_without_ps_worker(
    model,
     train_loader,
     val_loader,
