@@ -815,10 +815,6 @@ def run_modelparallelism_without_ps_worker(
                         f"[Worker {worker_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
                     )
-                        f"[Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
-                        f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps, "
-                        f"Buffer={network_stats.get('avg_buffer_size_kb', 0):.2f}KB"
-                    )
 
             # Evaluation
             if step % eval_steps == 0 and step != 0:
