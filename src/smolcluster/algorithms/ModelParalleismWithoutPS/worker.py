@@ -3,6 +3,7 @@ import heapq
 import logging
 import math
 import socket
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -356,60 +357,101 @@ def run_modelparallelism_without_ps_worker(
         else:
             logger.warning("No checkpoint found to resume from, starting fresh")
 
-    # Create and bind socket
+    # Create socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    # Bind the socket to the host and port
-    sock.bind((HOST_IP, PORT))
-    sock.listen(5)
-    logger.info(f"Worker rank {worker_rank} listening on {HOST_IP}:{PORT}")
-
-    # Accept connections and wait for registration
+    
     # Use priority queue to maintain workers sorted by rank
     worker_queue = []  # Priority queue: [(rank, socket, address)]
     registered_workers = {}  # rank -> socket (for quick lookup)
+    
+    if worker_rank == 0:
+        # Worker rank 0 binds and accepts connections from other workers
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
+        sock.bind((HOST_IP, PORT))
+        sock.listen(NUM_WORKERS - 1)  # Listen for all other workers
+        logger.info(f"Worker rank 0 listening on {HOST_IP}:{PORT} for {NUM_WORKERS - 1} workers")
 
-    # Accept all connections (workers + API client)
-    while len(registered_workers) < NUM_WORKERS:
-        conn, address = sock.accept()
-        logger.info(f"Accepted connection from {address}")
+        # Accept connections from all other workers
+        while len(registered_workers) < NUM_WORKERS - 1:
+            conn, address = sock.accept()
+            logger.info(f"Accepted connection from {address}")
 
-        # Wait for registration message
-        try:
-            message = receive_message(conn)
-            if message is None:
-                logger.warning(f"Connection from {address} closed before registration")
+            # Wait for registration message
+            try:
+                message = receive_message(conn)
+                if message is None:
+                    logger.warning(f"Connection from {address} closed before registration")
+                    conn.close()
+                    continue
+
+                command, rank = message
+                if command == "register":
+                    logger.info(f"Worker rank {rank} registered from {address}")
+                    registered_workers[rank] = conn
+                    # Add to priority queue sorted by rank
+                    heapq.heappush(worker_queue, (rank, conn, address))
+                    logger.info(
+                        f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})"
+                    )
+                else:
+                    logger.warning(f"Unexpected message from {address}: {command}")
+                    conn.close()
+            except Exception as e:
+                logger.error(f"Error during registration from {address}: {e}")
                 conn.close()
                 continue
 
-            command, rank = message
-            if command == "register":
-                logger.info(f"Worker rank {rank} registered from {address}")
-                registered_workers[rank] = conn
-                workers[address] = conn
-                # Add to priority queue sorted by rank
-                heapq.heappush(worker_queue, (rank, conn, address))
-                logger.info(
-                    f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})"
-                )
+        logger.info(f"All {NUM_WORKERS - 1} workers connected to rank 0")
+        logger.info(
+            f"Worker priority queue (by rank): {[(rank, addr) for rank, _, addr in worker_queue]}"
+        )
 
-            else:
-                logger.warning(f"Unexpected message from {address}: {command}")
-                conn.close()
-        except Exception as e:
-            logger.error(f"Error during registration from {address}: {e}")
-            conn.close()
-            continue
+        # Send start_training to workers in rank order
+        for rank, worker_socket, addr in sorted(worker_queue):
+            logger.info(f"Sending start_training to worker rank {rank} at {addr}")
+            send_message(worker_socket, "start_training", buffer_size_mb=buffer_size_mb)
+            
+    else:
+        # Other workers connect to worker rank 0
+        # Get worker rank 0's hostname and connect to it
+        worker_0_hostname = next(
+            w["hostname"] for w in cluster_config["workers"]["regular"] if w["rank"] == 0
+        )
+        worker_0_ip = cluster_config["host_ip"][worker_0_hostname]
+        
+        logger.info(f"Worker rank {worker_rank} connecting to worker 0 at {worker_0_ip}:{PORT}")
+        
+        # Connect to worker rank 0
+        max_retries = 10
+        retry_delay = 2
+        for attempt in range(max_retries):
+            try:
+                sock.connect((worker_0_ip, PORT))
+                logger.info(f"Worker rank {worker_rank} connected to worker 0")
+                break
+            except ConnectionRefusedError:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Connection refused (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(
+                        f"Failed to connect to worker 0 at {worker_0_ip}:{PORT} after {max_retries} attempts"
+                    )
+                    raise
 
-    logger.info(f"All workers connected. Starting training on {model_name}...")
-    logger.info(
-        f"Worker priority queue (by rank): {[(rank, addr) for rank, _, addr in worker_queue]}"
-    )
+        # Register with worker rank 0
+        send_message(sock, ("register", worker_rank))
+        logger.info(f"Worker rank {worker_rank} sent registration to worker 0")
 
-    # Send start_training to workers in rank order
-    for rank, worker_socket, addr in sorted(worker_queue):
-        logger.info(f"Sending start_training to worker rank {rank} at {addr}")
-        send_message(worker_socket, "start_training", buffer_size_mb=buffer_size_mb)
+        # Wait for start_training signal
+        message = receive_message(sock)
+        if message == "start_training":
+            logger.info(f"Worker rank {worker_rank} received start_training signal")
+        else:
+            logger.warning(f"Worker rank {worker_rank} received unexpected message: {message}")
 
     logger.info(f"Starting training for {model_name}.")
 
