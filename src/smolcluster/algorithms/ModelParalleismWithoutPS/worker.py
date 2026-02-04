@@ -495,15 +495,17 @@ def run_modelparallelism_without_ps_worker(
             else:
                 current_lr = learning_rate
 
-            tqdm.write(
-                f"[WORKER-{worker_rank}] [Step {step}  / {num_epochs * len(train_loader)}] Worker rank 0 computing leader activations"
-            )
-            
             act_out = None
             activations = None
 
 
             if worker_rank == 0:
+                
+                
+                tqdm.write(
+                f"[WORKER-{worker_rank}] [Step {step}  / {num_epochs * len(train_loader)}] Worker rank 0 computing leader activations"
+            )
+            
                 leader_activations = compute_leader_activations(device, model_layers, data)
                 leader_activations.requires_grad_(True)
             
@@ -516,8 +518,9 @@ def run_modelparallelism_without_ps_worker(
                 act_out_cache[(step, worker_rank)] = leader_activations
                 activations = leader_activations
                 
-                next_rank = RANK + 1
+                next_rank = worker_rank + 1
                 next_target_socket = next(s for r, s, _ in worker_queue if r == next_rank) 
+                
                 tqdm.write(f"[WORKER-{worker_rank}] [Step {step}] Sending activations to worker rank {next_rank}")
                 
                 send_message(
@@ -621,7 +624,8 @@ def run_modelparallelism_without_ps_worker(
                 )
                 
             # else:
-            message = receive_message(sock)
+            recv_sock = next(s for r, s, _ in worker_queue if r == worker_rank)
+            message = receive_message(recv_sock)
             command, recv_step, payload = message
             
             assert recv_step == step, (
