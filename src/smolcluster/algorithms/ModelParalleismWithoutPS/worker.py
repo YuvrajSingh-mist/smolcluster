@@ -523,7 +523,7 @@ def run_modelparallelism_without_ps_worker(
                 send_message(
                     next_target_socket,
                     (
-                        "generate_and_forward_activations",
+                        "forward_activations",
                         step,
                         {
                             "activations": activations.detach().cpu(),
