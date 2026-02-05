@@ -52,6 +52,7 @@ def evaluate(
     val_loader: DataLoader,
     criterion: torch.nn.Module,
     worker_queue: list,
+    worker_rank: int = 0,
     decoder_type_ppl: bool = False,
 ) -> tuple[float, Optional[float]]:
     """Evaluate model on validation set using distributed model layers.
@@ -63,7 +64,13 @@ def evaluate(
     total_val_loss = 0.0
 
     with torch.no_grad():
-        for data, target in tqdm(val_loader, desc="Evaluating", leave=False, ncols=80):
+        for data, target in tqdm(
+            val_loader, 
+            desc="Evaluating", 
+            leave=False, 
+            ncols=80,
+            disable=(worker_rank != 0)
+        ):
             data = data.to(device)
             target = target.to(device)
 
@@ -232,7 +239,7 @@ def run_modelparallelism_without_ps_worker(
     cluster_config["num_workers"]
     model_name = cluster_config["model_name"]
     recv_grads = None
-    # RANK = 0
+    worker_ip_address = cluster_config["workers"]["regular"]
     NUM_WORKERS = cluster_config["num_workers"]
 
     num_nodes = cluster_config["num_nodes"]
@@ -361,123 +368,48 @@ def run_modelparallelism_without_ps_worker(
     # Create socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     
-    # Use priority queue to maintain workers sorted by rank
-    worker_queue = []  # Priority queue: [(rank, socket, address)]
-    registered_workers = {}  # rank -> socket (for quick lookup)
+     # Worker rank 0 binds and accepts connections from other workers
+  
+    sock.bind((HOST_IP, PORT + worker_rank))  # Use different port per worker
+    sock.listen(1)  # Listen for all other workers
+    logger.info(f"Worker rank 0 listening on {HOST_IP}:{PORT} for {NUM_WORKERS - 1} workers")
+        
+    next_worker = next(w for w in cluster_config["workers"]["regular"] if w["rank"] == ((worker_rank + 1) % NUM_WORKERS))
+    next_ip = cluster_config["host_ip"][next_worker["hostname"]]
+    next_port = PORT + worker_rank + 1
     
-    if worker_rank == 0:
-        # Worker rank 0 binds and accepts connections from other workers
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  
-        sock.bind((HOST_IP, PORT))
-        sock.listen(NUM_WORKERS - 1)  # Listen for all other workers
-        logger.info(f"Worker rank 0 listening on {HOST_IP}:{PORT} for {NUM_WORKERS - 1} workers")
+    next_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    next_sock.connect((next_ip, next_port))
+    
+    logger.info(f"Worker {worker_rank} connected to worker {worker_rank + 1}")
 
-        # Accept connections from all other workers
-        while len(registered_workers) < NUM_WORKERS - 1:
-            conn, address = sock.accept()
-            logger.info(f"Accepted connection from {address}")
-
-            # Wait for registration message
-            try:
-                message = receive_message(conn)
-                if message is None:
-                    logger.warning(f"Connection from {address} closed before registration")
-                    conn.close()
-                    continue
-
-                command, rank = message
-                if command == "register":
-                    logger.info(f"Worker rank {rank} registered from {address}")
-                    registered_workers[rank] = conn
-                    # Add to priority queue sorted by rank
-                    heapq.heappush(worker_queue, (rank, conn, address))
-                    logger.info(
-                        f"Worker rank {rank} added to priority queue (queue size: {len(worker_queue)})"
-                    )
-                else:
-                    logger.warning(f"Unexpected message from {address}: {command}")
-                    conn.close()
-            except Exception as e:
-                logger.error(f"Error during registration from {address}: {e}")
-                conn.close()
-                continue
-
-        logger.info(f"All {NUM_WORKERS - 1} workers connected to rank 0")
-        logger.info(
-            f"Worker priority queue (by rank): {[(rank, addr) for rank, _, addr in worker_queue]}"
-        )
-
-        # Send start_training to workers in rank order
-        for rank, worker_socket, addr in sorted(worker_queue):
-            logger.info(f"Sending start_training to worker rank {rank} at {addr}")
-            send_message(worker_socket, "start_training", buffer_size_mb=buffer_size_mb)
-            
-    else:
-        # Other workers connect to worker rank 0
-        # Get worker rank 0's hostname and connect to it
-        worker_0_hostname = next(
-            w["hostname"] for w in cluster_config["workers"]["regular"] if w["rank"] == 0
-        )
-        worker_0_ip = cluster_config["host_ip"][worker_0_hostname]
-        
-        logger.info(f"Worker rank {worker_rank} connecting to worker 0 at {worker_0_ip}:{PORT}")
-        
-        # Connect to worker rank 0
-        max_retries = 10
-        retry_delay = 2
-        for attempt in range(max_retries):
-            try:
-                sock.connect((worker_0_ip, PORT))
-                logger.info(f"Worker rank {worker_rank} connected to worker 0")
-                break
-            except ConnectionRefusedError:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Connection refused (attempt {attempt + 1}/{max_retries}). "
-                        f"Retrying in {retry_delay}s..."
-                    )
-                    time.sleep(retry_delay)
-                else:
-                    logger.error(
-                        f"Failed to connect to worker 0 at {worker_0_ip}:{PORT} after {max_retries} attempts"
-                    )
-                    raise
-
-        # Register with worker rank 0
-        send_message(sock, ("register", worker_rank))
-        logger.info(f"Worker rank {worker_rank} sent registration to worker 0")
-
-        # Wait for start_training signal
-        message = receive_message(sock)
-        if message == "start_training":
-            logger.info(f"Worker rank {worker_rank} received start_training signal")
-        else:
-            logger.warning(f"Worker rank {worker_rank} received unexpected message: {message}")
-
-    logger.info(f"Starting training for {model_name}.")
-
+    # Accept connections from previous worker
+    
+    prev_sock, prev_addr = sock.accept()
+    logger.info(f"Worker {worker_rank} accepted connection from worker {worker_rank - 1} at {prev_addr}")
+    
+    logger.info(f"Worker rank {worker_rank} successfully connected to all peers, starting training loop")
+    
     # Initialize activation caches
     act_in_cache = {}
     act_out_cache = {}
 
     logger.info(f"Starting training for {num_epochs} epochs.")
-    # Create epoch progress bar
-    epoch_pbar = tqdm(range(start_epoch, num_epochs), desc="Training Epochs", ncols=100)
     
-    for epoch in epoch_pbar:
+    for epoch in range(start_epoch, num_epochs):
         model_layers.train()
         total_loss = 0.0
 
-        epoch_pbar.set_description(f"Epoch {epoch + 1}/{num_epochs}")
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
-        # Create batch progress bar for this epoch
+        # Create batch progress bar for this epoch (only for rank 0)
         batch_pbar = tqdm(
             enumerate(train_loader),
             total=len(train_loader),
-            desc=f"Epoch {epoch + 1}",
-            leave=False,
-            ncols=100
+            desc=f"Epoch {epoch + 1}/{num_epochs}",
+            leave=True,
+            ncols=120,
+            disable=(worker_rank != 0),
         )
         
         for batch_idx, (data, target) in batch_pbar:
@@ -500,11 +432,9 @@ def run_modelparallelism_without_ps_worker(
 
 
             if worker_rank == 0:
-                
-                
-                tqdm.write(
-                f"[WORKER-{worker_rank}] [Step {step}  / {num_epochs * len(train_loader)}] Worker rank 0 computing leader activations"
-            )
+                logger.info(
+                    f"[Step {step}/{num_epochs * len(train_loader)}] Worker rank 0 computing leader activations"
+                )
             
                 leader_activations = compute_leader_activations(device, model_layers, data)
                 leader_activations.requires_grad_(True)
@@ -519,125 +449,42 @@ def run_modelparallelism_without_ps_worker(
                 activations = leader_activations
                 
                 next_rank = worker_rank + 1
-                next_target_socket = next(s for r, s, _ in worker_queue if r == next_rank) 
-                
-                tqdm.write(f"[WORKER-{worker_rank}] [Step {step}] Sending activations to worker rank {next_rank}")
+             
+                logger.info(f"[Step {step}] Sending activations to worker rank {next_rank}")
                 
                 send_message(
-                    next_target_socket,
+                    next_sock,
                     (
                         "forward_activations",
                         step,
                         {
                             "activations": activations.detach().cpu(),
-                            "targets": target.detach().cpu()
+                            "targets": target.detach().cpu(),
+                            "from_rank": worker_rank,
+                            "to_rank": next_rank
                         },
                     ),
                 )
-                
-            elif worker_rank == NUM_WORKERS:
-                
-                message = receive_message(sock)
-                command, recv_step, payload = message
-                
-                assert recv_step == step, (
-                    f"Step mismatch: expected {step}, got {recv_step}"
-                )
-                if command == "forward_activations":
-                    act_in = payload["activations"].to(device)
-                    from_rank = payload["from_rank"]
-                    to_rank = payload["to_rank"]
-                    tqdm.write(
-                        f"[WORKER-{worker_rank}] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
-                    )
-                
-                act_in.requires_grad_(True)
-                # Forward through local model layers
-                out = act_in
-                for layer in model_layers:
-                    output = layer(out)
-                    out = output[0] if isinstance(output, tuple) else output
-                activations = out
-                
-                act_out_cache[(step, worker_rank)] = activations
-                act_in_cache[(step, from_rank)] = act_in
-                tqdm.write(
-                    f"[WORKER-{worker_rank}] [Step {step}] Finished generating activations for local_rank {worker_rank}"
-                )
-                    # Compute training loss
-                loss = compute_train_loss(
-                    final_activations=activations,
-                    target=target,
-                    criterion=criterion,
-                    device=device,
-                )
-                total_loss += loss
-                tqdm.write(f"[WORKER-{worker_rank}] [Step {step}] Training loss: {loss:.4f}")
-                
-                avg_loss = total_loss / (batch_idx + 1)
-                wandb.log({
-                    "step": step,
-                    f"losses/train_{worker_rank}": avg_loss,
-                    "epoch": epoch + 1,
-                })
-                
-                # Update progress bars
-                batch_pbar.set_postfix({
-                    'loss': f'{avg_loss:.4f}',
-                    'step': step
-                })
-                epoch_pbar.set_postfix({'loss': f'{avg_loss:.4f}'})
-                
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                
-                # Save checkpoint at regular intervals
-                if save_checkpoints and should_save_checkpoint(
-                    step, epoch, checkpoint_steps, num_epochs * len(train_loader)
-                ):
-                    # Wrap model_layers in Sequential for proper state_dict saving
-                    temp_model = torch.nn.Sequential(*model_layers)
-                    checkpoint_manager.save_checkpoint(
-                        model=temp_model,
-                        optimizer=optimizer,
-                        scheduler=None,  # MP doesn't use scheduler
-                        step=step,
-                        epoch=epoch,
-                        loss=loss,
-                        metadata={
-                            "train_loss": total_loss / (batch_idx + 1),
-                            "worker_rank": worker_rank,
-                            "learning_rate": optimizer.param_groups[0]["lr"],
-                        },
-                    )
-                    logger.info(f"[Step {step}] Worker {worker_rank} checkpoint saved")
-                
-                send_message(sock,
-                    (
-                        "generate_gradients",
-                        step,
-                        {
-                            "gradients": activations.grad.detach().cpu(),
-                        },
-                    ),
-                )
+             
                 
             # else:
-            recv_sock = next(s for r, s, _ in worker_queue if r == worker_rank)
-            message = receive_message(recv_sock)
+            # recv_sock = next(s for r, s, _ in worker_queue if r == worker_rank)
+            message = receive_message(prev_sock)
             command, recv_step, payload = message
             
             assert recv_step == step, (
                 f"Step mismatch: expected {step}, got {recv_step}"
             )
+            
+            
             if command == "forward_activations":
                 act_in = payload["activations"].to(device)
                 from_rank = payload["from_rank"]
                 to_rank = payload["to_rank"]
-                tqdm.write(
-                    f"[WORKER-{worker_rank}] [Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
+                logger.info(
+                    f"[Step {step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
                 )
+                
                 act_in.requires_grad_(True)
                 # Forward through local model layers
                 out = act_in
@@ -650,22 +497,24 @@ def run_modelparallelism_without_ps_worker(
                 act_in_cache[(step, from_rank)] = act_in
                 
                 
-                tqdm.write(
-                    f"[WORKER-{worker_rank}] [Step {step}] Finished generating activations for local_rank {worker_rank}"
+                logger.info(
+                    f"[Step {step}] Finished generating activations for local_rank {worker_rank}"
                 )
 
-                tqdm.write(
-                    f"[WORKER-{worker_rank}] [Step {step}] Sending activations from rank {worker_rank} to rank {worker_rank + 1}"
+                logger.info(
+                    f"[Step {step}] Sending activations from rank {worker_rank} to rank {worker_rank + 1}"
                 )
                 
-                
-                next_rank = to_rank + 1
-                next_target_socket = next(s for r, s, _ in worker_queue if r == next_rank) 
-                tqdm.write(f"[WORKER-{worker_rank}] [Step {step}] Sending activations to worker rank {next_rank}")
-                send_message(
-                    next_target_socket,
+                next_rank = worker_rank + 1
+                if next_rank == NUM_WORKERS - 1:
+                    
+                  
+                    logger.info(f"[Step {step}] Last worker rank reached, preparing to generate gradients for rank {next_rank}")
+                    
+                    send_message(
+                    next_sock,
                     (
-                        "generate_and_forward_activations",
+                        "generate_gradients",
                         step,
                         {
                             "activations": activations.detach().cpu(),
@@ -673,17 +522,32 @@ def run_modelparallelism_without_ps_worker(
                         },
                     ),
                 )
-                
-                logger.info(f"[WORKER-{worker_rank}] [Step {step}] Sent activations for step {step} from rank {from_rank} to rank {next_rank}")
-                # Clear GPU cache after moving activations to device
-                clear_gpu_cache(device)
+                else:
+                    
 
-                # Cache worker's output activations
-                act_in_cache[(step, from_rank)] = activations
-            
+                    logger.info(f"[Step {step}] Sending activations to worker rank {next_rank}")
+                    send_message(
+                        next_sock,
+                        (
+                            "forward_activations" ,
+                            step,
+                            {
+                                "activations": activations.detach().cpu(),
+                                "targets": target.detach().cpu()
+                            },
+                        ),
+                    )
+                
+                    logger.info(f"[WORKER-{worker_rank}] [Step {step}] Sent activations for step {step} from rank {from_rank} to rank {next_rank}")
+                    # Clear GPU cache after moving activations to device
+                    clear_gpu_cache(device)
+
+                    # Cache worker's output activations
+                    act_in_cache[(step, from_rank)] = activations
+                
             elif command == 'generate_gradients':
-                tqdm.write(
-                    f"[WORKER-{worker_rank}] [Step {step}] Received generate_gradients command, starting backward pass"
+                logger.info(
+                    f"[Step {step}] Received generate_gradients command, starting backward pass"
                 )
                 # Retrieve cached activations for this step
                 act_out = act_out_cache[(step, worker_rank)]
@@ -697,12 +561,11 @@ def run_modelparallelism_without_ps_worker(
 
                 # Forward gradients to previous worker
                 prev_rank = worker_rank - 1
-                prev_target_socket = next(s for r, s, _ in worker_queue if r == prev_rank) 
-                tqdm.write(
-                    f"[WORKER-{worker_rank}] [Step {step}] Forwarding gradients to worker rank {prev_rank}"
+                logger.info(
+                    f"[Step {step}] Forwarding gradients to worker rank {prev_rank}"
                 )
                 send_message(
-                    prev_target_socket,
+                    prev_sock,
                     (
                         "forward_gradients",
                         step,
@@ -874,6 +737,7 @@ def run_modelparallelism_without_ps_worker(
                     val_loader,
                     criterion,
                     worker_queue,
+                    worker_rank,
                     decoder_type_ppl,
                 )
 
