@@ -29,8 +29,8 @@ from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
 from smolcluster.algorithms.ModelParallelism.server import run_modelparallelism_server
 from smolcluster.algorithms.ModelParallelism.worker import run_modelparallelism_worker
-from smolcluster.algorithms.ModelParalleismWithoutPS.worker import (
-    run_modelparallelism_without_ps_worker,
+from smolcluster.algorithms.ModelParallelismPipeline.worker import (
+    run_modelparallelism_pipeline_worker,
 )
 from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
@@ -184,9 +184,9 @@ def run_server(
     )
 
     # Run server with selected algorithm
-    if algorithm == "mp_without_ps":
+    if algorithm == "mp_pipeline":
         logger.error(
-            "❌ FATAL: mp_without_ps algorithm does not use a server. Only launch workers."
+            "❌ FATAL: mp_pipeline algorithm does not use a server. Only launch workers."
         )
         sys.exit(1)
     
@@ -284,18 +284,27 @@ def run_worker(
     # Setup parameters
     num_workers = cluster_config["num_workers"]
     seed = cluster_config.get("seed", 42)
-    # For mp_without_ps, world_size is just num_workers (no separate server)
+    # For mp_pipeline, world_size is just num_workers (no separate server)
     # For other algorithms, world_size includes server (num_workers + 1)
-    world_size = num_workers if algorithm == "mp_without_ps" else num_workers + 1
+    world_size = num_workers if algorithm == "mp_pipeline" else num_workers + 1
 
-    # Get server connection info
-    host_ip = cluster_config["host_ip"][hostname]
+    # Get server connection info (only needed for algorithms with server)
+    host_ip = None
+    if algorithm == "mp_pipeline":
+        # Pipeline topology doesn't use host_ip
+        pass
+    else:
+        # Require host_ip for other algorithms
+        host_ip = cluster_config["host_ip"][hostname]
+    
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
-        # For mp_without_ps, get worker rank 0's hostname; for others, use server
-        if algorithm == "mp_without_ps":
+        # For mp_pipeline, get worker rank 0's hostname; for others, use server
+        if algorithm == "mp_pipeline":
+            # For pipeline topology, require pipelineTopology config structure
+            workers_list = cluster_config["pipelineTopology"]["workers"]["regular"]
             coordinator_hostname = next(
-                w["hostname"] for w in cluster_config["workers"]["regular"] if w["rank"] == 0
+                w["hostname"] for w in workers_list if w["rank"] == 0
             )
         else:
             coordinator_hostname = cluster_config["server"]
@@ -393,8 +402,8 @@ def run_worker(
             port=port,
             resume_checkpoint_path=resume_checkpoint_path,
         )
-    elif algorithm == "mp_without_ps":
-        run_modelparallelism_without_ps_worker(
+    elif algorithm == "mp_pipeline":
+        run_modelparallelism_pipeline_worker(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -408,20 +417,20 @@ def run_worker(
             port=port,
             resume_checkpoint_path=resume_checkpoint_path,
         )
-    else:  # syncps
-        run_syncps_worker(
-            model=model,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            config=gpt_config,
-            worker_rank=local_rank,
-            hostname=hostname,
-            device=device,
-            criterion=criterion,
-            host_ip=host_ip,
-            port=port,
-            resume_checkpoint_path=resume_checkpoint_path,
-        )
+    elif algorithm == 'syncps':  # syncps
+            run_syncps_worker(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                config=gpt_config,
+                worker_rank=local_rank,
+                hostname=hostname,
+                device=device,
+                criterion=criterion,
+                host_ip=host_ip,
+                port=port,
+                resume_checkpoint_path=resume_checkpoint_path,
+            )
     wandb.finish()
 
 
@@ -436,7 +445,7 @@ def main():
     parser.add_argument(
         "-a",
         "--algorithm",
-        choices=["edp", "syncps", "mp", "mp_without_ps"],
+        choices=["edp", "syncps", "mp", "mp_pipeline"],
         default="syncps",
         help="Training algorithm to use (default: syncps)",
     )
@@ -497,9 +506,9 @@ def main():
         sys.exit(1)
 
     # Validate algorithm
-    if algorithm not in ["edp", "syncps", "mp", "mp_without_ps"]:
+    if algorithm not in ["edp", "syncps", "mp", "mp_pipeline"]:
         print(
-            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', or 'mp_without_ps'"
+            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', or 'mp_pipeline'"
         )
         sys.exit(1)
 

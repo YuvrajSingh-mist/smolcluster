@@ -1,12 +1,13 @@
-host_ip:
-  mini1: "10.10.0.1"
-  mini2: "10.10.0.2"
-  mini3: "10.10.0.2"
-  pi4: "10.10.0.1"
-  macbook: "10.10.0.1"
-  pi5: "192.168.50.1"
-  win: "10.10.0.1"
-  ipad: "172.20.10.3"
+syncPS:
+  host_ip:
+    mini1: "10.10.0.1"
+    mini2: "10.10.0.1"
+    mini3: "10.10.0.1"
+    pi4: "10.10.0.1"
+    macbook: "10.10.0.1"
+    pi5: "192.168.50.1"
+    win: "10.10.0.1"
+    ipad: "172.20.10.3"
 
 port:
   default: 65432
@@ -40,16 +41,21 @@ timeout: 0.1  # How long server waits for gradients (seconds)
 # Randomness seed
 seed: 42
 
-# Cluster configuration
+# Cluster configuration (other than Parameter-Server)
 num_workers: 3
-workers:
-  regular:
-    - hostname: mini1
-      rank: 0
-    - hostname: mini2
-      rank: 1
-    - hostname: mini3
-      rank: 2
+
+pipelineTopology:
+  workers:
+    regular:
+      - hostname: mini1
+        rank: 0
+        ip: "10.10.0.1"
+      - hostname: mini2
+        rank: 1
+        ip: "10.10.0.2"
+      - hostname: mini3
+        rank: 2
+        ip: "10.10.0.3"
 
 
 #Model parallelism specific configs

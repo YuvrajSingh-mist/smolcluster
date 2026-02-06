@@ -12,6 +12,7 @@ import torchinfo
 import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import subprocess
 
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
@@ -51,7 +52,8 @@ def evaluate(
     model_layers: torch.nn.Module,
     val_loader: DataLoader,
     criterion: torch.nn.Module,
-    worker_queue: list,
+    next_sock: socket.socket,
+    prev_sock: socket.socket,
     worker_rank: int = 0,
     decoder_type_ppl: bool = False,
 ) -> tuple[float, Optional[float]]:
@@ -74,39 +76,60 @@ def evaluate(
             data = data.to(device)
             target = target.to(device)
 
-            # Worker rank 0 computes its layer activations
-            activations = compute_leader_activations(device, model_layers, data)
-
-            # Forward through workers in rank order
-            for rank, worker_socket, _addr in sorted(worker_queue):
+            # Worker rank 0 computes its layer activations and sends to next worker
+            if worker_rank == 0:
+                activations = compute_leader_activations(device, model_layers, data)
                 send_message(
-                    worker_socket,
+                    next_sock,
                     (
                         "evaluate_forward",
-                        0,  # eval_step placeholder
+                        0,
                         {
                             "activations": activations.detach().cpu(),
+                            "target": target.detach().cpu(),
                         },
                     ),
                 )
-
-                # Receive activations from this worker
-                message = receive_message(worker_socket)
+            
+            # All workers receive activations, process, and forward (except last worker)
+            if worker_rank > 0:
+                message = receive_message(prev_sock)
                 command, _, payload = message
 
-                if command == "eval_activations":
+                if command == "evaluate_forward":
                     activations = payload["activations"].to(device)
-                else:
-                    logger.error(
-                        f"Unexpected eval command from worker {rank}: {command}"
+                    if worker_rank > 0:
+                        target = payload.get("target", target).to(device)
+                    
+                    # Forward through local layers
+                    out = activations
+                    for layer in model_layers:
+                        output = layer(out)
+                        out = output[0] if isinstance(output, tuple) else output
+                    activations = out
+                    
+                    # Send to next worker or back to worker 0
+                    send_message(
+                        next_sock,
+                        (
+                            "evaluate_forward",
+                            0,
+                            {
+                                "activations": activations.detach().cpu(),
+                                "target": target.detach().cpu(),
+                            },
+                        ),
                     )
-                    break
+            
+            # Worker 0 receives final activations and computes loss
+            if worker_rank == 0:
+                message = receive_message(prev_sock)
+                command, _, payload = message
+                if command == "evaluate_forward":
+                    activations = payload["activations"].to(device)
 
-            # Compute loss using final activations from last worker
-            B, T, C = activations.shape
-            output = activations.view(B * T, C)
-            target_flat = target.view(B * T)
-            loss = criterion(output, target_flat)
+            # Compute loss using final activations
+            loss = compute_loss(activations, target, criterion)
             total_val_loss += loss.item()
 
     avg_loss = total_val_loss / len(val_loader)
@@ -122,6 +145,28 @@ def clear_gpu_cache(device: torch.device) -> None:
         torch.mps.empty_cache()
     elif device.type == "cuda":
         torch.cuda.empty_cache()
+
+
+def compute_loss(
+    activations: torch.Tensor,
+    target: torch.Tensor,
+    criterion: torch.nn.Module,
+) -> torch.Tensor:
+    """Compute loss from activations and targets.
+    
+    Args:
+        activations: Output activations [B, T, C]
+        target: Target labels [B, T]
+        criterion: Loss function
+        
+    Returns:
+        Loss tensor
+    """
+    B, T, C = activations.shape
+    output = activations.view(B * T, C)
+    target_flat = target.view(B * T)
+    loss = criterion(output, target_flat)
+    return loss
 
 
 def compute_train_loss(
@@ -186,7 +231,8 @@ logging.basicConfig(
 logger = None  # Will be set in run_modelparallelism_without_ps_worker
 
 
-def run_modelparallelism_without_ps_worker(
+
+def run_modelparallelism_ring_worker(
    model,
     train_loader,
     val_loader,
@@ -237,9 +283,7 @@ def run_modelparallelism_without_ps_worker(
     learning_rate = config["learning_rate"]
     grad_clip_norm = config.get("grad_clip_norm", 0.0)
     cluster_config["num_workers"]
-    model_name = cluster_config["model_name"]
     recv_grads = None
-    worker_ip_address = cluster_config["workers"]["regular"]
     NUM_WORKERS = cluster_config["num_workers"]
 
     num_nodes = cluster_config["num_nodes"]
@@ -283,16 +327,11 @@ def run_modelparallelism_without_ps_worker(
     HOST_IP = "0.0.0.0"
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
-        # Get port for worker with rank 0
-        worker_0_hostname = next(
-            w["hostname"] for w in cluster_config["workers"]["regular"] if w["rank"] == 0
-        )
-        PORT = port_config.get(worker_0_hostname, port_config.get("default", 65432))
+        # Get port for this hostname
+        PORT = port_config.get(hostname, port_config.get("default", 65432))
     else:
         PORT = port_config
 
-    logger.info(f"Worker rank {worker_rank} will bind to IP: {HOST_IP}, Port: {PORT}")
-    
     # Load tokenizer
     model = model.to(device)
     logger.info(f"Model initialized on device: {device}")
@@ -365,30 +404,86 @@ def run_modelparallelism_without_ps_worker(
         else:
             logger.warning("No checkpoint found to resume from, starting fresh")
 
-    # Create socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
-     # Worker rank 0 binds and accepts connections from other workers
-  
-    sock.bind((HOST_IP, PORT + worker_rank))  # Use different port per worker
-    sock.listen(1)  # Listen for all other workers
-    logger.info(f"Worker rank 0 listening on {HOST_IP}:{PORT} for {NUM_WORKERS - 1} workers")
-        
-    next_worker = next(w for w in cluster_config["workers"]["regular"] if w["rank"] == ((worker_rank + 1) % NUM_WORKERS))
-    next_ip = cluster_config["host_ip"][next_worker["hostname"]]
-    next_port = PORT + worker_rank + 1
-    
-    next_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    next_sock.connect((next_ip, next_port))
-    
-    logger.info(f"Worker {worker_rank} connected to worker {worker_rank + 1}")
+   
+    logger.info("Starting ring topology setup.")
 
-    # Accept connections from previous worker
+    next_sock = None
+    prev_sock = None
     
+    # Step 1: Each worker binds to its own port
+    my_port = PORT + worker_rank
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((HOST_IP, my_port))
+    sock.listen(1)
+    logger.info(f"Worker {worker_rank} listening on port {my_port}")
+    
+    # Step 2: Connect to next worker in ring with retry
+    max_retries = 10
+    retry_delay = 2
+    
+    if worker_rank < NUM_WORKERS - 1:
+        # Connect to next worker
+        workers_list = cluster_config["ringTopology"]["workers"]["regular"]
+        next_worker = next(w for w in workers_list if w["rank"] == worker_rank + 1)
+        next_ip = next_worker["ip"]
+        next_port = my_port + 1
+        
+        logger.info(f"Worker {worker_rank} will connect to worker {worker_rank + 1} at {next_ip}:{next_port}")
+        time.sleep(worker_rank * 0.5)  # Stagger connections
+        
+        for attempt in range(max_retries):
+            try:
+                next_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                next_sock.connect((next_ip, next_port))
+                logger.info(f"Worker {worker_rank} connected to worker {worker_rank + 1} at {next_ip}:{next_port}")
+                break
+            except ConnectionRefusedError:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Connection to worker {worker_rank + 1} refused (attempt {attempt + 1}/{max_retries} at IP: {next_ip}:{next_port}). "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to connect to worker {worker_rank + 1} after {max_retries} attempts")
+                    raise
+    else:
+        # Last worker connects back to worker 0 (closes the ring)
+        workers_list = cluster_config["ringTopology"]["workers"]["regular"]
+        worker_0 = next(w for w in workers_list if w["rank"] == 0)
+        worker_0_ip = worker_0["ip"]
+        worker_0_port = PORT
+        
+        time.sleep(1)  # Give worker 0 time to finish connecting forward
+        
+        for attempt in range(max_retries):
+            try:
+                next_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                next_sock.connect((worker_0_ip, worker_0_port))
+                logger.info(f"Worker {worker_rank} connected to worker 0 at {worker_0_ip}:{worker_0_port} (ring closed)")
+                break
+            except ConnectionRefusedError:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Connection to worker 0 refused (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to connect to worker 0 after {max_retries} attempts")
+                    raise
+    
+    # Step 3: Accept connection from previous worker
     prev_sock, prev_addr = sock.accept()
-    logger.info(f"Worker {worker_rank} accepted connection from worker {worker_rank - 1} at {prev_addr}")
+    if worker_rank == 0:
+        logger.info(f"Worker {worker_rank} accepted connection from worker {NUM_WORKERS - 1} at {prev_addr}")
+    else:
+        logger.info(f"Worker {worker_rank} accepted connection from worker {worker_rank - 1} at {prev_addr}")
     
-    logger.info(f"Worker rank {worker_rank} successfully connected to all peers, starting training loop")
+    # # Close listening socket (no longer needed)
+    # sock.close()
+    # logger.info(f"Ring topology ready for worker {worker_rank}")
     
     # Initialize activation caches
     act_in_cache = {}
@@ -466,11 +561,11 @@ def run_modelparallelism_without_ps_worker(
                     ),
                 )
              
-                
-            # else:
-            # recv_sock = next(s for r, s, _ in worker_queue if r == worker_rank)
+            # Middle and last workers receive from previous worker
             message = receive_message(prev_sock)
             command, recv_step, payload = message
+            
+            logger.info("Received message from previous worker with addr: %s: command=%s, step=%d", prev_sock.getpeername(), command, recv_step)
             
             assert recv_step == step, (
                 f"Step mismatch: expected {step}, got {recv_step}"
@@ -502,76 +597,98 @@ def run_modelparallelism_without_ps_worker(
                 )
 
                 logger.info(
-                    f"[Step {step}] Sending activations from rank {worker_rank} to rank {worker_rank + 1}"
+                    f"[Step {step}] Deciding next action for rank {worker_rank}"
                 )
                 
-                next_rank = worker_rank + 1
-                if next_rank == NUM_WORKERS - 1:
+                if worker_rank == NUM_WORKERS - 1:
+                    # Last worker: compute loss and send gradients back
+                    logger.info(f"[Step {step}] Last worker, computing loss and starting backward pass")
                     
-                  
-                    logger.info(f"[Step {step}] Last worker rank reached, preparing to generate gradients for rank {next_rank}")
+                    target_payload = payload.get("targets")
+                    if target_payload is not None:
+                        target = target_payload.to(device)
                     
+                    loss = compute_loss(activations, target, criterion)
+                    
+                    optimizer.zero_grad()
+                    loss.backward()
+                    
+                    # Send gradients back to previous worker
                     send_message(
-                    next_sock,
-                    (
-                        "generate_gradients",
-                        step,
-                        {
-                            "activations": activations.detach().cpu(),
-                            "targets": target.detach().cpu()
-                        },
-                    ),
-                )
+                        prev_sock,
+                        (
+                            "forward_gradients",
+                            step,
+                            {
+                                "gradients": act_in.grad.detach().cpu() if act_in.grad is not None else None,
+                                "to_rank": worker_rank - 1,
+                                "from_rank": worker_rank
+                            },
+                        ),
+                    )
+                    logger.info(f"[Step {step}] Sent gradients back to worker {worker_rank - 1}")
                 else:
-                    
-
+                    # Middle workers: forward activations to next worker
+                    next_rank = worker_rank + 1
                     logger.info(f"[Step {step}] Sending activations to worker rank {next_rank}")
                     send_message(
                         next_sock,
                         (
-                            "forward_activations" ,
+                            "forward_activations",
                             step,
                             {
                                 "activations": activations.detach().cpu(),
-                                "targets": target.detach().cpu()
+                                "targets": target.detach().cpu() if 'targets' in payload else payload.get("targets"),
+                                "from_rank": worker_rank,
+                                "to_rank": next_rank
                             },
                         ),
                     )
+                    logger.info(f"[Step {step}] Sent activations to worker {next_rank}")
                 
-                    logger.info(f"[WORKER-{worker_rank}] [Step {step}] Sent activations for step {step} from rank {from_rank} to rank {next_rank}")
-                    # Clear GPU cache after moving activations to device
-                    clear_gpu_cache(device)
-
-                    # Cache worker's output activations
-                    act_in_cache[(step, from_rank)] = activations
+                # Clear GPU cache
+                clear_gpu_cache(device)
                 
-            elif command == 'generate_gradients':
-                logger.info(
-                    f"[Step {step}] Received generate_gradients command, starting backward pass"
-                )
+            elif command == 'forward_gradients':
+                logger.info(f"[Step {step}] Received forward gradients")
+                
+                # Get gradients from payload
+                recv_grads = payload["gradients"]
+                to_rank = payload.get("to_rank")
+                from_rank = payload.get("from_rank")
+                
+                logger.info(f"[Step {step}] Received gradients from worker {from_rank} for worker {to_rank}")
+                
                 # Retrieve cached activations for this step
                 act_out = act_out_cache[(step, worker_rank)]
                     
-                # Compute gradients locally
+                # Compute gradients locally using autograd
                 optimizer.zero_grad()
                 torch.autograd.backward(act_out, recv_grads.to(device))
                 
                 # Clear GPU cache after backward pass
                 clear_gpu_cache(device)
 
-                # Forward gradients to previous worker
-                prev_rank = worker_rank - 1
-                logger.info(
-                    f"[Step {step}] Forwarding gradients to worker rank {prev_rank}"
-                )
-                send_message(
-                    prev_sock,
-                    (
-                        "forward_gradients",
-                        step,
-                        {"gradients": act_out_cache[(step, prev_rank)].grad.detach().cpu(), "to_rank": prev_rank},
-                    ),
-                )
+                if worker_rank > 0:
+                    # Forward gradients to previous worker
+                    prev_rank = worker_rank - 1
+                    act_in_cached = act_in_cache.get((step, prev_rank))
+                    if act_in_cached is not None and act_in_cached.grad is not None:
+                        logger.info(f"[Step {step}] Forwarding gradients to worker {prev_rank}")
+                        send_message(
+                            prev_sock,
+                            (
+                                "forward_gradients",
+                                step,
+                                {
+                                    "gradients": act_in_cached.grad.detach().cpu(),
+                                    "to_rank": prev_rank,
+                                    "from_rank": worker_rank
+                                },
+                            ),
+                        )
+                else:
+                    logger.info(f"[Step {step}] Worker 0 completed backward pass")
             
 
             # for rank, worker_socket, _addr in sorted(worker_queue, reverse=True):
@@ -736,7 +853,8 @@ def run_modelparallelism_without_ps_worker(
                     model_layers,
                     val_loader,
                     criterion,
-                    worker_queue,
+                    next_sock,
+                    prev_sock,
                     worker_rank,
                     decoder_type_ppl,
                 )
@@ -753,8 +871,7 @@ def run_modelparallelism_without_ps_worker(
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                     logger.info(eval_msg)
                     print(eval_msg)
-                    # Update progress bars
-                    epoch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
+                    # Update progress bar
                     batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
                 else:
                     wandb.log(
@@ -767,8 +884,7 @@ def run_modelparallelism_without_ps_worker(
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     logger.info(eval_msg)
                     print(eval_msg)
-                    # Update progress bars
-                    epoch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
+                    # Update progress bar
                     batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
 
             # Save checkpoint at regular intervals
@@ -803,12 +919,14 @@ def run_modelparallelism_without_ps_worker(
         # Close batch progress bar for this epoch
         batch_pbar.close()
 
-    # Close epoch progress bar
-    epoch_pbar.close()
-    
-    for _rank, worker_socket, _addr in sorted(worker_queue):
-        send_message(worker_socket, "down")
+    # Close ring sockets
+    if next_sock:
+        try:
+            send_message(next_sock, "down")
+        except:
+            pass
+        next_sock.close()
+    if prev_sock:
+        prev_sock.close()
 
     logger.info("Training completed successfully!")
-
-    sock.close()

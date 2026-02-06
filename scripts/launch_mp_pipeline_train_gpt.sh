@@ -11,7 +11,7 @@ export WANDB_API_KEY="$WANDB_API_TOKEN"
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_mp_without_ps.yaml"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_mp_pipeline.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
@@ -21,13 +21,13 @@ NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 REGULAR_WORKERS=()
 while IFS= read -r worker; do
     [[ -n "$worker" ]] && REGULAR_WORKERS+=("$worker")
-done < <(yq '.workers.regular[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE" 2>/dev/null)
+done < <(yq '.pipelineTopology.workers.regular[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE")
 
 # Read tablet workers (hostname and rank) - bash 3.2 compatible
 TABLET_WORKERS=()
 while IFS= read -r tablet; do
     [[ -n "$tablet" ]] && TABLET_WORKERS+=("$tablet")
-done < <(yq '.workers.tablets[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE" 2>/dev/null)
+done < <(yq '.pipelineTopology.workers.tablets[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE")
 
 # Extract just hostnames for SSH operations
 WORKERS=()
@@ -147,7 +147,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
             ssh "$node" "mkdir -p /tmp/smolcluster-logs"
             sleep 1
             
-            # All nodes are workers in mp_without_ps
+            # All nodes are workers in mp_pipeline
             config_file="logging/promtail-worker-remote.yaml"
             
             # Start Promtail in background (auto-detect path)
@@ -264,8 +264,8 @@ echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
     for worker_node in "${WORKERS[@]}"; do
-        # Kill any session that starts with "mp_without_ps_worker"
-        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}' | grep -E '^mp_without_ps_worker' | xargs -I {} tmux kill-session -t {} || true"
+        # Kill any session that starts with "mp_pipeline_worker"
+        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}' | grep -E '^mp_pipeline_worker' | xargs -I {} tmux kill-session -t {} || true"
     done
     echo "✅ Cleanup complete"
 else
@@ -297,16 +297,16 @@ fi
 echo ""
 echo "🖥️  Launching worker rank 0 on $WORKER_0_HOSTNAME..."
 if [[ -n "$RESUME_CHECKPOINT" ]]; then
-    WORKER_0_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker 0 $WORKER_0_HOSTNAME --algorithm mp_without_ps --resume-checkpoint '$RESUME_CHECKPOINT'"
+    WORKER_0_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker 0 $WORKER_0_HOSTNAME --algorithm mp_pipeline --resume-checkpoint '$RESUME_CHECKPOINT'"
 else
-    WORKER_0_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker 0 $WORKER_0_HOSTNAME --algorithm mp_without_ps"
+    WORKER_0_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker 0 $WORKER_0_HOSTNAME --algorithm mp_pipeline"
 fi
-launch_on_node "$WORKER_0_HOSTNAME" "$WORKER_0_CMD" "mp_without_ps_worker0"
-echo "   ✅ Rank 0: $WORKER_0_HOSTNAME (mp_without_ps_worker0)"
+launch_on_node "$WORKER_0_HOSTNAME" "$WORKER_0_CMD" "mp_pipeline_worker0"
+echo "   ✅ Rank 0: $WORKER_0_HOSTNAME (mp_pipeline_worker0)"
 
 # Wait a moment for worker 0 to start
-echo "⏳ Waiting 30 seconds for worker 0 to initialize..."
-sleep 30
+echo "⏳ Waiting 3 seconds for worker 0 to initialize..."
+sleep 3
 
 if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
     echo "ℹ️  Tablets should run manually: "
@@ -329,12 +329,12 @@ for worker_entry in "${REGULAR_WORKERS[@]}"; do
     
     # Launch regular worker via SSH
     if [[ -n "$RESUME_CHECKPOINT" ]]; then
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp_without_ps --resume-checkpoint '$RESUME_CHECKPOINT'"
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp_pipeline --resume-checkpoint '$RESUME_CHECKPOINT'"
     else
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp_without_ps"
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $rank $hostname --algorithm mp_pipeline"
     fi
-    launch_on_node "$hostname" "$WORKER_CMD" "mp_without_ps_worker$rank"
-    echo "   ✅ Rank $rank: $hostname (mp_without_ps_worker$rank)"
+    launch_on_node "$hostname" "$WORKER_CMD" "mp_pipeline_worker$rank"
+    echo "   ✅ Rank $rank: $hostname (mp_pipeline_worker$rank)"
 done
 
 # Launch tablet workers (manual reminder only - they're already in the list above)
@@ -350,7 +350,7 @@ echo "📊 Check status:"
 for worker_node in "${WORKERS[@]}"; do
     echo "   ssh $worker_node 'tmux ls'"
 done
-echo "   ssh ${WORKERS[0]} 'tmux attach -t mp_without_ps_worker0'"
+echo "   ssh ${WORKERS[0]} 'tmux attach -t mp_pipeline_worker0'"
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"
 echo "📊 View centralized logs at: http://localhost:3000 (Grafana)"
