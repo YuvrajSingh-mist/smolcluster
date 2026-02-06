@@ -48,6 +48,7 @@ def compute_leader_activations(
 
 
 def evaluate(
+    total_workers: int,
     device: torch.device,
     model_layers: torch.nn.Module,
     val_loader: DataLoader,
@@ -56,6 +57,7 @@ def evaluate(
     prev_sock: socket.socket,
     worker_rank: int = 0,
     decoder_type_ppl: bool = False,
+    
 ) -> tuple[float, Optional[float]]:
     """Evaluate model on validation set using distributed model layers.
 
@@ -96,41 +98,45 @@ def evaluate(
                 message = receive_message(prev_sock)
                 command, _, payload = message
 
+             
                 if command == "evaluate_forward":
-                    activations = payload["activations"].to(device)
-                    if worker_rank > 0:
-                        target = payload.get("target", target).to(device)
                     
-                    # Forward through local layers
-                    out = activations
-                    for layer in model_layers:
-                        output = layer(out)
-                        out = output[0] if isinstance(output, tuple) else output
-                    activations = out
-                    
-                    # Send to next worker or back to worker 0
-                    send_message(
-                        next_sock,
-                        (
-                            "evaluate_forward",
-                            0,
-                            {
-                                "activations": activations.detach().cpu(),
-                                "target": target.detach().cpu(),
-                            },
-                        ),
-                    )
-            
-            # Worker 0 receives final activations and computes loss
-            if worker_rank == 0:
-                message = receive_message(prev_sock)
-                command, _, payload = message
-                if command == "evaluate_forward":
-                    activations = payload["activations"].to(device)
+                    if worker_rank == total_workers - 1:
+                        logger.info(f"Worker {worker_rank} received activations for evaluation and will compute loss")
+                        
+                        activations = payload["activations"].to(device)
 
-            # Compute loss using final activations
-            loss = compute_loss(activations, target, criterion)
-            total_val_loss += loss.item()
+                         # Compute loss using final activations
+                        loss = compute_loss(activations, target, criterion)
+                        total_val_loss += loss.item()
+            
+                    else:
+                        logger.info(f"Worker {worker_rank} received activations for evaluation and will forward to next worker")
+                        
+                        activations = payload["activations"].to(device)
+                        
+                        target = payload["target"].to(device)
+                        
+                        # Forward through local layers
+                        out = activations
+                        for layer in model_layers:
+                            output = layer(out)
+                            out = output[0] if isinstance(output, tuple) else output
+                        activations = out
+                        
+                        # Send to next worker or back to worker 0
+                        send_message(
+                            next_sock,
+                            (
+                                "evaluate_forward",
+                                0,
+                                {
+                                    "activations": activations.detach().cpu(),
+                                    "target": target.detach().cpu(),
+                                },
+                            ),
+                        )
+           
 
     avg_loss = total_val_loss / len(val_loader)
     ppl = math.exp(avg_loss) if decoder_type_ppl else None
@@ -684,74 +690,6 @@ def run_modelparallelism_pipeline_worker(
                         logger.info(f"[Step {step}] Worker 0 completed backward pass")
             
 
-            # for rank, worker_socket, _addr in sorted(worker_queue, reverse=True):
-            #     if rank == NUM_WORKERS:
-            #         tqdm.write(
-            #             f"[LEADER] [Step {step}] Sending generate_gradients command to last worker rank {rank}"
-            #         )
-            #         send_message(
-            #             worker_socket,
-            #             (
-            #                 "generate_gradients",
-            #                 step,
-            #                 {
-            #                     "gradients": None,
-            #                 },
-            #             ),
-            #         )
-
-            #     # Receiving the last worker nodes activations
-            #     message = receive_message(worker_socket)
-
-            #     command, recv_step, payload = message
-
-            #     assert recv_step == step, (
-            #         f"Step mismatch: expected {step}, got {recv_step}"
-            #     )
-
-            #     if command == "forward_gradients":
-            #         recv_grads = payload["gradients"]
-            #         to_rank = payload["to_rank"]
-            #         from_rank = payload["from_rank"]
-            #         tqdm.write(
-            #             f"[LEADER] [Step {step}] Received gradients forwarded to server from worker {from_rank} for {to_rank}"
-            #         )
-
-            #         if to_rank == RANK:
-            #             tqdm.write(f"[LEADER] [Step {step}] Computing backward pass for server")
-            #             # Restore server's activations from cache (has computation graph)
-            #             act_out = act_out_cache[(step, RANK)]
-            #             act_out = act_out.to(device)
-
-            #             optimizer.zero_grad()
-            #             # Backward - this updates model parameters
-            #             torch.autograd.backward(act_out, recv_grads.to(device))
-            #             optimizer.step()
-
-            #             # Clean up server activation cache
-            #             if (step, RANK) in act_out_cache:
-            #                 del act_out_cache[(step, RANK)]
-
-            #             # Clear GPU cache after backward pass
-            #             clear_gpu_cache(device)
-
-            #         else:
-            #             target_socket = next(
-            #                 (s for r, s, _ in worker_queue if r == to_rank), None
-            #             )
-            #             if target_socket:
-            #                 tqdm.write(
-            #                     f"[LEADER] [Step {step}] Forwarding gradients to worker rank {to_rank} from {from_rank} via current rank {rank}"
-            #                 )
-            #                 send_message(
-            #                     target_socket,
-            #                     (
-            #                         "forward_gradients",
-            #                         step,
-            #                         {"gradients": recv_grads, "to_rank": to_rank},
-            #                     ),
-            #                 )
-
             # Clean up any remaining cached activations from this step
             keys_to_delete = [key for key in act_out_cache.keys() if key[0] == step]
             for key in keys_to_delete:
@@ -840,8 +778,9 @@ def run_modelparallelism_pipeline_worker(
                     )
 
             # Evaluation
-            if step % eval_steps == 0 and step != 0:
+            if step % eval_steps == 0 and worker_rank == 0:
                 val_loss, val_ppl = evaluate(
+                    NUM_WORKERS,
                     device,
                     model_layers,
                     val_loader,
@@ -863,7 +802,7 @@ def run_modelparallelism_pipeline_worker(
                     )
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                     logger.info(eval_msg)
-                    print(eval_msg)
+            
                     # Update progress bar
                     batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
                 else:
@@ -876,7 +815,7 @@ def run_modelparallelism_pipeline_worker(
                     )
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     logger.info(eval_msg)
-                    print(eval_msg)
+                  
                     # Update progress bar
                     batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
 
