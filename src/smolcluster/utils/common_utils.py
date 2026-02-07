@@ -149,6 +149,37 @@ def get_inference_metrics() -> InferenceMetrics:
     return _inference_metrics
 
 
+def calculate_bandwidth_metrics(
+    sizes: list[float],
+    times: list[float],
+    window_size: int
+) -> dict[str, float]:
+    """
+    Calculate bandwidth metrics from transfer size and time lists.
+    
+    Args:
+        sizes: List of transfer sizes in MB
+        times: List of transfer times in seconds
+        window_size: Number of recent samples to consider
+        
+    Returns:
+        Dictionary with bandwidth_mbps and avg_size_mb
+    """
+    recent_sizes = sizes[-window_size:]
+    recent_times = times[-window_size:]
+    
+    total_mb = sum(recent_sizes)
+    total_time = sum(recent_times)
+    
+    bandwidth_mbps = (total_mb * 8) / total_time if total_time > 0 else 0
+    avg_size_mb = total_mb / len(recent_sizes) if len(recent_sizes) > 0 else 0
+    
+    return {
+        "bandwidth_mbps": bandwidth_mbps,
+        "avg_size_mb": avg_size_mb
+    }
+
+
 def recv_tensor(sock):
     """Receive a tensor with network metrics tracking."""
     start_time = time.time()

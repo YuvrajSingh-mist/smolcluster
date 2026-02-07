@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from smolcluster.utils.checkpointing import CheckpointManager
 from smolcluster.utils.common_utils import (
+    calculate_bandwidth_metrics,
     get_network_metrics,
     receive_message,
     send_message,
@@ -648,41 +649,34 @@ def run_modelparallelism_worker(
                         }
                     )
                     
-                        # Calculate activation receive bandwidth (Mbps)
-                    recent_act_recv_sizes = activation_recv_sizes[-metrics_log_interval:]
-                    recent_act_recv_times = activation_recv_times[-metrics_log_interval:]
-                    total_act_recv_mb = sum(recent_act_recv_sizes)
-                    total_act_recv_time = sum(recent_act_recv_times)
-                    act_recv_bandwidth_mbps = (total_act_recv_mb * 8) / total_act_recv_time if total_act_recv_time > 0 else 0
-                    
-                    # Calculate activation send bandwidth (Mbps)
-                    recent_act_send_sizes = activation_send_sizes[-metrics_log_interval:]
-                    recent_act_send_times = activation_send_times[-metrics_log_interval:]
-                    total_act_send_mb = sum(recent_act_send_sizes)
-                    total_act_send_time = sum(recent_act_send_times)
-                    act_send_bandwidth_mbps = (total_act_send_mb * 8) / total_act_send_time if total_act_send_time > 0 else 0
-                    
-                    # Calculate gradient send bandwidth (Mbps)
-                    recent_grad_send_sizes = gradient_send_sizes[-metrics_log_interval:]
-                    recent_grad_send_times = gradient_send_times[-metrics_log_interval:]
-                    total_grad_send_mb = sum(recent_grad_send_sizes)
-                    total_grad_send_time = sum(recent_grad_send_times)
-                    grad_send_bandwidth_mbps = (total_grad_send_mb * 8) / total_grad_send_time if total_grad_send_time > 0 else 0
+                    # Calculate bandwidth metrics using utility function
+                    act_recv_metrics = calculate_bandwidth_metrics(
+                        activation_recv_sizes, activation_recv_times, metrics_log_interval
+                    )
+                    act_send_metrics = calculate_bandwidth_metrics(
+                        activation_send_sizes, activation_send_times, metrics_log_interval
+                    )
+                    grad_send_metrics = calculate_bandwidth_metrics(
+                        gradient_send_sizes, gradient_send_times, metrics_log_interval
+                    )
                     
                     wandb.log({
-                        f"bandwidth/worker_{local_rank}_activation_recv_mbps": act_recv_bandwidth_mbps,
-                        f"bandwidth/worker_{local_rank}_activation_send_mbps": act_send_bandwidth_mbps,
-                        f"bandwidth/worker_{local_rank}_gradient_send_mbps": grad_send_bandwidth_mbps,
-                        f"data_size/worker_{local_rank}_activation_recv_mb": total_act_recv_mb / len(recent_act_recv_sizes) if len(recent_act_recv_sizes) > 0 else 0,
-                        f"data_size/worker_{local_rank}_activation_send_mb": total_act_send_mb / len(recent_act_send_sizes) if len(recent_act_send_sizes) > 0 else 0,
-                        f"data_size/worker_{local_rank}_gradient_send_mb": total_grad_send_mb / len(recent_grad_send_sizes) if len(recent_grad_send_sizes) > 0 else 0,
+                        f"bandwidth/worker_{local_rank}_activation_recv_mbps": act_recv_metrics["bandwidth_mbps"],
+                        f"bandwidth/worker_{local_rank}_activation_send_mbps": act_send_metrics["bandwidth_mbps"],
+                        f"bandwidth/worker_{local_rank}_gradient_send_mbps": grad_send_metrics["bandwidth_mbps"],
+                        f"data_size/worker_{local_rank}_activation_recv_mb": act_recv_metrics["avg_size_mb"],
+                        f"data_size/worker_{local_rank}_activation_send_mb": act_send_metrics["avg_size_mb"],
+                        f"data_size/worker_{local_rank}_gradient_send_mb": grad_send_metrics["avg_size_mb"],
                         "step": step,
                         "epoch": epoch + 1,
                     })
                 
                     logger.info(
                         f"[Worker {local_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
-                        f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
+                        f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps | "
+                        f"Act Recv={act_recv_metrics['bandwidth_mbps']:.2f}Mbps, "
+                        f"Act Send={act_send_metrics['bandwidth_mbps']:.2f}Mbps, "
+                        f"Grad Send={grad_send_metrics['bandwidth_mbps']:.2f}Mbps"
                     )
 
         # Close batch progress bar for this epoch
