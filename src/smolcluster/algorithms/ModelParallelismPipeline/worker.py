@@ -534,9 +534,9 @@ def run_modelparallelism_pipeline_worker(
             data = data.to(device)
             target = target.to(device)
     
-                # MICROBATCHING: Split batch into micro-batches
-            num_microbatches = config.get("num_microbatches", 4)
-            microbatch_size = data.size(0) // num_microbatches
+            # Check if microbatching is enabled
+            num_microbatches = config.get("num_microbatches", None)
+            use_microbatching = num_microbatches is not None and num_microbatches > 1
             
             optimizer.zero_grad()
             
@@ -548,8 +548,12 @@ def run_modelparallelism_pipeline_worker(
             batch_loss = 0.0  # Track loss for THIS batch only
             batch_ppl = 0.0   # Track PPL for THIS batch only
             
-            #fill phase: 
-            for micro_idx in range(num_microbatches):
+            if use_microbatching:
+                # ===== GPIPE MICROBATCHING PATH =====
+                microbatch_size = data.size(0) // num_microbatches
+                
+                #fill phase: 
+                for micro_idx in range(num_microbatches):
                 
                 micro_step = num_microbatches * step + micro_idx
                 micro_data = data[micro_idx * microbatch_size : (micro_idx + 1) * microbatch_size]
@@ -716,139 +720,291 @@ def run_modelparallelism_pipeline_worker(
                         clear_gpu_cache(device)      
                     
                         
-            # All workers (except the last) wait for gradients
-            # Gradients flow backward: Worker 2 → Worker 1 → Worker 0
-            # Each worker receives gradients from the next worker via next_sock
-            
-            
-            #Drain Phase
-            for micro_idx in range(num_microbatches):
+                # All workers (except the last) wait for gradients
+                # Gradients flow backward: Worker 2 → Worker 1 → Worker 0
+                # Each worker receives gradients from the next worker via next_sock
                 
-                micro_step = num_microbatches * step + micro_idx
                 
-                logger.info(f"Processing backward pass for micro-batch {micro_idx + 1}/{num_microbatches} for step {step} (micro_step {micro_step})")
-                
-                if worker_rank == NUM_WORKERS - 1:
-                    # Last worker already has the loss for this micro-batch, perform backward pass
-                    worker_loss = losses.get((micro_step, worker_rank), None)
-                    if worker_loss is None:
-                        logger.warning(f"No loss found for micro_step {micro_step} at worker {worker_rank}, skipping backward pass for this micro-batch")
-                        continue
-                    else:
-                        logger.info(f"Retrieved loss for micro_step {micro_step} at worker {worker_rank}")
-                        worker_loss.backward()
-                        logger.info(f"Completed backward pass for micro_step {micro_step} at worker {worker_rank}")
+                #Drain Phase
+                for micro_idx in range(num_microbatches):
+                    
+                    micro_step = num_microbatches * step + micro_idx
+                    
+                    logger.info(f"Processing backward pass for micro-batch {micro_idx + 1}/{num_microbatches} for step {step} (micro_step {micro_step})")
+                    
+                    if worker_rank == NUM_WORKERS - 1:
+                        # Last worker already has the loss for this micro-batch, perform backward pass
+                        worker_loss = losses.get((micro_step, worker_rank), None)
+                        if worker_loss is None:
+                            logger.warning(f"No loss found for micro_step {micro_step} at worker {worker_rank}, skipping backward pass for this micro-batch")
+                            continue
+                        else:
+                            logger.info(f"Retrieved loss for micro_step {micro_step} at worker {worker_rank}")
+                            worker_loss.backward()
+                            logger.info(f"Completed backward pass for micro_step {micro_step} at worker {worker_rank}")
 
-                        # Track gradient send size and time
-                        grad_send_size_mb = get_tensor_size_mb(act_in_cache[(micro_step, worker_rank - 1)].grad.detach().cpu())
-                        grad_send_start = time.time()
+                            # Track gradient send size and time
+                            grad_send_size_mb = get_tensor_size_mb(act_in_cache[(micro_step, worker_rank - 1)].grad.detach().cpu())
+                            grad_send_start = time.time()
+                            
+                            send_message(
+                                prev_sock,
+                                (
+                                    "forward_gradients",
+                                    micro_step,
+                                    {
+                                        "gradients": act_in_cache[(micro_step, worker_rank - 1)].grad.detach().cpu(),
+                                        "to_rank": worker_rank - 1,
+                                        "from_rank": worker_rank
+                                    },
+                                ),
+                            )
+                            
+                            grad_send_time = time.time() - grad_send_start
+                            gradient_send_times.append(grad_send_time)
+                            gradient_send_sizes.append(grad_send_size_mb)
+                            
+                            logger.info(f"[Micro step {micro_step}] Sent gradients back to worker {worker_rank - 1}")
+                            
+                            clear_gpu_cache(device)
+                            
+                    
+                        elif worker_rank < NUM_WORKERS - 1:
+                        # Non-last workers receive gradients from the next worker
+                        message = receive_message(next_sock)
+                        command, recv_step, payload = message
                         
-                        send_message(
-                            prev_sock,
-                            (
-                                "forward_gradients",
-                                micro_step,
-                                {
-                                    "gradients": act_in_cache[(micro_step, worker_rank - 1)].grad.detach().cpu(),
-                                    "to_rank": worker_rank - 1,
-                                    "from_rank": worker_rank
-                                },
-                            ),
+                        logger.info("Received gradient message with command=%s, step=%d", command, recv_step)
+                        
+                        assert recv_step == micro_step, (
+                            f"Micro step mismatch: expected {micro_step}, got {recv_step}"
                         )
                         
-                        grad_send_time = time.time() - grad_send_start
-                        gradient_send_times.append(grad_send_time)
-                        gradient_send_sizes.append(grad_send_size_mb)
+                        if command == 'forward_gradients':
+                            logger.info(f"[Micro step {micro_step}] Received forward gradients")
+                            
+                            # Get gradients from payload
+                            recv_grads = payload["gradients"]
+                            to_rank = payload.get("to_rank")
+                            from_rank = payload.get("from_rank")
+                            
+                            logger.info(f"[Micro step {micro_step}] Received gradients from worker {from_rank} for worker {to_rank}")
+                            
+                            # Retrieve cached activations for this step
+                            act_out = act_out_cache[(micro_step, worker_rank)]
+                                
+                            # # Compute gradients locally using autograd
+                            # optimizer.zero_grad()
+                            torch.autograd.backward(act_out, recv_grads.to(device))
+                            
+                            # Clear GPU cache after backward pass
+                            clear_gpu_cache(device)
+
+                            if worker_rank > 0:
+                                # Forward gradients to previous worker
+                                prev_rank = worker_rank - 1
+                                act_in_cached = act_in_cache.get((micro_step, prev_rank))
+                                if act_in_cached is not None and act_in_cached.grad is not None:
+                                    logger.info(f"[Micro step {micro_step}] Forwarding gradients to worker {prev_rank}")
+                                    
+                                    # Track gradient send size and time
+                                    grad_send_size_mb = get_tensor_size_mb(act_in_cached.grad.detach().cpu())
+                                    grad_send_start = time.time()
+                                    
+                                    send_message(
+                                        prev_sock,
+                                        (
+                                            "forward_gradients",
+                                            micro_step,
+                                            {
+                                                "gradients": act_in_cached.grad.detach().cpu(),
+                                                "to_rank": prev_rank,
+                                                "from_rank": worker_rank
+                                            },
+                                        ),
+                                    )
+                                    
+                                    grad_send_time = time.time() - grad_send_start
+                                    gradient_send_times.append(grad_send_time)
+                                    gradient_send_sizes.append(grad_send_size_mb)
+                            else:
+                                logger.info(f"[Micro step {micro_step}] Worker 0 completed backward pass")
+                
+                # Clean up all cached activations from this training step's micro-batches
+                step_start = num_microbatches * step
+                step_end = num_microbatches * (step + 1)
+                keys_to_delete = [key for key in act_out_cache.keys() if step_start <= key[0] < step_end]
+                for key in keys_to_delete:
+                    del act_out_cache[key]
+
+                # Clean up all cached input activations from this training step's micro-batches
+                keys_to_delete = [key for key in act_in_cache.keys() if step_start <= key[0] < step_end]
+                for key in keys_to_delete:
+                    del act_in_cache[key]
+                    
+            else:
+                # ===== NAIVE PIPELINE (NO MICROBATCHING) =====
+                logger.info(f"[Step {step}] Processing batch without microbatching")
+                
+                # Update learning rate if scheduler enabled
+                if scheduler is not None:
+                    current_lr = scheduler.get_last_lr()[0]
+                else:
+                    current_lr = learning_rate
+                
+                if worker_rank == 0:
+                    # Worker 0: Forward through layers and send to next worker
+                    logger.info(f"[Step {step}] Worker 0 computing activations")
+                    activations = compute_leader_activations(device, model_layers, data)
+                    activations.requires_grad_(True)
+                    act_out_cache[(step, worker_rank)] = activations
+                    
+                    # Track and send
+                    act_send_size_mb = get_tensor_size_mb(activations.detach().cpu())
+                    act_send_start = time.time()
+                    send_message(next_sock, ("forward_activations", step, {
+                        "activations": activations.detach().cpu(),
+                        "targets": target.detach().cpu(),
+                        "from_rank": worker_rank,
+                        "to_rank": worker_rank + 1
+                    }))
+                    act_send_time = time.time() - act_send_start
+                    activation_send_times.append(act_send_time)
+                    activation_send_sizes.append(act_send_size_mb)
+                    
+                    clear_gpu_cache(device)
+                    
+                elif worker_rank > 0:
+                    # Receive from previous worker
+                    act_recv_start = time.time()
+                    message = receive_message(prev_sock)
+                    act_recv_time = time.time() - act_recv_start
+                    command, recv_step, payload = message
+                    
+                    assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
+                    
+                    if command == "forward_activations":
+                        act_in = payload["activations"].to(device)
+                        from_rank = payload["from_rank"]
+                        target_recv = payload["targets"].to(device)
                         
-                        logger.info(f"[Micro step {micro_step}] Sent gradients back to worker {worker_rank - 1}")
+                        act_recv_size_mb = get_tensor_size_mb(payload["activations"])
+                        activation_recv_times.append(act_recv_time)
+                        activation_recv_sizes.append(act_recv_size_mb)
+                        
+                        act_in.requires_grad_(True)
+                        
+                        # Forward through layers
+                        out = act_in
+                        for layer in model_layers:
+                            output = layer(out)
+                            out = output[0] if isinstance(output, tuple) else output
+                        
+                        activations = out
+                        act_out_cache[(step, worker_rank)] = activations
+                        act_in_cache[(step, from_rank)] = act_in
                         
                         clear_gpu_cache(device)
                         
+                        if worker_rank == NUM_WORKERS - 1:
+                            # Last worker: compute loss and backward
+                            logger.info(f"[Step {step}] Last worker computing loss")
+                            loss = compute_loss(activations, target_recv, criterion)
+                            batch_loss = loss.item()
+                            batch_ppl = torch.exp(loss).item()
+                            total_loss += loss.item()
+                            total_ppl += torch.exp(loss).item()
+                            
+                            logger.info(f"[Step {step}] Loss: {loss.item():.4f}")
+                            
+                            # Backward
+                            loss.backward()
+                            
+                            # Send gradients back
+                            grad_send_size_mb = get_tensor_size_mb(act_in.grad.detach().cpu())
+                            grad_send_start = time.time()
+                            send_message(prev_sock, ("forward_gradients", step, {
+                                "gradients": act_in.grad.detach().cpu(),
+                                "to_rank": worker_rank - 1,
+                                "from_rank": worker_rank
+                            }))
+                            grad_send_time = time.time() - grad_send_start
+                            gradient_send_times.append(grad_send_time)
+                            gradient_send_sizes.append(grad_send_size_mb)
+                            
+                            clear_gpu_cache(device)
+                            
+                        else:
+                            # Middle worker: forward to next
+                            act_send_size_mb = get_tensor_size_mb(activations.detach().cpu())
+                            act_send_start = time.time()
+                            send_message(next_sock, ("forward_activations", step, {
+                                "activations": activations.detach().cpu(),
+                                "targets": target_recv.detach().cpu(),
+                                "from_rank": worker_rank,
+                                "to_rank": worker_rank + 1
+                            }))
+                            act_send_time = time.time() - act_send_start
+                            activation_send_times.append(act_send_time)
+                            activation_send_sizes.append(act_send_size_mb)
+                            
+                            clear_gpu_cache(device)
                 
-                elif worker_rank < NUM_WORKERS - 1:
-                    # Non-last workers receive gradients from the next worker
+                # Wait for gradients (all non-last workers)
+                if worker_rank < NUM_WORKERS - 1:
                     message = receive_message(next_sock)
                     command, recv_step, payload = message
                     
-                    logger.info("Received gradient message with command=%s, step=%d", command, recv_step)
+                    assert recv_step == step, f"Step mismatch: expected {step}, got {recv_step}"
                     
-                    assert recv_step == micro_step, (
-                        f"Micro step mismatch: expected {micro_step}, got {recv_step}"
-                    )
-                    
-                    if command == 'forward_gradients':
-                        logger.info(f"[Micro step {micro_step}] Received forward gradients")
-                        
-                        # Get gradients from payload
+                    if command == "forward_gradients":
                         recv_grads = payload["gradients"]
-                        to_rank = payload.get("to_rank")
-                        from_rank = payload.get("from_rank")
+                        act_out = act_out_cache[(step, worker_rank)]
                         
-                        logger.info(f"[Micro step {micro_step}] Received gradients from worker {from_rank} for worker {to_rank}")
-                        
-                        # Retrieve cached activations for this step
-                        act_out = act_out_cache[(micro_step, worker_rank)]
-                            
-                        # # Compute gradients locally using autograd
-                        # optimizer.zero_grad()
+                        # Backward
                         torch.autograd.backward(act_out, recv_grads.to(device))
-                        
-                        # Clear GPU cache after backward pass
                         clear_gpu_cache(device)
-
+                        
                         if worker_rank > 0:
                             # Forward gradients to previous worker
-                            prev_rank = worker_rank - 1
-                            act_in_cached = act_in_cache.get((micro_step, prev_rank))
+                            act_in_cached = act_in_cache.get((step, worker_rank - 1))
                             if act_in_cached is not None and act_in_cached.grad is not None:
-                                logger.info(f"[Micro step {micro_step}] Forwarding gradients to worker {prev_rank}")
-                                
-                                # Track gradient send size and time
                                 grad_send_size_mb = get_tensor_size_mb(act_in_cached.grad.detach().cpu())
                                 grad_send_start = time.time()
-                                
-                                send_message(
-                                    prev_sock,
-                                    (
-                                        "forward_gradients",
-                                        micro_step,
-                                        {
-                                            "gradients": act_in_cached.grad.detach().cpu(),
-                                            "to_rank": prev_rank,
-                                            "from_rank": worker_rank
-                                        },
-                                    ),
-                                )
-                                
+                                send_message(prev_sock, ("forward_gradients", step, {
+                                    "gradients": act_in_cached.grad.detach().cpu(),
+                                    "to_rank": worker_rank - 1,
+                                    "from_rank": worker_rank
+                                }))
                                 grad_send_time = time.time() - grad_send_start
                                 gradient_send_times.append(grad_send_time)
                                 gradient_send_sizes.append(grad_send_size_mb)
-                        else:
-                            logger.info(f"[Micro step {micro_step}] Worker 0 completed backward pass")
                 
+                # Clean up caches for naive pipeline
+                if (step, worker_rank) in act_out_cache:
+                    del act_out_cache[(step, worker_rank)]
+                if worker_rank > 0 and (step, worker_rank - 1) in act_in_cache:
+                    del act_in_cache[(step, worker_rank - 1)]
 
-            # Clean up all cached activations from this training step's micro-batches
-            step_start = num_microbatches * step
-            step_end = num_microbatches * (step + 1)
-            keys_to_delete = [key for key in act_out_cache.keys() if step_start <= key[0] < step_end]
-            for key in keys_to_delete:
-                del act_out_cache[key]
-
-            # Clean up all cached input activations from this training step's micro-batches
-            keys_to_delete = [key for key in act_in_cache.keys() if step_start <= key[0] < step_end]
-            for key in keys_to_delete:
-                del act_in_cache[key]
-
-            # Log batch-level metrics (after all micro-batches processed)
+            # Log batch-level metrics (after batch processing)
             if worker_rank == NUM_WORKERS - 1:
-                # Average loss/PPL for THIS batch
-                avg_batch_loss = batch_loss / num_microbatches
-                avg_batch_ppl = batch_ppl / num_microbatches
-                
-                # Cumulative epoch averages
-                num_microbatches_so_far = (batch_idx + 1) * num_microbatches
-                epoch_avg_loss = total_loss / num_microbatches_so_far
-                epoch_avg_ppl = total_ppl / num_microbatches_so_far
+                if use_microbatching:
+                    # Average loss/PPL for THIS batch (microbatching)
+                    avg_batch_loss = batch_loss / num_microbatches
+                    avg_batch_ppl = batch_ppl / num_microbatches
+                    
+                    # Cumulative epoch averages
+                    num_microbatches_so_far = (batch_idx + 1) * num_microbatches
+                    epoch_avg_loss = total_loss / num_microbatches_so_far
+                    epoch_avg_ppl = total_ppl / num_microbatches_so_far
+                else:
+                    # Naive pipeline: batch_loss is already the single loss
+                    avg_batch_loss = batch_loss
+                    avg_batch_ppl = batch_ppl
+                    
+                    # Cumulative epoch averages
+                    epoch_avg_loss = total_loss / (batch_idx + 1)
+                    epoch_avg_ppl = total_ppl / (batch_idx + 1)
                 
                 logger.info(
                     f"[Step {step}] Batch {batch_idx + 1} completed - "
@@ -863,7 +1019,8 @@ def run_modelparallelism_pipeline_worker(
                     "ppl/epoch_avg_ppl": epoch_avg_ppl if decoder_type_ppl else None,
                     "training/step": step,
                     "training/epoch": epoch + 1,
-                    "training/num_microbatches": num_microbatches,
+                    "training/num_microbatches": num_microbatches if use_microbatching else 1,
+                    "training/use_microbatching": use_microbatching,
                 })
                 
                 batch_pbar.set_postfix({
