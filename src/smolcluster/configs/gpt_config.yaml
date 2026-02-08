@@ -14,7 +14,7 @@ max_seq_len: 1024  # Maximum sequence length (paper: 128 or 256)
 # Training Hyperparameters
   
 num_microbatches: 16      # Number of micro-batches to split each batch into for pipeline parallelism (paper: 16)         
-batch_size: 64             # Batch size (total, across all devices, calculated as per_device_batch_size * num_devices * gradient_accumulation_steps)
+batch_size: 32             # Batch size (total, across all devices, calculated as per_device_batch_size * num_devices * gradient_accumulation_steps)
 num_epochs: 2              # Number of epochs
 learning_rate: 0.0003       # Learning rate
 weight_decay: 0.01         # Weight decay for AdamW

@@ -98,7 +98,9 @@ echo "📦 Syncing code to remote nodes..."
 if [[ "$DRY_RUN" != "true" ]]; then
     for node in "${SSH_NODES[@]}"; do
         echo "   Syncing to $node..."
-        rsync -az --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc' --exclude '.git' \
+        # Use safe rsync options for all hosts (works on both Windows and Unix)
+        rsync -az --rsync-path="rsync" -e "ssh -T" \
+            --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc' --exclude '.git' --exclude 'src/data' \
             "$PROJECT_DIR/" "$node:$REMOTE_PROJECT_DIR/" || {
             echo "❌ Error: Failed to sync code to $node"
             exit 1

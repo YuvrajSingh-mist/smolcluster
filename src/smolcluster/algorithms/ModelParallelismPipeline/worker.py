@@ -451,8 +451,8 @@ def run_modelparallelism_pipeline_worker(
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((HOST_IP, my_port))
-    sock.listen(1)
-    logger.info(f"Worker {worker_rank} listening on port {my_port}")
+    sock.listen(76)
+    logger.info(f"Worker {worker_rank} listening on add: {HOST_IP} at port {my_port}")
     
     # Step 2: Connect to next worker in pipeline (if not last worker)
     max_retries = 60
@@ -474,10 +474,10 @@ def run_modelparallelism_pipeline_worker(
                 next_sock.connect((next_ip, next_port))
                 logger.info(f"Worker {worker_rank} connected to worker {worker_rank + 1} at {next_ip}:{next_port}")
                 break
-            except ConnectionRefusedError:
+            except (ConnectionRefusedError, TimeoutError, OSError) as e:
                 if attempt < max_retries - 1:
                     logger.warning(
-                        f"Connection to worker {worker_rank + 1} refused (attempt {attempt + 1}/{max_retries} at IP: {next_ip}:{next_port}). "
+                        f"Connection to worker {worker_rank + 1} failed: {type(e).__name__} (attempt {attempt + 1}/{max_retries} at IP: {next_ip}:{next_port}). "
                         f"Retrying in {retry_delay}s..."
                     )
                     time.sleep(retry_delay)
@@ -554,170 +554,170 @@ def run_modelparallelism_pipeline_worker(
                 
                 #fill phase: 
                 for micro_idx in range(num_microbatches):
-                
-                micro_step = num_microbatches * step + micro_idx
-                micro_data = data[micro_idx * microbatch_size : (micro_idx + 1) * microbatch_size]
-                micro_target = target[micro_idx * microbatch_size : (micro_idx + 1) * microbatch_size]
-                
-                logger.info(f"Processing micro-batch {micro_idx + 1}/{num_microbatches} for step {step} (micro_step {micro_step})")
-                
-                # Update learning rate if scheduler enabled
-                if scheduler is not None:
-                    current_lr = scheduler.get_last_lr()[0]
-                else:
-                    current_lr = learning_rate
+                    
+                    micro_step = num_microbatches * step + micro_idx
+                    micro_data = data[micro_idx * microbatch_size : (micro_idx + 1) * microbatch_size]
+                    micro_target = target[micro_idx * microbatch_size : (micro_idx + 1) * microbatch_size]
+                    
+                    logger.info(f"Processing micro-batch {micro_idx + 1}/{num_microbatches} for step {step} (micro_step {micro_step})")
+                    
+                    # Update learning rate if scheduler enabled
+                    if scheduler is not None:
+                        current_lr = scheduler.get_last_lr()[0]
+                    else:
+                        current_lr = learning_rate
 
-                act_out = None
-                activations = None
+                    act_out = None
+                    activations = None
 
 
-                if worker_rank == 0:
-                    logger.info(
-                        f"[Micro step {micro_step}/{num_microbatches}] Worker rank 0 computing leader activations"
-                    )
-                
-                    leader_activations = compute_leader_activations(device, model_layers, micro_data)
-                    leader_activations.requires_grad_(True)
-                
-                    
-                    # Clear GPU cache before caching activations
-                    clear_gpu_cache(device)
-                    gc.collect()
-                    
-                    # Cache worker rank 0's activations WITH computation graph (no detach!)
-                    # act_in_cache[(step, RANK)] = data
-                    act_out_cache[(micro_step, worker_rank)] = leader_activations
-                    activations = leader_activations
-                    
-                    next_rank = worker_rank + 1
-                
-                    logger.info(f"[Step {step}] Sending activations to worker rank {next_rank}")
-                    
-                    # Track activation send size and time
-                    act_send_size_mb = get_tensor_size_mb(activations.detach().cpu())
-                    act_send_start = time.time()
-                    
-                    send_message(
-                        next_sock,
-                        (
-                            "forward_activations",
-                            micro_step,
-                            {
-                                "activations": activations.detach().cpu(),
-                                "targets": micro_target.detach().cpu(),
-                                "from_rank": worker_rank,
-                                "to_rank": next_rank
-                            },
-                        ),
-                    )
-                    
-                    act_send_time = time.time() - act_send_start
-                    activation_send_times.append(act_send_time)
-                    activation_send_sizes.append(act_send_size_mb)
-                
-                # Middle and last workers receive from previous worker and process forward pass
-                elif worker_rank > 0:
-                    # Track activation receive time
-                    act_recv_start = time.time()
-                    message = receive_message(prev_sock)
-                    act_recv_time = time.time() - act_recv_start
-                    command, recv_step, payload = message
-                    
-                    logger.info("Received message from previous worker with addr: %s: command=%s, step=%d", prev_sock.getpeername(), command, recv_step)
-                    
-                    assert recv_step == micro_step, (
-                        f"Micro step mismatch: expected {micro_step}, got {recv_step}"
-                    )
-                    
-                    
-                    if command == "forward_activations":
-                        act_in = payload["activations"].to(device)
-                        from_rank = payload["from_rank"]
-                        to_rank = payload["to_rank"]
-                        target = payload["targets"].to(device)
-                        
-                        # Track activation receive size
-                        act_recv_size_mb = get_tensor_size_mb(payload["activations"])
-                        activation_recv_times.append(act_recv_time)
-                        activation_recv_sizes.append(act_recv_size_mb)
-                        
+                    if worker_rank == 0:
                         logger.info(
-                            f"[Micro step {micro_step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
+                            f"[Micro step {micro_step}/{num_microbatches}] Worker rank 0 computing leader activations"
                         )
                     
-                        act_in.requires_grad_(True)
-                        # Forward through local model layers
-                        out = act_in
-                        for layer in model_layers:
-                            output = layer(out)
-                            out = output[0] if isinstance(output, tuple) else output
+                        leader_activations = compute_leader_activations(device, model_layers, micro_data)
+                        leader_activations.requires_grad_(True)
+                    
                         
-                        activations = out
-                        act_out_cache[(micro_step, worker_rank)] = activations                    
-                        act_in_cache[(micro_step, from_rank)] = act_in
-                        
+                        # Clear GPU cache before caching activations
                         clear_gpu_cache(device)
                         gc.collect()
                         
-                        logger.info(
-                            f"[Micro step {micro_step}] Finished generating activations for local_rank {worker_rank}"
-                        )
-
-                 
+                        # Cache worker rank 0's activations WITH computation graph (no detach!)
+                        # act_in_cache[(step, RANK)] = data
+                        act_out_cache[(micro_step, worker_rank)] = leader_activations
+                        activations = leader_activations
                         
-                        if worker_rank == NUM_WORKERS - 1:
-                            # Last worker: compute loss and send gradients back
-                            logger.info(f"[Micro step {micro_step}] Last worker, computing loss and starting backward pass")
-                        
-                            logger.info(f"[Micro step {micro_step}] Target shape: {target.shape}, dtype: {target.dtype}, act shape: {activations.shape}, dtype: {activations.dtype}")
-                            
-                            loss = compute_loss(activations, target, criterion)
-                            
-                            # Accumulate for batch average
-                            batch_loss += loss.item()
-                            batch_ppl += torch.exp(loss).item()
-                            
-                            # Accumulate for epoch average
-                            total_loss += loss.item()
-                            total_ppl += torch.exp(loss).item()
-                            
-                            losses[(micro_step, worker_rank)] = loss
-                            
-                            logger.info(f"[Micro step {micro_step}] Loss: {loss.item():.4f}")
-
-
-                        else:
-                            # Middle workers: forward activations to next worker
-                            next_rank = worker_rank + 1
-                            logger.info(f"[Micro step {micro_step}] Sending activations to worker rank {next_rank}")
-                            
-                            # Track activation send size and time
-                            act_send_size_mb = get_tensor_size_mb(activations.detach().cpu())
-                            act_send_start = time.time()
-                            
-                            send_message(
-                                next_sock,
-                                (
-                                    "forward_activations",
-                                    micro_step,
-                                    {
-                                        "activations": activations.detach().cpu(),
-                                        "targets": target.detach().cpu(),
-                                        "from_rank": worker_rank,
-                                        "to_rank": next_rank
-                                    },
-                                ),
-                            )
-                            
-                            act_send_time = time.time() - act_send_start
-                            activation_send_times.append(act_send_time)
-                            activation_send_sizes.append(act_send_size_mb)
-                            
-                            logger.info(f"[Micro step {micro_step}] Sent activations to worker {next_rank}")
-                        
+                        next_rank = worker_rank + 1
                     
-                        # Clear GPU cache
-                        clear_gpu_cache(device)      
+                        logger.info(f"[Step {step}] Sending activations to worker rank {next_rank}")
+                        
+                        # Track activation send size and time
+                        act_send_size_mb = get_tensor_size_mb(activations.detach().cpu())
+                        act_send_start = time.time()
+                        
+                        send_message(
+                            next_sock,
+                            (
+                                "forward_activations",
+                                micro_step,
+                                {
+                                    "activations": activations.detach().cpu(),
+                                    "targets": micro_target.detach().cpu(),
+                                    "from_rank": worker_rank,
+                                    "to_rank": next_rank
+                                },
+                            ),
+                        )
+                        
+                        act_send_time = time.time() - act_send_start
+                        activation_send_times.append(act_send_time)
+                        activation_send_sizes.append(act_send_size_mb)
+                    
+                    # Middle and last workers receive from previous worker and process forward pass
+                    elif worker_rank > 0:
+                        # Track activation receive time
+                        act_recv_start = time.time()
+                        message = receive_message(prev_sock)
+                        act_recv_time = time.time() - act_recv_start
+                        command, recv_step, payload = message
+                        
+                        logger.info("Received message from previous worker with addr: %s: command=%s, step=%d", prev_sock.getpeername(), command, recv_step)
+                        
+                        assert recv_step == micro_step, (
+                            f"Micro step mismatch: expected {micro_step}, got {recv_step}"
+                        )
+                    
+                    
+                        if command == "forward_activations":
+                            act_in = payload["activations"].to(device)
+                            from_rank = payload["from_rank"]
+                            to_rank = payload["to_rank"]
+                            target = payload["targets"].to(device)
+                            
+                            # Track activation receive size
+                            act_recv_size_mb = get_tensor_size_mb(payload["activations"])
+                            activation_recv_times.append(act_recv_time)
+                            activation_recv_sizes.append(act_recv_size_mb)
+                            
+                            logger.info(
+                                f"[Micro step {micro_step}] Received activations forwarded from worker {from_rank} to worker {to_rank}"
+                            )
+                        
+                            act_in.requires_grad_(True)
+                            # Forward through local model layers
+                            out = act_in
+                            for layer in model_layers:
+                                output = layer(out)
+                                out = output[0] if isinstance(output, tuple) else output
+                            
+                            activations = out
+                            act_out_cache[(micro_step, worker_rank)] = activations                    
+                            act_in_cache[(micro_step, from_rank)] = act_in
+                            
+                            clear_gpu_cache(device)
+                            gc.collect()
+                            
+                            logger.info(
+                                f"[Micro step {micro_step}] Finished generating activations for local_rank {worker_rank}"
+                            )
+
+                     
+                            
+                            if worker_rank == NUM_WORKERS - 1:
+                                # Last worker: compute loss and send gradients back
+                                logger.info(f"[Micro step {micro_step}] Last worker, computing loss and starting backward pass")
+                            
+                                logger.info(f"[Micro step {micro_step}] Target shape: {target.shape}, dtype: {target.dtype}, act shape: {activations.shape}, dtype: {activations.dtype}")
+                                
+                                loss = compute_loss(activations, target, criterion)
+                                
+                                # Accumulate for batch average
+                                batch_loss += loss.item()
+                                batch_ppl += torch.exp(loss).item()
+                                
+                                # Accumulate for epoch average
+                                total_loss += loss.item()
+                                total_ppl += torch.exp(loss).item()
+                                
+                                losses[(micro_step, worker_rank)] = loss
+                                
+                                logger.info(f"[Micro step {micro_step}] Loss: {loss.item():.4f}")
+
+
+                            else:
+                                # Middle workers: forward activations to next worker
+                                next_rank = worker_rank + 1
+                                logger.info(f"[Micro step {micro_step}] Sending activations to worker rank {next_rank}")
+                                
+                                # Track activation send size and time
+                                act_send_size_mb = get_tensor_size_mb(activations.detach().cpu())
+                                act_send_start = time.time()
+                                
+                                send_message(
+                                    next_sock,
+                                    (
+                                        "forward_activations",
+                                        micro_step,
+                                        {
+                                            "activations": activations.detach().cpu(),
+                                            "targets": target.detach().cpu(),
+                                            "from_rank": worker_rank,
+                                            "to_rank": next_rank
+                                        },
+                                    ),
+                                )
+                                
+                                act_send_time = time.time() - act_send_start
+                                activation_send_times.append(act_send_time)
+                                activation_send_sizes.append(act_send_size_mb)
+                                
+                                logger.info(f"[Micro step {micro_step}] Sent activations to worker {next_rank}")
+                            
+                        
+                            # Clear GPU cache
+                            clear_gpu_cache(device)      
                     
                         
                 # All workers (except the last) wait for gradients
@@ -769,7 +769,7 @@ def run_modelparallelism_pipeline_worker(
                             clear_gpu_cache(device)
                             
                     
-                        elif worker_rank < NUM_WORKERS - 1:
+                    elif worker_rank < NUM_WORKERS - 1:
                         # Non-last workers receive gradients from the next worker
                         message = receive_message(next_sock)
                         command, recv_step, payload = message
