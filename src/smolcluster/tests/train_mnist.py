@@ -27,8 +27,8 @@ import yaml
 
 from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
-from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
-from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
+from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
+from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils.device import get_device
 

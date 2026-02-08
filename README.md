@@ -96,8 +96,10 @@ smolcluster/
 ├── src/smolcluster/
 │   ├── algorithms/
 │   │   ├── EDP/                    # Elastic Distributed Parallelism
-│   │   ├── SynchronousPS/          # Synchronous Parameter Server
-│   │   └── ModelParallelism/       # Model Parallelism
+│   │   ├── DataParallelism/        # Data Parallelism implementations
+│   │   │   └── SynchronousPS/      # Synchronous Parameter Server
+│   │   ├── ModelParallelism/       # Model Parallelism
+│   │   └── ModelParallelismPipeline/  # Pipeline Model Parallelism
 │   ├── models/                     # Neural network models
 │   ├── utils/                      # Utilities and helpers
 │   ├── data/                       # Datasets

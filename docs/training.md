@@ -121,7 +121,7 @@ uv run server.py  # On server node
 uv run worker.py 1 macbook  # On worker node
 
 # SyncPS
-cd src/smolcluster/algorithms/SynchronousPS
+cd src/smolcluster/algorithms/DataParallelism/SynchronousPS
 uv run server.py
 uv run worker.py 1 pi5
 ```

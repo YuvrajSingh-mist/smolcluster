@@ -32,8 +32,8 @@ from smolcluster.algorithms.ModelParallelism.worker import run_modelparallelism_
 from smolcluster.algorithms.ModelParallelismPipeline.worker import (
     run_modelparallelism_pipeline_worker,
 )
-from smolcluster.algorithms.SynchronousPS.server import run_syncps_server
-from smolcluster.algorithms.SynchronousPS.worker import run_syncps_worker
+from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
+from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.utils.device import get_device

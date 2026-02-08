@@ -50,12 +50,12 @@ pipelineTopology:
       - hostname: mini1
         rank: 0
         ip: "10.10.0.1"
-      - hostname: mini2
+      - hostname: pi5
         rank: 1
-        ip: "10.10.0.2"
-      - hostname: mini3
+        ip: "192.168.50.2"
+      - hostname: win
         rank: 2
-        ip: "10.10.0.3"
+        ip: "192.168.52.2"
 
 
 #Model parallelism specific configs
