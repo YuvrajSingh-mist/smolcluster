@@ -1,7 +1,11 @@
 #!/bin/bash
 
+set -e
+
 # Load environment variables from .env
-if [[ -f ".env" ]]; then
+if [[ -f "../.env" ]]; then
+    export $(grep -v '^#' ../.env | xargs)
+elif [[ -f ".env" ]]; then
     export $(grep -v '^#' .env | xargs)
 fi
 
@@ -98,9 +102,7 @@ echo "📦 Syncing code to remote nodes..."
 if [[ "$DRY_RUN" != "true" ]]; then
     for node in "${SSH_NODES[@]}"; do
         echo "   Syncing to $node..."
-        # Use safe rsync options for all hosts (works on both Windows and Unix)
-        rsync -az --rsync-path="rsync" -e "ssh -T" \
-            --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc' --exclude '.git' --exclude 'src/data' \
+        rsync -az --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc' --exclude '.git' --exclude 'src/data' \
             "$PROJECT_DIR/" "$node:$REMOTE_PROJECT_DIR/" || {
             echo "❌ Error: Failed to sync code to $node"
             exit 1
@@ -136,36 +138,37 @@ if [[ "$DRY_RUN" != "true" ]]; then
             exit 1
         fi
         
-        # Check if Promtail is installed on remote node (cross-platform)
-        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe || test -f /mnt/c/promtail/promtail.exe || test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" || test -f \"C:\\\\promtail\\\\promtail.exe\")" ; then
+        # Check if Promtail is installed on remote node
+        PROMTAIL_FOUND=false
+        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || which promtail)" 2>/dev/null; then
+            PROMTAIL_FOUND=true
+        fi
+        
+        if [[ "$PROMTAIL_FOUND" == "true" ]]; then
             # Kill any existing Promtail processes (cleanup old/broken instances)
             echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
-            ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" || true
-            
-            # Delete old log files and position files for fresh start
+            ssh "$node" "pkill -f promtail" || true
             ssh "$node" "rm -f /tmp/smolcluster-logs/*.log 2>/dev/null; rm -f /tmp/promtail-positions.yaml /tmp/positions.yaml" || true
-            
-            # Ensure log directory exists
             ssh "$node" "mkdir -p /tmp/smolcluster-logs"
             sleep 1
             
             # All nodes are workers in mp_pipeline
             config_file="logging/promtail-worker-remote.yaml"
             
-            # Start Promtail in background (auto-detect path)
+            # Start Promtail in background
             echo "🚀 $node: Starting Promtail..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && nohup promtail -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
             sleep 2
             
-            # Check if Promtail is running (cross-platform check)
-            if ssh "$node" "(pgrep -f promtail) || (command -v tasklist && tasklist | grep -i promtail.exe)"; then
+            # Check if Promtail is running
+            if ssh "$node" "pgrep -f promtail"; then
                 echo "✅ $node: Promtail started successfully"
             else
                 echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
             fi
         else
             echo "⚠️  Warning: Promtail not found on $node. Centralized logging will not work."
-            echo "   Install: See logging/SETUP.md (macOS/Linux/Windows supported)"
+            echo "   Install: See logging/SETUP.md"
         fi
         
         # Check that venv exists and sync dependencies
@@ -177,7 +180,6 @@ if [[ "$DRY_RUN" != "true" ]]; then
             echo "✅ Venv exists on $node. Running uv sync..."
             ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"
         fi
-        
         echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
     done
 else
@@ -237,18 +239,15 @@ launch_on_node() {
     echo "🔗 Launching on $node: $command"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_file="\$HOME/${session_name}.log"
-        echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \\\"bash -c '$command 2>&1 | tee $log_file; exec bash'\\\"\""
+        echo "   [DRY RUN] Would launch on $node"
         return 0
     fi
 
-    # SSH command with tmux and logging
     log_file="\$HOME/${session_name}.log"
     ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
         echo "❌ Failed to launch on $node"
         return 1
     }
-
     echo "✅ Launched $session_name on $node (logs: $log_file)"
     
     # Give tmux a moment to start
@@ -266,7 +265,6 @@ echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
     for worker_node in "${WORKERS[@]}"; do
-        # Kill any session that starts with "mp_pipeline_worker"
         ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}' | grep -E '^mp_pipeline_worker' | xargs -I {} tmux kill-session -t {} || true"
     done
     echo "✅ Cleanup complete"
