@@ -451,7 +451,7 @@ def run_modelparallelism_pipeline_worker(
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((HOST_IP, my_port))
-    sock.listen(76)
+    sock.listen(1)
     logger.info(f"Worker {worker_rank} listening on add: {HOST_IP} at port {my_port}")
     
     # Step 2: Connect to next worker in pipeline (if not last worker)

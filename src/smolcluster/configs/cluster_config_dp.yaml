@@ -1,0 +1,64 @@
+syncPS:
+  host_ip:
+    mini1: "10.10.0.1"
+    mini2: "10.10.0.1"
+    mini3: "10.10.0.1"
+    pi4: "10.10.0.1"
+    macbook: "10.10.0.1"
+    pi5: "192.168.50.1"
+    win: "10.10.0.1"
+    ipad: "172.20.10.3"
+
+port:
+  default: 65432
+  mini1: 65432
+  mini2: 65432
+  mini3: 65432
+  pi4: 65432
+  macbook: 65432
+  pi5: 65432
+  win: 65432
+  ipad: 8000  # iPad uses port 8000 (port forwarding from external network)
+
+# Network buffer sizes (in MB) - device-specific optimizations
+buffer_size:
+  mini1: 8  # Mac Mini - 8MB (Thunderbolt 40Gbps)
+  mini2: 8  # Mac Mini - 8MB
+  mini3: 8  # Mac Mini - 8MB
+  macbook: 8  # MacBook - 8MB
+  pi4: 2  # Raspberry Pi 4 - 2MB (Gigabit Ethernet)
+  pi5: 2  # Raspberry Pi 5 - 2MB (Gigabit Ethernet)
+  win: 1  # Windows 11 - 1MB (conservative for compatibility)
+
+# Network metrics tracking
+track_network_metrics: true  # Enable bandwidth, latency, buffer usage tracking
+metrics_log_interval: 50  # Log network metrics every N steps
+
+
+# Timeout for gradient collection
+timeout: 0.1  # How long server waits for gradients (seconds)
+
+# Randomness seed
+seed: 42
+
+# Cluster configuration (other than Parameter-Server)
+num_workers: 3
+
+pipelineTopology:
+  workers:
+    regular:
+      - hostname: mini1
+        rank: 0
+        ip: "10.10.0.1"
+      - hostname: pi5
+        rank: 1
+        ip: "192.168.50.2"
+      - hostname: win
+        rank: 2
+        ip: "192.168.52.2"
+
+
+#Model parallelism specific configs
+num_nodes: 3
+num_layers: 6  # Number of transformer blocks (auto-detected from model, this is just for reference)
+model_name: causal_gpt2 
