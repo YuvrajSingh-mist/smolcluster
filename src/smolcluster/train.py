@@ -32,6 +32,7 @@ from smolcluster.algorithms.ModelParallelism.worker import run_modelparallelism_
 from smolcluster.algorithms.ModelParallelismPipeline.worker import (
     run_modelparallelism_pipeline_worker,
 )
+from smolcluster.algorithms.DataParallelism.ClassicDP.worker import run_classicdp_worker
 from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
@@ -189,6 +190,11 @@ def run_server(
             "❌ FATAL: mp_pipeline algorithm does not use a server. Only launch workers."
         )
         sys.exit(1)
+    elif algorithm == "classicdp":
+        logger.error(
+            "❌ FATAL: classicdp algorithm does not use a server. Only launch workers."
+        )
+        sys.exit(1)
     
     logger.info(f"Starting {algo_name} server...")
     if algorithm == "edp":
@@ -284,14 +290,14 @@ def run_worker(
     # Setup parameters
     num_workers = cluster_config["num_workers"]
     seed = cluster_config.get("seed", 42)
-    # For mp_pipeline, world_size is just num_workers (no separate server)
+    # For mp_pipeline and classicdp, world_size is just num_workers (no separate server)
     # For other algorithms, world_size includes server (num_workers + 1)
-    world_size = num_workers if algorithm == "mp_pipeline" else num_workers + 1
+    world_size = num_workers if algorithm in ["mp_pipeline", "classicdp"] else num_workers + 1
 
     # Get server connection info (only needed for algorithms with server)
     host_ip = None
-    if algorithm == "mp_pipeline":
-        # Pipeline topology doesn't use host_ip
+    if algorithm in ["mp_pipeline", "classicdp"]:
+        # Pipeline topology and ClassicDP don't use host_ip for server connection
         pass
     else:
         # Require host_ip for other algorithms
@@ -299,9 +305,9 @@ def run_worker(
     
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
-        # For mp_pipeline, get worker rank 0's hostname; for others, use server
-        if algorithm == "mp_pipeline":
-            # For pipeline topology, require pipelineTopology config structure
+        # For mp_pipeline and classicdp, get worker rank 0's hostname; for others, use server
+        if algorithm in ["mp_pipeline", "classicdp"]:
+            # For pipeline/ring topology, require pipelineTopology config structure
             workers_list = cluster_config["pipelineTopology"]["workers"]["regular"]
             coordinator_hostname = next(
                 w["hostname"] for w in workers_list if w["rank"] == 0
@@ -431,6 +437,21 @@ def run_worker(
                 port=port,
                 resume_checkpoint_path=resume_checkpoint_path,
             )
+    elif algorithm == 'classicdp':
+        run_classicdp_worker(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            worker_rank=local_rank,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+            host_ip=host_ip,
+            port=port,
+            resume_checkpoint_path=resume_checkpoint_path,
+        )
     wandb.finish()
 
 
@@ -445,7 +466,7 @@ def main():
     parser.add_argument(
         "-a",
         "--algorithm",
-        choices=["edp", "syncps", "mp", "mp_pipeline"],
+        choices=["edp", "syncps", "mp", "mp_pipeline", "classicdp"],
         default="syncps",
         help="Training algorithm to use (default: syncps)",
     )
@@ -506,9 +527,9 @@ def main():
         sys.exit(1)
 
     # Validate algorithm
-    if algorithm not in ["edp", "syncps", "mp", "mp_pipeline"]:
+    if algorithm not in ["edp", "syncps", "mp", "mp_pipeline", "classicdp"]:
         print(
-            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', or 'mp_pipeline'"
+            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', 'mp_pipeline', or 'classicdp'"
         )
         sys.exit(1)
 

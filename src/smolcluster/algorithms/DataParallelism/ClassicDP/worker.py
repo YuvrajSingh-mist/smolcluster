@@ -29,6 +29,7 @@ from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
 
+step = 0 
 
 
 def reduce(
@@ -174,6 +175,9 @@ def handle_worker(
     grads_received: dict,
     step_event: threading.Event,
     lock: threading.Lock,
+    model: torch.nn.Module = None,
+    optimizer: torch.optim.Optimizer = None,
+    step: Optional[int] = None,
 ) -> None:
     """Handle individual worker connections and gradient reception."""
     logger.info(f"Handling worker at {addr}")
@@ -188,7 +192,7 @@ def handle_worker(
                 break
 
             # Unpack the message tuple
-            command, recv_step, rank, grads = message
+            command, recv_step, step, rank, grads = message
 
             logger.info(
                 f"Received message '{command}' from worker {addr} (rank {rank}) for step {recv_step}"
@@ -201,9 +205,21 @@ def handle_worker(
                     logger.info(
                         f"[Step {recv_step}] Now have {len(grads_received[recv_step])} gradient sets"
                     )
+                    
+                # reduced_grads = reduce(grads_received[recv_step], len(grads_received[recv_step]))
                 step_event.set()
 
             if command == "scatter_reduce":
+                
+                assert step == recv_step, f"Step mismatch: expected {step}, got {recv_step}"
+                logger.info(
+                    f"[Step {recv_step}] Received reduced gradients from worker {rank}"
+                )
+                set_gradients(grads, model)
+                optimizer.step()
+                logger.info(
+                    f"[Step {recv_step}] Applied reduced gradients from worker {rank} to server model"
+                )
                 
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
@@ -264,7 +280,8 @@ def accept_workers(sock: socket.socket, NUM_WORKERS: int, workers: dict, model_n
 
 
 
-def run_modelparallelism_pipeline_worker(
+
+def run_classicdp_worker(
     model,
     train_loader,
     val_loader,
@@ -279,7 +296,8 @@ def run_modelparallelism_pipeline_worker(
     resume_checkpoint_path=None,
 ):
     """
-    Run Model Parallelism Pipeline training (peer-to-peer workers in linear pipeline).
+    Run Classic Data Parallelism training with Ring-AllReduce.
+    Workers form a ring topology for gradient aggregation.
 
     Args:
         model: PyTorch model to train
@@ -304,7 +322,7 @@ def run_modelparallelism_pipeline_worker(
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
-    logger.info(f"🚀 ModelParallelism Worker rank {worker_rank} starting up")
+    logger.info(f"🚀 ClassicDP Worker rank {worker_rank} starting up")
 
     # Extract configuration
     batch_size = config["batch_size"]
@@ -315,10 +333,7 @@ def run_modelparallelism_pipeline_worker(
     learning_rate = config["learning_rate"]
     grad_clip_norm = config.get("grad_clip_norm", 0.0)
     cluster_config["num_workers"]
-    recv_grads = None
     NUM_WORKERS = cluster_config["num_workers"]
-
-    num_nodes = cluster_config["num_nodes"]
 
     # Checkpoint configuration
     save_checkpoints = config.get("save_checkpoints", True)
@@ -333,13 +348,13 @@ def run_modelparallelism_pipeline_worker(
 
     # Initialize checkpoint manager
     project_root = Path(__file__).parent.parent.parent.parent.parent
-    full_checkpoint_dir = project_root / checkpoint_dir / "mp"
+    full_checkpoint_dir = project_root / checkpoint_dir / "classicdp"
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=str(full_checkpoint_dir),
         max_checkpoints=max_checkpoints_to_keep,
         save_optimizer=save_optimizer_state,
         rank=worker_rank,
-        algorithm="mp",
+        algorithm="classicdp",
     )
 
     # Network configuration
@@ -439,7 +454,7 @@ def run_modelparallelism_pipeline_worker(
             logger.warning("No checkpoint found to resume from, starting fresh")
 
    
-    logger.info("Starting pipeline topology setup (linear forward, backward flow).")
+    logger.info("Starting linear topology setup for ClassicDP AllReduce.")
 
     next_sock = None
     prev_sock = None
@@ -457,7 +472,7 @@ def run_modelparallelism_pipeline_worker(
     retry_delay = 2
     
     
-    if worker_rank < NUM_WORKERS :
+    if worker_rank < NUM_WORKERS - 1:
         
         # Connect to next worker in the pipeline
         workers_list = cluster_config["pipelineTopology"]["workers"]["regular"]
@@ -510,6 +525,7 @@ def run_modelparallelism_pipeline_worker(
         )
         
         for batch_idx, (data, target) in batch_pbar:
+            
             step = epoch * len(train_loader) + batch_idx
 
             # Skip batches if resuming mid-epoch
@@ -564,15 +580,15 @@ def run_modelparallelism_pipeline_worker(
                 send_message(
                     worker_socket,
                     (
-                        "forward_activations",
+                        "all_gather",
                         step,
                         {
-                            "activations": activations.detach().cpu() if activations is not None else None,
+                            "grads": leader_grads if leader_grads is not None else None,
                         },
                     ),
                 )
                 logger.info(
-                    f"[Step {step}  / {num_epochs * len(train_loader)}] Sent activations to next worker: {worker_addr}"
+                    f"[Step {step}  / {num_epochs * len(train_loader)}] Sent gradients to next worker: {worker_addr}"
                 )
             
             # Wait for all workers (all gather) to send their gradients for this step
@@ -627,6 +643,8 @@ def run_modelparallelism_pipeline_worker(
                 logger.info(
                     f"[Step {step}  / {num_epochs * len(train_loader)}] Applying averaged gradients to server model"
                 )
+                
+                
                 set_gradients(grads_reduced, model)
                 optimizer.step()
 
@@ -634,13 +652,13 @@ def run_modelparallelism_pipeline_worker(
                     f"[Step {step}  / {num_epochs * len(train_loader)}] Server model updated"
                 )
 
-                # Send updated weights to workers
-                for _worker_addr, worker_socket in workers.items():
-                    weights = get_weights(model)
-                    send_message(worker_socket, ("model_weights", step, weights))
-                    logger.info(
-                        f"[Step {step}] Sent updated model weights to worker at {_worker_addr}"
-                    )
+                # # Send updated weights to workers
+                # for _worker_addr, worker_socket in workers.items():
+                #     weights = get_weights(model)
+                #     send_message(worker_socket, ("model_weights", step, weights))
+                #     logger.info(
+                #         f"[Step {step}] Sent updated model weights to worker at {_worker_addr}"
+                #     )
 
                 # Cleanup
                 grads_received.pop(step, None)
