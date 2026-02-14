@@ -44,17 +44,20 @@ seed: 42
 # Cluster configuration (other than Parameter-Server)
 num_workers: 3
 
-pipelineTopology:
+allToAllTopology:
   workers:
     regular:
       - hostname: mini1
         rank: 0
+        port: 65432
         ip: "10.10.0.1"
       - hostname: mini2
         rank: 1
-        ip: "10.10.10.2"
+        port: 65433
+        ip: "10.10.0.2"
       - hostname: mini3
         rank: 2
+        port: 65434
         ip: "10.10.0.3"
 
 
