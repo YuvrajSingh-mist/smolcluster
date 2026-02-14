@@ -1,35 +1,29 @@
-from collections import defaultdict
 import gc
-import heapq
 import logging
 import math
 import socket
 import threading
 import time
+from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torchinfo
 import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import subprocess
 
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
     get_gradients,
     get_network_metrics,
-    get_weights,
     receive_message,
     send_message,
     set_gradients,
 )
-from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
-
-step = 0 # Global step counter to track training progress across threads 
+step = 0  # Global step counter to track training progress across threads
 
 
 def reduce(
@@ -39,11 +33,10 @@ def reduce(
     grads_reduced = {}
     for worker_id in list(grads_dict):
         for name, worker_grads in grads_dict[worker_id].items():
-            
             grads_reduced[name] = grads_reduced.get(name, 0.0) + (
                 worker_grads / num_workers_connected
             )
-            
+
     return grads_reduced
 
 
@@ -68,7 +61,6 @@ def compute_leader_activations(
         out = output[0] if isinstance(output, tuple) else output
 
     return out
-
 
 
 def evaluate(
@@ -133,7 +125,6 @@ def compute_leader_gradients(
     return loss, grads
 
 
-
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
     """Create learning rate schedule with linear warmup and cosine decay.
 
@@ -181,7 +172,6 @@ def handle_worker(
     """Handle individual worker connections and gradient reception."""
     logger.info(f"Handling worker at {addr}")
 
-   
     while True:
         try:
             message = receive_message(conn)
@@ -191,55 +181,60 @@ def handle_worker(
                 # logger.info(f"Worker {addr} closed connection")
                 logger.warning(f"Received empty message from worker {addr}")
                 break
-            
+
             logger.debug(len(message))
 
             command, recv_step, rank, grads = message
 
-
             if command == "all_gather":
-            
                 logger.info(
                     f"Received message '{command}' from worker {addr} (rank {rank}) for step {recv_step}"
                 )
                 logger.info(f"[Step {recv_step}] Storing gradients from worker {rank}")
-                
+
                 with lock:
                     grads_received[recv_step][rank] = grads
                     logger.info(
                         f"[Step {recv_step}] Now have {len(grads_received[recv_step])} gradient sets"
                     )
-                    
+
                 # reduced_grads = reduce(grads_received[recv_step], len(grads_received[recv_step]))
                 step_event.set()
 
             elif command == "scatter_reduce":
-                
-                
-                assert step == recv_step, f"Step mismatch: expected {step}, got {recv_step}"
+                assert step == recv_step, (
+                    f"Step mismatch: expected {step}, got {recv_step}"
+                )
                 logger.info(
                     f"[Step {recv_step}] Received reduced gradients from worker {rank}"
                 )
                 set_gradients(grads, model)
-            
-                
+
                 logger.info(
                     f"[Step {recv_step}] Applied reduced gradients from worker {rank} to server model"
                 )
-            
-            elif command == 'down':
+
+            elif command == "down":
                 logger.info(f"Worker {addr} requested shutdown")
                 break
-                
+
         except Exception as e:
             logger.error(f"Error handling worker {addr}: {e}")
-            break 
+            break
     logger.info(f"Worker {addr} disconnected")
     conn.close()
 
 
-def accept_workers(sock: socket.socket, NUM_WORKERS: int, workers: dict, model_name: str, grads_received: dict, step_event: threading.Event, lock: threading.Lock, model: torch.nn.Module = None) -> None:
-    
+def accept_workers(
+    sock: socket.socket,
+    NUM_WORKERS: int,
+    workers: dict,
+    model_name: str,
+    grads_received: dict,
+    step_event: threading.Event,
+    lock: threading.Lock,
+    model: torch.nn.Module = None,
+) -> None:
     # Accept connections and wait for registration
     expected_peers = max(NUM_WORKERS - 1, 0)
     registered_workers = {}  # rank -> socket
@@ -278,7 +273,7 @@ def accept_workers(sock: socket.socket, NUM_WORKERS: int, workers: dict, model_n
                 logger.warning(f"Unexpected message from {client_address}: {command}")
                 client_socket.close()
                 break
-            
+
         except Exception as e:
             logger.error(f"Error during registration from {client_address}: {e}")
             client_socket.close()
@@ -376,7 +371,7 @@ def run_classicdp_worker(
     workers = {}
     outbound_worker_sockets = {}
     grads_received = defaultdict(dict)
-    
+
     # Gradient clipping
     if grad_clip_norm > 0.0:
         logger.info(f"Gradient clipping enabled: max_norm={grad_clip_norm}")
@@ -394,15 +389,19 @@ def run_classicdp_worker(
     wandb.log({"model_structure": model_summary})
 
     # Load model layers for this worker rank
-    num_layers = config["num_layers"]
+    config["num_layers"]
     logger.info(f"Loading worker rank {worker_rank}'s share of model layers...")
 
     model = model.to(device)
-    logger.info(f"Worker rank {worker_rank} loaded model layers and moved to device: {device}")
+    logger.info(
+        f"Worker rank {worker_rank} loaded model layers and moved to device: {device}"
+    )
 
     # Create optimizer for this worker's layers only
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    logger.info(f"Created optimizer for worker rank {worker_rank} with lr={learning_rate}")
+    logger.info(
+        f"Created optimizer for worker rank {worker_rank} with lr={learning_rate}"
+    )
 
     # Learning rate scheduler setup (after optimizer creation)
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -434,7 +433,7 @@ def run_classicdp_worker(
         if checkpoint_path:
             logger.info(f"Resuming from checkpoint: {checkpoint_path}")
             # Create a temporary model with only this worker's layers for loading
-        
+
             metadata = checkpoint_manager.load_checkpoint(
                 checkpoint_path=checkpoint_path,
                 model=model,
@@ -451,16 +450,13 @@ def run_classicdp_worker(
         else:
             logger.warning("No checkpoint found to resume from, starting fresh")
 
-   
     logger.info("Starting all-to-all topology setup for ClassicDP AllReduce.")
 
-   
-    
     # Get my worker configuration from allToAllTopology
     workers_list = cluster_config["allToAllTopology"]["workers"]["regular"]
     my_worker_config = next(w for w in workers_list if w["rank"] == worker_rank)
     my_port = my_worker_config["port"]
-    
+
     # Step 1: Each worker binds to its configured port
     HOST_IP = "0.0.0.0"
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -468,31 +464,37 @@ def run_classicdp_worker(
     sock.bind((HOST_IP, my_port))
     sock.listen(NUM_WORKERS)  # Allow multiple connections for worker registration
     logger.info(f"Worker {worker_rank} listening on port {my_port}")
-    
+
     # Step 2: Connect to next worker in linear topology (if not last worker)
     max_retries = 30
     retry_delay = 2
-    
-    
+
     for _ in range(NUM_WORKERS - 1):
-        
         # Connect to next worker in the chain
         next_worker = next(w for w in workers_list if w["rank"] != worker_rank)
         next_ip = next_worker["ip"]
         next_port = next_worker["port"]
-        del workers_list[workers_list.index(next_worker)]  # Remove the next worker from the list to avoid duplicate connections
-        
-        logger.info(f"Worker {worker_rank} will connect to worker {worker_rank + 1} at {next_ip}:{next_port}")
+        del workers_list[
+            workers_list.index(next_worker)
+        ]  # Remove the next worker from the list to avoid duplicate connections
+
+        logger.info(
+            f"Worker {worker_rank} will connect to worker {worker_rank + 1} at {next_ip}:{next_port}"
+        )
         time.sleep(worker_rank * 0.5)  # Stagger connections
-        
+
         for attempt in range(max_retries):
             try:
                 next_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 next_sock.connect((next_ip, next_port))
                 send_message(next_sock, ("register", worker_rank))
-                
-                logger.info(f"Worker {worker_rank} connected to worker {worker_rank + 1} at {next_ip}:{next_port}")
-                outbound_worker_sockets[next_worker["rank"]] = next_sock #This is important because this has the IP + PORT to which the nodes connected to it listen to which is what we have defined and not send stuff to the port we received through sock.accept()!
+
+                logger.info(
+                    f"Worker {worker_rank} connected to worker {worker_rank + 1} at {next_ip}:{next_port}"
+                )
+                outbound_worker_sockets[next_worker["rank"]] = (
+                    next_sock  # This is important because this has the IP + PORT to which the nodes connected to it listen to which is what we have defined and not send stuff to the port we received through sock.accept()!
+                )
                 break
             except ConnectionRefusedError:
                 if attempt < max_retries - 1:
@@ -502,21 +504,31 @@ def run_classicdp_worker(
                     )
                     time.sleep(retry_delay)
                 else:
-                    logger.error(f"Failed to connect to worker {worker_rank + 1} after {max_retries} attempts")
+                    logger.error(
+                        f"Failed to connect to worker {worker_rank + 1} after {max_retries} attempts"
+                    )
                     raise
-    
+
     # Step 3: Accept connection from all workers
-    accept_workers(sock, NUM_WORKERS, workers=workers, model_name="", grads_received=grads_received, step_event=step_event, lock=lock, model=model)
-    
+    accept_workers(
+        sock,
+        NUM_WORKERS,
+        workers=workers,
+        model_name="",
+        grads_received=grads_received,
+        step_event=step_event,
+        lock=lock,
+        model=model,
+    )
+
     logger.info(f"All workers connected. Starting training for {num_epochs} epochs.")
-    
+
     for epoch in range(start_epoch, num_epochs):
         total_loss = 0.0
         model.train()
-        
-        
+
         global step  # Declare step as global to modify the global step counter
-        
+
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
         # Create batch progress bar for this epoch (only for rank 0)
@@ -528,9 +540,8 @@ def run_classicdp_worker(
             ncols=120,
             disable=(worker_rank != 0),
         )
-        
+
         for batch_idx, (data, target) in batch_pbar:
-            
             step = epoch * len(train_loader) + batch_idx
 
             # Skip batches if resuming mid-epoch
@@ -551,15 +562,15 @@ def run_classicdp_worker(
             logger.info(
                 f"[Step {step}/{num_epochs * len(train_loader)}] Worker rank {worker_rank} computing local gradients"
             )
-        
+
             local_loss, local_grads = compute_leader_gradients(
                 device, model, data, target, criterion, optimizer, config
-            )   
+            )
             with lock:
                 grads_received[step][worker_rank] = local_grads
-            
+
             total_loss += local_loss.item()
-            
+
             # Clear GPU cache
             clear_gpu_cache(device)
 
@@ -573,14 +584,17 @@ def run_classicdp_worker(
                     "step": step,
                     "epoch": epoch + 1,
                     f"losses/worker_{worker_rank}_step": local_loss.item(),
-                    f"losses/worker_{worker_rank}_total_train": total_loss / (batch_idx + 1),
+                    f"losses/worker_{worker_rank}_total_train": total_loss
+                    / (batch_idx + 1),
                     f"ppl/worker_{worker_rank}_train": train_ppl,
                 }
             )
-            
+
             # All-gather: send local gradients to all peers via outbound connections
-            logger.info("Performing all-gather: broadcasting local gradients to all peers")
-            
+            logger.info(
+                "Performing all-gather: broadcasting local gradients to all peers"
+            )
+
             for peer_rank, peer_socket in outbound_worker_sockets.items():
                 send_message(
                     peer_socket,
@@ -614,12 +628,10 @@ def run_classicdp_worker(
                 logger.info(
                     f"[Step {step}  / {num_epochs * len(train_loader)}] Averaging gradients from {len(grads_received[step])} participants"
                 )
-                
-                #Reduce the grads
-                grads_reduced = reduce(
-                    grads_received[step], len(grads_received[step])
-                ) 
-                
+
+                # Reduce the grads
+                grads_reduced = reduce(grads_received[step], len(grads_received[step]))
+
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} averaged gradients successfully"
                 )
@@ -638,13 +650,15 @@ def run_classicdp_worker(
                     logger.info(
                         f"[Step {step}] Worker {worker_rank} sent averaged gradients to worker {peer_rank}"
                     )
-                
-                logger.info(f"[Step {step}] Worker {worker_rank} scatter-reduce complete")
-                
+
+                logger.info(
+                    f"[Step {step}] Worker {worker_rank} scatter-reduce complete"
+                )
+
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} applying averaged gradients to local model"
                 )
-                
+
                 set_gradients(grads_reduced, model)
                 optimizer.step()
 
@@ -683,11 +697,8 @@ def run_classicdp_worker(
             clear_gpu_cache(device)
 
             # Update batch progress bar with current metrics
-            batch_pbar.set_postfix({
-                'lr': f'{current_lr:.2e}',
-                'step': step
-            })
-            
+            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step})
+
             # Log training metrics
             wandb.log(
                 {
@@ -747,7 +758,11 @@ def run_classicdp_worker(
             # Evaluation
             if step % eval_steps == 0 and worker_rank == 0:
                 val_loss, val_ppl = evaluate(
-                    device, model, val_loader, criterion, decoder_type_ppl=decoder_type_ppl
+                    device,
+                    model,
+                    val_loader,
+                    criterion,
+                    decoder_type_ppl=decoder_type_ppl,
                 )
 
                 if decoder_type_ppl:
@@ -761,9 +776,11 @@ def run_classicdp_worker(
                     )
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
                     logger.info(eval_msg)
-            
+
                     # Update progress bar
-                    batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
+                    batch_pbar.set_postfix(
+                        {"val_loss": f"{val_loss:.4f}", "ppl": f"{val_ppl:.2f}"}
+                    )
                 else:
                     wandb.log(
                         {
@@ -774,16 +791,16 @@ def run_classicdp_worker(
                     )
                     eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
                     logger.info(eval_msg)
-                  
+
                     # Update progress bar
-                    batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
+                    batch_pbar.set_postfix({"val_loss": f"{val_loss:.4f}"})
 
             # Save checkpoint at regular intervals
             if save_checkpoints and should_save_checkpoint(
                 step, epoch, checkpoint_steps, num_epochs * len(train_loader)
             ):
                 # Wrap model_layers in Sequential for proper state_dict saving
-               
+
                 checkpoint_manager.save_checkpoint(
                     model=model,
                     optimizer=optimizer,
@@ -806,7 +823,7 @@ def run_classicdp_worker(
 
             gc.collect()
             activations = None
-        
+
         # Close batch progress bar for this epoch
         batch_pbar.close()
 
@@ -819,6 +836,8 @@ def run_classicdp_worker(
             peer_socket.close()
             logger.info(f"Closed outbound socket to worker rank {peer_rank}")
         except Exception as e:
-            logger.warning(f"Failed to close outbound socket to worker rank {peer_rank}: {e}")
+            logger.warning(
+                f"Failed to close outbound socket to worker rank {peer_rank}: {e}"
+            )
 
     logger.info("Training completed successfully!")

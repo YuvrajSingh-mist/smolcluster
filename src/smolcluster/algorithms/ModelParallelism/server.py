@@ -417,16 +417,16 @@ def run_modelparallelism_server(
     act_out_cache = {}
 
     logger.info(f"Starting training for {num_epochs} epochs.")
-    
+
     # Initialize data transfer tracking
     activation_send_times = []
     activation_send_sizes = []
     gradient_recv_times = []
     gradient_recv_sizes = []
-    
+
     # Create epoch progress bar
     epoch_pbar = tqdm(range(start_epoch, num_epochs), desc="Training Epochs", ncols=100)
-    
+
     for epoch in epoch_pbar:
         model_layers.train()
 
@@ -439,9 +439,9 @@ def run_modelparallelism_server(
             total=len(train_loader),
             desc=f"Epoch {epoch + 1}",
             leave=False,
-            ncols=100
+            ncols=100,
         )
-        
+
         for batch_idx, (data, target) in batch_pbar:
             step = epoch * len(train_loader) + batch_idx
 
@@ -479,12 +479,14 @@ def run_modelparallelism_server(
             # activations = leader_activations
             # Send generation request to all workers in rank order (1, 2, ...)
             for rank, worker_socket, _addr in sorted(worker_queue):
-                tqdm.write(f"[LEADER] [Step {step}] Sending activations to worker rank {rank}")
-                
+                tqdm.write(
+                    f"[LEADER] [Step {step}] Sending activations to worker rank {rank}"
+                )
+
                 # Track activation send size and time
                 act_size_mb = get_tensor_size_mb(activations.detach().cpu())
                 act_send_start = time.time()
-                
+
                 send_message(
                     worker_socket,
                     (
@@ -498,7 +500,7 @@ def run_modelparallelism_server(
                         },
                     ),
                 )
-                
+
                 act_send_time = time.time() - act_send_start
                 activation_send_times.append(act_send_time)
                 activation_send_sizes.append(act_size_mb)
@@ -531,7 +533,6 @@ def run_modelparallelism_server(
                     )
                     break
 
-          
             # Clear GPU cache before backward phase
             clear_gpu_cache(device)
 
@@ -566,18 +567,20 @@ def run_modelparallelism_server(
                     recv_grads = payload["gradients"]
                     to_rank = payload["to_rank"]
                     from_rank = payload["from_rank"]
-                    
+
                     # Track gradient receive size
                     grad_size_mb = get_tensor_size_mb(recv_grads)
                     gradient_recv_times.append(grad_recv_time)
                     gradient_recv_sizes.append(grad_size_mb)
-                    
+
                     tqdm.write(
                         f"[LEADER] [Step {step}] Received gradients forwarded to server from worker {from_rank} for {to_rank}"
                     )
 
                     if to_rank == RANK:
-                        tqdm.write(f"[LEADER] [Step {step}] Computing backward pass for server")
+                        tqdm.write(
+                            f"[LEADER] [Step {step}] Computing backward pass for server"
+                        )
                         # Restore server's activations from cache (has computation graph)
                         act_out = act_out_cache[(step, RANK)]
                         act_out = act_out.to(device)
@@ -637,11 +640,8 @@ def run_modelparallelism_server(
             clear_gpu_cache(device)
 
             # Update batch progress bar with current metrics
-            batch_pbar.set_postfix({
-                'lr': f'{current_lr:.2e}',
-                'step': step
-            })
-            
+            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step})
+
             # Log training metrics
             wandb.log(
                 {
@@ -663,8 +663,8 @@ def run_modelparallelism_server(
                                 "step": step,
                                 "epoch": epoch + 1,
                             }
-                        ) 
-            
+                        )
+
             # Log network metrics if tracking enabled
             if track_network_metrics and step % metrics_log_interval == 0:
                 network_stats = get_network_metrics(reset=True)
@@ -699,25 +699,37 @@ def run_modelparallelism_server(
                             "epoch": epoch + 1,
                         }
                     )
-                      # Calculate activation bandwidth (Mbps)
+                    # Calculate activation bandwidth (Mbps)
                     total_act_mb = sum(activation_send_sizes[-metrics_log_interval:])
                     total_act_time = sum(activation_send_times[-metrics_log_interval:])
-                    act_bandwidth_mbps = (total_act_mb * 8) / total_act_time if total_act_time > 0 else 0
-                    
+                    act_bandwidth_mbps = (
+                        (total_act_mb * 8) / total_act_time if total_act_time > 0 else 0
+                    )
+
                     # Calculate gradient bandwidth (Mbps)
                     total_grad_mb = sum(gradient_recv_sizes[-metrics_log_interval:])
                     total_grad_time = sum(gradient_recv_times[-metrics_log_interval:])
-                    grad_bandwidth_mbps = (total_grad_mb * 8) / total_grad_time if total_grad_time > 0 else 0
-                    
-                    wandb.log({
-                        "bandwidth/activation_send_mbps": act_bandwidth_mbps,
-                        "bandwidth/gradient_recv_mbps": grad_bandwidth_mbps,
-                        "data_size/activation_mb": total_act_mb / len(activation_send_sizes[-metrics_log_interval:]),
-                        "data_size/gradient_mb": total_grad_mb / len(gradient_recv_sizes[-metrics_log_interval:]) if len(gradient_recv_sizes[-metrics_log_interval:]) > 0 else 0,
-                        "step": step,
-                        "epoch": epoch + 1,
-                    })
-                
+                    grad_bandwidth_mbps = (
+                        (total_grad_mb * 8) / total_grad_time
+                        if total_grad_time > 0
+                        else 0
+                    )
+
+                    wandb.log(
+                        {
+                            "bandwidth/activation_send_mbps": act_bandwidth_mbps,
+                            "bandwidth/gradient_recv_mbps": grad_bandwidth_mbps,
+                            "data_size/activation_mb": total_act_mb
+                            / len(activation_send_sizes[-metrics_log_interval:]),
+                            "data_size/gradient_mb": total_grad_mb
+                            / len(gradient_recv_sizes[-metrics_log_interval:])
+                            if len(gradient_recv_sizes[-metrics_log_interval:]) > 0
+                            else 0,
+                            "step": step,
+                            "epoch": epoch + 1,
+                        }
+                    )
+
                     logger.info(
                         f"[Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps, "
@@ -748,8 +760,12 @@ def run_modelparallelism_server(
                     logger.info(eval_msg)
                     print(eval_msg)
                     # Update progress bars
-                    epoch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
-                    batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}', 'ppl': f'{val_ppl:.2f}'})
+                    epoch_pbar.set_postfix(
+                        {"val_loss": f"{val_loss:.4f}", "ppl": f"{val_ppl:.2f}"}
+                    )
+                    batch_pbar.set_postfix(
+                        {"val_loss": f"{val_loss:.4f}", "ppl": f"{val_ppl:.2f}"}
+                    )
                 else:
                     wandb.log(
                         {
@@ -762,8 +778,8 @@ def run_modelparallelism_server(
                     logger.info(eval_msg)
                     print(eval_msg)
                     # Update progress bars
-                    epoch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
-                    batch_pbar.set_postfix({'val_loss': f'{val_loss:.4f}'})
+                    epoch_pbar.set_postfix({"val_loss": f"{val_loss:.4f}"})
+                    batch_pbar.set_postfix({"val_loss": f"{val_loss:.4f}"})
 
             # Save checkpoint at regular intervals
             if save_checkpoints and should_save_checkpoint(
@@ -793,13 +809,13 @@ def run_modelparallelism_server(
 
             gc.collect()
             activations = None
-        
+
         # Close batch progress bar for this epoch
         batch_pbar.close()
 
     # Close epoch progress bar
     epoch_pbar.close()
-    
+
     for _rank, worker_socket, _addr in sorted(worker_queue):
         send_message(worker_socket, "down")
 

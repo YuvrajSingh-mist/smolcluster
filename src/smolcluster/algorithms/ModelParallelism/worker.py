@@ -322,24 +322,26 @@ def run_modelparallelism_worker(
     target_cache = {}
 
     logger.info("Starting training loop...")
-    
+
     # Initialize data transfer tracking
     activation_recv_times = []
     activation_recv_sizes = []
     activation_send_times = []
     activation_send_sizes = []
-    gradient_recv_times = []
-    gradient_recv_sizes = []
     gradient_send_times = []
     gradient_send_sizes = []
 
     # Create epoch progress bar
-    epoch_pbar = tqdm(range(start_epoch, num_epochs), desc=f"Worker {local_rank} Epochs", ncols=100)
-    
+    epoch_pbar = tqdm(
+        range(start_epoch, num_epochs), desc=f"Worker {local_rank} Epochs", ncols=100
+    )
+
     for epoch in epoch_pbar:
         model_layers.train()
         total_loss = 0.0
-        epoch_pbar.set_description(f"Worker {local_rank} - Epoch {epoch + 1}/{num_epochs}")
+        epoch_pbar.set_description(
+            f"Worker {local_rank} - Epoch {epoch + 1}/{num_epochs}"
+        )
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
         # Create batch progress bar for this epoch
@@ -348,9 +350,9 @@ def run_modelparallelism_worker(
             total=len(train_loader),
             desc=f"Worker {local_rank} - Epoch {epoch + 1}",
             leave=False,
-            ncols=100
+            ncols=100,
         )
-        
+
         for batch_idx, (data, target) in batch_pbar:
             step = epoch * len(train_loader) + batch_idx
 
@@ -412,7 +414,7 @@ def run_modelparallelism_worker(
 
                 # Get activations from previous node
                 act_in = payload["activations"].to(device)
-                
+
                 # Track activation receive size
                 act_recv_size_mb = get_tensor_size_mb(payload["activations"])
                 activation_recv_times.append(act_recv_time)
@@ -447,7 +449,7 @@ def run_modelparallelism_worker(
                 # Track activation send size and time
                 act_send_size_mb = get_tensor_size_mb(act_out.detach().cpu())
                 act_send_start = time.time()
-                
+
                 # Send detached copy to next worker/server
                 send_message(
                     sock,
@@ -461,7 +463,7 @@ def run_modelparallelism_worker(
                         },
                     ),
                 )
-                
+
                 act_send_time = time.time() - act_send_start
                 activation_send_times.append(act_send_time)
                 activation_send_sizes.append(act_send_size_mb)
@@ -497,7 +499,7 @@ def run_modelparallelism_worker(
                 tqdm.write(
                     f"[WORKER-{local_rank}] [Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}"
                 )
-                
+
                 # Track gradient send size and time
                 grad_send_size_mb = get_tensor_size_mb(act_in.grad.detach().cpu())
                 grad_send_start = time.time()
@@ -513,13 +515,10 @@ def run_modelparallelism_worker(
                 tqdm.write(
                     f"[WORKER-{local_rank}] [Step {step}] Training loss: {avg_loss:.4f}"
                 )
-                
+
                 # Update progress bars
-                batch_pbar.set_postfix({
-                    'loss': f'{avg_loss:.4f}',
-                    'step': step
-                })
-                epoch_pbar.set_postfix({'loss': f'{avg_loss:.4f}'})
+                batch_pbar.set_postfix({"loss": f"{avg_loss:.4f}", "step": step})
+                epoch_pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
 
                 # Save checkpoint at regular intervals
                 if save_checkpoints and should_save_checkpoint(
@@ -555,7 +554,7 @@ def run_modelparallelism_worker(
                         },
                     ),
                 )
-                
+
                 grad_send_time = time.time() - grad_send_start
                 gradient_send_times.append(grad_send_time)
                 gradient_send_sizes.append(grad_send_size_mb)
@@ -567,7 +566,9 @@ def run_modelparallelism_worker(
 
             elif command == "forward_gradients":
                 rank, recv_grads = payload["to_rank"], payload["gradients"]
-                tqdm.write(f"[WORKER-{local_rank}] [Step {step}] Received gradients for rank {rank}.")
+                tqdm.write(
+                    f"[WORKER-{local_rank}] [Step {step}] Received gradients for rank {rank}."
+                )
 
                 if rank == local_rank:
                     tqdm.write(
@@ -619,7 +620,6 @@ def run_modelparallelism_worker(
                             }
                         )
 
-            
             # Log network metrics if tracking enabled
             if track_network_metrics and step % metrics_log_interval == 0:
                 network_stats = get_network_metrics(reset=True)
@@ -648,29 +648,47 @@ def run_modelparallelism_worker(
                             "epoch": epoch + 1,
                         }
                     )
-                    
+
                     # Calculate bandwidth metrics using utility function
                     act_recv_metrics = calculate_bandwidth_metrics(
-                        activation_recv_sizes, activation_recv_times, metrics_log_interval
+                        activation_recv_sizes,
+                        activation_recv_times,
+                        metrics_log_interval,
                     )
                     act_send_metrics = calculate_bandwidth_metrics(
-                        activation_send_sizes, activation_send_times, metrics_log_interval
+                        activation_send_sizes,
+                        activation_send_times,
+                        metrics_log_interval,
                     )
                     grad_send_metrics = calculate_bandwidth_metrics(
                         gradient_send_sizes, gradient_send_times, metrics_log_interval
                     )
-                    
-                    wandb.log({
-                        f"bandwidth/worker_{local_rank}_activation_recv_mbps": act_recv_metrics["bandwidth_mbps"],
-                        f"bandwidth/worker_{local_rank}_activation_send_mbps": act_send_metrics["bandwidth_mbps"],
-                        f"bandwidth/worker_{local_rank}_gradient_send_mbps": grad_send_metrics["bandwidth_mbps"],
-                        f"data_size/worker_{local_rank}_activation_recv_mb": act_recv_metrics["avg_size_mb"],
-                        f"data_size/worker_{local_rank}_activation_send_mb": act_send_metrics["avg_size_mb"],
-                        f"data_size/worker_{local_rank}_gradient_send_mb": grad_send_metrics["avg_size_mb"],
-                        "step": step,
-                        "epoch": epoch + 1,
-                    })
-                
+
+                    wandb.log(
+                        {
+                            f"bandwidth/worker_{local_rank}_activation_recv_mbps": act_recv_metrics[
+                                "bandwidth_mbps"
+                            ],
+                            f"bandwidth/worker_{local_rank}_activation_send_mbps": act_send_metrics[
+                                "bandwidth_mbps"
+                            ],
+                            f"bandwidth/worker_{local_rank}_gradient_send_mbps": grad_send_metrics[
+                                "bandwidth_mbps"
+                            ],
+                            f"data_size/worker_{local_rank}_activation_recv_mb": act_recv_metrics[
+                                "avg_size_mb"
+                            ],
+                            f"data_size/worker_{local_rank}_activation_send_mb": act_send_metrics[
+                                "avg_size_mb"
+                            ],
+                            f"data_size/worker_{local_rank}_gradient_send_mb": grad_send_metrics[
+                                "avg_size_mb"
+                            ],
+                            "step": step,
+                            "epoch": epoch + 1,
+                        }
+                    )
+
                     logger.info(
                         f"[Worker {local_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps | "
@@ -685,6 +703,6 @@ def run_modelparallelism_worker(
 
     # Close epoch progress bar
     epoch_pbar.close()
-    
+
     sock.close()
     logger.info("Worker training completed and connection closed.")
