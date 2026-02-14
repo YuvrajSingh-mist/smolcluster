@@ -15,7 +15,7 @@ export WANDB_API_KEY="$WANDB_API_TOKEN"
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_dp.yaml"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_classicdp.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
@@ -25,13 +25,13 @@ NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
 REGULAR_WORKERS=()
 while IFS= read -r worker; do
     [[ -n "$worker" ]] && REGULAR_WORKERS+=("$worker")
-done < <(yq '.pipelineTopology.workers.regular[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE")
+done < <(yq '.allToAllTopology.workers.regular[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE")
 
 # Read tablet workers (hostname and rank) - bash 3.2 compatible
 TABLET_WORKERS=()
 while IFS= read -r tablet; do
     [[ -n "$tablet" ]] && TABLET_WORKERS+=("$tablet")
-done < <(yq '.pipelineTopology.workers.tablets[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE")
+done < <(yq '.allToAllTopology.workers.tablets[] | .hostname + ":" + (.rank | tostring)' "$CONFIG_FILE" 2>/dev/null || true)
 
 # Extract just hostnames for SSH operations
 WORKERS=()
@@ -140,7 +140,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check if Promtail is installed on remote node
         PROMTAIL_FOUND=false
-        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || which promtail)" 2>/dev/null; then
+        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || which promtail)" ; then
             PROMTAIL_FOUND=true
         fi
         
@@ -148,7 +148,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
             # Kill any existing Promtail processes (cleanup old/broken instances)
             echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
             ssh "$node" "pkill -f promtail" || true
-            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log 2>/dev/null; rm -f /tmp/promtail-positions.yaml /tmp/positions.yaml" || true
+            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log ; rm -f /tmp/promtail-positions.yaml /tmp/positions.yaml" || true
             ssh "$node" "mkdir -p /tmp/smolcluster-logs"
             sleep 1
             
@@ -197,37 +197,43 @@ echo "All nodes: ${ALL_NODES[*]}"
 # Start logging infrastructure on controller (this machine)
 echo ""
 echo "📈 Starting logging infrastructure on controller..."
-if [[ -f "$PROJECT_DIR/logging/docker-compose.yml" ]]; then
-    if docker ps | grep -q loki; then
-        echo "🧹 Cleaning up old logs from Loki..."
-        # Stop Loki, remove volumes (deletes old data), then restart
-        (cd "$PROJECT_DIR/logging" && docker-compose down loki && docker volume rm logging_loki-data || true)
-        (cd "$PROJECT_DIR/logging" && docker-compose up -d loki)
-        sleep 3
-        if curl -s http://localhost:3100/ready | grep -q "ready"; then
-            echo "✅ Loki restarted with fresh database"
+if command -v docker &> /dev/null && [[ -f "$PROJECT_DIR/logging/docker-compose.yml" ]]; then
+    # Check if Docker daemon is running
+    if docker info &> /dev/null; then
+        if docker ps  | grep -q loki; then
+            echo "🧹 Cleaning up old logs from Loki..."
+            # Stop Loki, remove volumes (deletes old data), then restart
+            (cd "$PROJECT_DIR/logging" && docker compose down loki  && docker volume rm logging_loki-data  || true)
+            (cd "$PROJECT_DIR/logging" && docker compose up -d loki )
+            sleep 3
+            if curl -s http://localhost:3100/ready  | grep -q "ready"; then
+                echo "✅ Loki restarted with fresh database"
+            else
+                echo "⚠️  Loki may not be ready yet, but continuing..."
+            fi
+            
+            # Ensure Grafana is also running
+            if ! docker ps  | grep -q grafana; then
+                (cd "$PROJECT_DIR/logging" && docker compose up -d grafana )
+                echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
+            fi
         else
-            echo "⚠️  Loki may not be ready yet, but continuing..."
-        fi
-        
-        # Ensure Grafana is also running
-        if ! docker ps | grep -q grafana; then
-            (cd "$PROJECT_DIR/logging" && docker-compose up -d grafana)
-            echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
+            echo "🚀 Starting Loki + Grafana..."
+            (cd "$PROJECT_DIR/logging" && docker compose up -d )
+            sleep 3
+            if curl -s http://localhost:3100/ready  | grep -q "ready"; then
+                echo "✅ Loki ready at http://localhost:3100"
+                echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
+            else
+                echo "⚠️  Loki may not be ready yet, but continuing..."
+            fi
         fi
     else
-        echo "🚀 Starting Loki + Grafana..."
-        (cd "$PROJECT_DIR/logging" && docker-compose up -d)
-        sleep 3
-        if curl -s http://localhost:3100/ready | grep -q "ready"; then
-            echo "✅ Loki ready at http://localhost:3100"
-            echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
-        else
-            echo "⚠️  Loki may not be ready yet, but continuing..."
-        fi
+        echo "⚠️  Docker daemon not running. Skipping centralized logging setup."
+        echo "   Start Docker Desktop to enable Grafana/Loki logging."
     fi
 else
-    echo "⚠️  Logging not configured (logging/docker-compose.yml not found)"
+    echo "⚠️  Docker not available or logging not configured. Skipping centralized logging."
 fi
 
 # Function to launch on a node

@@ -307,8 +307,9 @@ def run_worker(
     if isinstance(port_config, dict):
         # For mp_pipeline and classicdp, get worker rank 0's hostname; for others, use server
         if algorithm in ["mp_pipeline", "classicdp"]:
-            # For pipeline/ring topology, require pipelineTopology config structure
-            workers_list = cluster_config["pipelineTopology"]["workers"]["regular"]
+            # For different topologies based on algorithm
+            topology_key = "pipelineTopology" if algorithm == "mp_pipeline" else "allToAllTopology"
+            workers_list = cluster_config[topology_key]["workers"]["regular"]
             coordinator_hostname = next(
                 w["hostname"] for w in workers_list if w["rank"] == 0
             )
