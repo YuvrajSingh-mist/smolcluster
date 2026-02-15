@@ -34,6 +34,12 @@ buffer_size:
 track_network_metrics: true  # Enable bandwidth, latency, buffer usage tracking
 metrics_log_interval: 50  # Log network metrics every N steps
 
+# Bounded staleness for gradient synchronization
+# Allows workers to be at different steps within a bounded window
+# Set to 0 to disable (strict synchronous training)
+# Set to K > 0 to allow workers to be K steps apart (enables bounded async training)
+staleness_bound: 5  # Allow gradients within K steps (default: 5, set to 0 for strict sync)
+
 
 # Timeout for gradient collection
 timeout: 0.1  # How long server waits for gradients (seconds)

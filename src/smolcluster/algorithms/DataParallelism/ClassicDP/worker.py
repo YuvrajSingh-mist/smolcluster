@@ -164,10 +164,11 @@ logger = None  # Will be set in run_modelparallelism_pipeline_worker
 def handle_worker(
     conn: socket.socket,
     addr: tuple[str, int],
+    workers: dict,
     grads_received: dict,
+    reduced_grads_received: dict,
     step_event: threading.Event,
     lock: threading.Lock,
-    model: torch.nn.Module = None,
 ) -> None:
     """Handle individual worker connections and gradient reception."""
     logger.info(f"Handling worker at {addr}")
@@ -202,17 +203,19 @@ def handle_worker(
                 step_event.set()
 
             elif command == "scatter_reduce":
-                assert step == recv_step, (
-                    f"Step mismatch: expected {step}, got {recv_step}"
-                )
                 logger.info(
                     f"[Step {recv_step}] Received reduced gradients from worker {rank}"
                 )
-                set_gradients(grads, model)
-
-                logger.info(
-                    f"[Step {recv_step}] Applied reduced gradients from worker {rank} to server model"
-                )
+                
+                # Buffer gradients by step - handle out-of-order delivery
+                with lock:
+                    reduced_grads_received[recv_step][rank] = grads
+                    logger.info(
+                        f"[Step {recv_step}] Buffered reduced gradients from worker {rank}. "
+                        f"Now have {len(reduced_grads_received[recv_step])} reduced gradient sets for this step"
+                    )
+                
+                step_event.set()
 
             elif command == "down":
                 logger.info(f"Worker {addr} requested shutdown")
@@ -231,6 +234,7 @@ def accept_workers(
     workers: dict,
     model_name: str,
     grads_received: dict,
+    reduced_grads_received: dict,
     step_event: threading.Event,
     lock: threading.Lock,
     model: torch.nn.Module = None,
@@ -262,10 +266,12 @@ def accept_workers(
                     args=(
                         client_socket,
                         client_address,
+                        workers,
                         grads_received,
+                        reduced_grads_received,
                         step_event,
                         lock,
-                        model,
+                    
                     ),
                     daemon=True,
                 ).start()
@@ -333,8 +339,14 @@ def run_classicdp_worker(
     decoder_type_ppl = config.get("decoder_type", {}).get("ppl", False)
     learning_rate = config["learning_rate"]
     grad_clip_norm = config.get("grad_clip_norm", 0.0)
+    staleness_bound = cluster_config.get("staleness_bound", 0)  # 0 = strict sync, >0 = bounded async
     cluster_config["num_workers"]
     NUM_WORKERS = cluster_config["num_workers"]
+    
+    if staleness_bound > 0:
+        logger.info(f"Bounded staleness enabled: staleness_bound={staleness_bound}")
+    else:
+        logger.info("Strict synchronous training enabled (staleness_bound=0)")
 
     # Checkpoint configuration
     save_checkpoints = config.get("save_checkpoints", True)
@@ -371,6 +383,15 @@ def run_classicdp_worker(
     workers = {}
     outbound_worker_sockets = {}
     grads_received = defaultdict(dict)
+    reduced_grads_received = defaultdict(dict)  # Buffer for scatter-reduce gradients
+    
+    # Staleness tracking (only if staleness_bound > 0)
+    staleness_stats = {
+        "all_gather_step_diffs": [],  # Track step differences for all_gather gradients
+        "scatter_reduce_step_diffs": [],  # Track step differences for scatter_reduce gradients
+        "stale_gradient_count": 0,  # Count of gradients with step_diff > 0
+        "max_step_diff": 0,  # Maximum step difference observed
+    }
 
     # Gradient clipping
     if grad_clip_norm > 0.0:
@@ -516,15 +537,17 @@ def run_classicdp_worker(
         workers=workers,
         model_name="",
         grads_received=grads_received,
+        reduced_grads_received=reduced_grads_received,
         step_event=step_event,
-        lock=lock,
-        model=model,
+        lock=lock
     )
 
     logger.info(f"All workers connected. Starting training for {num_epochs} epochs.")
 
     for epoch in range(start_epoch, num_epochs):
         total_loss = 0.0
+        val_loss = None #to make the ckpt manager happy at the end of the epoch when it tries to save the checkpoint and log the val_loss in the metadata
+        
         model.train()
 
         global step  # Declare step as global to modify the global step counter
@@ -609,8 +632,31 @@ def run_classicdp_worker(
                     f"[Step {step}] Worker {worker_rank} sent gradients to worker {peer_rank}"
                 )
             # Wait for all workers (all gather) to send their gradients for this step
+            # Check for staleness violations and clean up stale gradients (only if staleness_bound > 0)
             while True:
                 with lock:
+                    # Only check staleness if bounded async is enabled
+                    if staleness_bound > 0:
+                        for recv_step in list(grads_received.keys()):
+                            step_diff = abs(recv_step - step)
+                            
+                            # Track staleness statistics
+                            staleness_stats["all_gather_step_diffs"].append(step_diff)
+                            staleness_stats["max_step_diff"] = max(
+                                staleness_stats["max_step_diff"], step_diff
+                            )
+                            if step_diff > 0:
+                                staleness_stats["stale_gradient_count"] += 1
+                            
+                            if step_diff > staleness_bound:
+                                logger.error(
+                                    f"[Step {step}] STALENESS VIOLATION: Received gradient from step {recv_step} "
+                                    f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                                )
+                                raise RuntimeError(
+                                    f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
+                                )
+                    
                     curr_workers_len = len(grads_received[step])
 
                 logger.info(
@@ -618,7 +664,7 @@ def run_classicdp_worker(
                 )
                 if curr_workers_len < NUM_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")
-                    step_event.wait()
+                    step_event.wait(timeout=1.0)
                     step_event.clear()
                 else:
                     break
@@ -655,6 +701,45 @@ def run_classicdp_worker(
                     f"[Step {step}] Worker {worker_rank} scatter-reduce complete"
                 )
 
+                # Wait for reduced gradients from all peers (for learning - shows full all-reduce flow)
+                logger.info(f"[Step {step}] Worker {worker_rank} waiting for reduced gradients from peers...")
+                while True:
+                    with lock:
+                        # Only check staleness if bounded async is enabled
+                        if staleness_bound > 0:
+                            for recv_step in list(reduced_grads_received.keys()):
+                                step_diff = abs(recv_step - step)
+                                
+                                # Track staleness statistics
+                                staleness_stats["scatter_reduce_step_diffs"].append(step_diff)
+                                staleness_stats["max_step_diff"] = max(
+                                    staleness_stats["max_step_diff"], step_diff
+                                )
+                                if step_diff > 0:
+                                    staleness_stats["stale_gradient_count"] += 1
+                                
+                                if step_diff > staleness_bound:
+                                    logger.error(
+                                        f"[Step {step}] STALENESS VIOLATION in scatter-reduce: Received gradient from step {recv_step} "
+                                        f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                                    )
+                                    raise RuntimeError(
+                                        f"Staleness bound violated in scatter-reduce: step difference {step_diff} exceeds bound {staleness_bound}"
+                                    )
+                        
+                        curr_reduced_len = len(reduced_grads_received[step])
+                    
+                    logger.info(
+                        f"[Step {step}] Worker {worker_rank} received {curr_reduced_len}/{NUM_WORKERS - 1} reduced gradient sets"
+                    )
+                    
+                    if curr_reduced_len >= NUM_WORKERS - 1:
+                        logger.info(f"[Step {step}] Worker {worker_rank} received all reduced gradients")
+                        break
+                    
+                    step_event.wait(timeout=1.0)
+                    step_event.clear()
+
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} applying averaged gradients to local model"
                 )
@@ -665,8 +750,22 @@ def run_classicdp_worker(
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} model updated with averaged gradients"
                 )
-
-                # Cleanup
+                
+                # Cleanup old gradients beyond staleness window to free memory (only if staleness_bound > 0)
+                if staleness_bound > 0:
+                    with lock:
+                        for old_step in list(reduced_grads_received.keys()):
+                            if old_step < step - staleness_bound:
+                                logger.info(f"[Step {step}] Cleaning up stale reduced gradients from step {old_step}")
+                                reduced_grads_received.pop(old_step, None)
+                        
+                        for old_step in list(grads_received.keys()):
+                            if old_step < step - staleness_bound:
+                                logger.info(f"[Step {step}] Cleaning up stale all-gather gradients from step {old_step}")
+                                grads_received.pop(old_step, None)
+                
+                # Cleanup current step gradients
+                reduced_grads_received.pop(step, None)
                 grads_received.pop(step, None)
                 del grads_reduced, local_grads
                 gc.collect()
@@ -700,14 +799,44 @@ def run_classicdp_worker(
             batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step})
 
             # Log training metrics
-            wandb.log(
-                {
-                    "step": step,
-                    "epoch": epoch + 1,
-                    "lr": current_lr,
-                    "batch_size": batch_size,
-                }
-            )
+            wandb_metrics = {
+                "step": step,
+                "epoch": epoch + 1,
+                "lr": current_lr,
+                "batch_size": batch_size,
+            }
+            
+            # Log staleness metrics if bounded async is enabled and we have data
+            if staleness_bound > 0 and step % metrics_log_interval == 0:
+                with lock:
+                    if staleness_stats["all_gather_step_diffs"]:
+                        avg_all_gather_diff = sum(staleness_stats["all_gather_step_diffs"]) / len(
+                            staleness_stats["all_gather_step_diffs"]
+                        )
+                        wandb_metrics[f"staleness/worker_{worker_rank}_all_gather_avg_step_diff"] = avg_all_gather_diff
+                    
+                    if staleness_stats["scatter_reduce_step_diffs"]:
+                        avg_scatter_diff = sum(staleness_stats["scatter_reduce_step_diffs"]) / len(
+                            staleness_stats["scatter_reduce_step_diffs"]
+                        )
+                        wandb_metrics[f"staleness/worker_{worker_rank}_scatter_reduce_avg_step_diff"] = avg_scatter_diff
+                    
+                    wandb_metrics[f"staleness/worker_{worker_rank}_max_step_diff"] = staleness_stats["max_step_diff"]
+                    wandb_metrics[f"staleness/worker_{worker_rank}_stale_gradient_count"] = staleness_stats["stale_gradient_count"]
+                    wandb_metrics[f"staleness/worker_{worker_rank}_staleness_bound"] = staleness_bound
+                    
+                    # Reset stats for next interval
+                    staleness_stats["all_gather_step_diffs"] = []
+                    staleness_stats["scatter_reduce_step_diffs"] = []
+                    staleness_stats["stale_gradient_count"] = 0
+                    # Keep max_step_diff as cumulative max
+                    
+                    logger.info(
+                        f"[Step {step}] Staleness stats - Max diff: {staleness_stats['max_step_diff']}, "
+                        f"Stale grads in interval: {staleness_stats['stale_gradient_count']}"
+                    )
+            
+            wandb.log(wandb_metrics)
 
             # Log gradient norms if tracking enabled
             if track_gradients:
@@ -756,7 +885,7 @@ def run_classicdp_worker(
                     )
 
             # Evaluation
-            if step % eval_steps == 0 and worker_rank == 0:
+            if step % eval_steps == 0:
                 val_loss, val_ppl = evaluate(
                     device,
                     model,
