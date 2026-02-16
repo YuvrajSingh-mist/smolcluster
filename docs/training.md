@@ -227,19 +227,6 @@ tmux attach -t mp_server  # Check server logs
 
 ### Training Issues
 
-**Gradients exploding:**
-```yaml
-# nn_config.yaml or gpt_config.yaml
-gradient_clipping:
-  enabled: true
-  max_norm: 1.0
-```
-
-**Loss not decreasing:**
-- Reduce learning rate: `--override training.learning_rate=1e-4`
-- Increase batch size: `--override training.batch_size=64`
-- Check data loading: Verify dataset partitioning is correct
-
 **SyncPS stragglers:**
 ```yaml
 # cluster_config_syncps.yaml
@@ -250,46 +237,4 @@ timeout: 1.0  # Increase timeout for slow workers
 ```yaml
 # cluster_config_edp.yaml
 worker_update_interval: 5  # Decrease interval for fresher weights
-```
-
-### W&B Issues
-
-**Authentication:**
-```bash
-# Set API key
-export WANDB_API_KEY=your_api_key_here
-wandb login
-```
-
-**Offline mode:**
-```bash
-export WANDB_MODE=offline
-```
-
-**Missing metrics:**
-- Check `track_gradients: true` in config for gradient norms
-- Verify network connectivity to wandb.ai
-- Review W&B run names match expected format
-
-### Memory Issues
-
-**Out of memory errors:**
-- Reduce batch size
-- Enable gradient checkpointing (for GPT)
-- Use model parallelism for large models
-- Reduce model dimensions
-
-### Performance Optimization
-
-**Slow training:**
-- Use Model Parallelism for large models
-- Enable gradient quantization (EDP only)
-- Reduce `eval_steps` frequency
-- Increase `worker_update_interval` (EDP)
-- Optimize network topology (use Thunderbolt for high-bandwidth links)
-
-**Network bottleneck:**
-```yaml
-# cluster_config_edp.yaml
-use_quantization: true  # Enable 8-bit gradient compression
 ```
