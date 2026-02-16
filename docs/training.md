@@ -57,19 +57,6 @@ bash scripts/inference/launch_mp_inference.sh
 bash scripts/inference/launch_api.sh
 ```
 
-## Algorithm Comparison
-
-| Feature | EDP | SyncPS | Model Parallelism |
-|---------|-----|--------|-------------------|
-| **Synchronization** | Asynchronous | Synchronous | Sequential |
-| **Gradient Staleness** | Tolerates stale | Fresh only | N/A |
-| **Barrier Points** | None | Every step | Per layer |
-| **Throughput** | Highest | Medium | Lowest |
-| **Convergence** | Slower | Faster | N/A (inference) |
-| **Fault Tolerance** | Best | Good | Poor |
-| **Memory Efficiency** | Low | Low | High |
-| **Network Efficiency** | Quantization supported | Raw gradients | Activations only |
-
 ## How Each Algorithm Works
 
 ### EDP (Elastic Distributed Parallelism)
