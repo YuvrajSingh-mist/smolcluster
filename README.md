@@ -6,7 +6,7 @@ A distributed deep learning library for training neural networks across heteroge
 
 ## Features
 
-- **Distributed Training Algorithms**: Elastic Distributed Parallelism (EDP), Synchronous Parameter Server (SyncPS), and Model Parallelism
+- **Distributed Training Algorithms**: Classic Data Parallelism (All-Reduce), Elastic Distributed Parallelism (EDP), Synchronous Parameter Server (SyncPS), and Model Parallelism
 - **Heterogeneous Hardware**: Mac minis, Raspberry Pis, MacBooks, and Windows machines
 - **Model Support**: MNIST, GPT-2, and custom neural networks
 - **Distributed Inference**: Model parallelism with streaming token generation
@@ -42,6 +42,19 @@ bash scripts/launch_edp_train_gpt.sh
 - **[Inference Guide](docs/inference.md)** - Model parallelism inference
 
 ## Training Algorithms
+
+### Classic Data Parallelism (ClassicDP)
+All-Reduce based data parallelism with bounded staleness. Best for balanced clusters with moderate network latency.
+
+```bash
+bash scripts/launch_dp_train_gpt.sh
+```
+
+**Features:**
+- All-to-all gradient averaging (ring all-reduce)
+- Configurable bounded staleness (0 = strict sync, K > 0 = async up to K steps)
+- Real-time staleness monitoring via WandB
+- Automatic stale gradient cleanup
 
 ### Elastic Distributed Parallelism (EDP)
 Asynchronous data parallelism with stale gradient tolerance. Best for heterogeneous clusters.
@@ -97,7 +110,9 @@ smolcluster/
 │   ├── algorithms/
 │   │   ├── EDP/                    # Elastic Distributed Parallelism
 │   │   ├── DataParallelism/        # Data Parallelism implementations
+│   │   │   ├── ClassicDP/          # Classic All-Reduce Data Parallelism
 │   │   │   └── SynchronousPS/      # Synchronous Parameter Server
+│   │   ├── FSDP/                   # Fully Sharded Data Parallelism
 │   │   ├── ModelParallelism/       # Model Parallelism
 │   │   └── ModelParallelismPipeline/  # Pipeline Model Parallelism
 │   ├── models/                     # Neural network models

@@ -775,19 +775,6 @@ def run_classicdp_worker(
                 )
                 del local_grads
 
-            # Apply gradient clipping
-            if grad_clip_norm > 0.0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), grad_clip_norm
-                )
-                if step % 100 == 0:  # Log occasionally to avoid spam
-                    logger.info(
-                        f"[Step {step}] Gradient norm before clipping: {grad_norm:.4f}"
-                    )
-
-            # Apply gradients
-            optimizer.step()
-
             # Step the scheduler after optimizer
             if scheduler is not None:
                 scheduler.step()

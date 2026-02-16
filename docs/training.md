@@ -2,7 +2,34 @@
 
 ## Training Algorithms
 
-SmolCluster implements three distributed training paradigms:
+SmolCluster implements multiple distributed training paradigms:
+
+### Classic Data Parallelism (ClassicDP)
+
+**All-Reduce based data parallelism with bounded staleness**
+
+- All-to-all gradient communication (ring all-reduce topology)
+- Workers exchange gradients directly (no parameter server)
+- Configurable staleness bound for async flexibility
+- Real-time staleness metrics tracked in WandB
+- Automatic cleanup of stale gradients beyond bound
+
+**Best for:** Balanced clusters, moderate network latency, fine-grained async control
+
+**Launch:**
+```bash
+bash scripts/launch_dp_train_gpt.sh
+```
+
+**Configuration:**
+```yaml
+# In cluster_config_classicdp.yaml
+staleness_bound: 5  # Allow workers to be 5 steps apart (0 = strict sync)
+```
+
+**Staleness Modes:**
+- `staleness_bound: 0` - Strict synchronous (all workers at same step)
+- `staleness_bound: K` - Bounded async (workers can drift up to K steps)
 
 ### Elastic Distributed Parallelism (EDP)
 
@@ -57,7 +84,46 @@ bash scripts/inference/launch_mp_inference.sh
 bash scripts/inference/launch_api.sh
 ```
 
+## Algorithm Comparison
+
+| Feature | ClassicDP | EDP | SyncPS | Model Parallelism |
+|---------|-----------|-----|--------|-------------------|
+| **Synchronization** | Configurable | Asynchronous | Synchronous | Sequential |
+| **Gradient Staleness** | Bounded (0 to K) | Tolerates stale | Fresh only | N/A |
+| **Barrier Points** | Optional | None | Every step | Per layer |
+| **Throughput** | High | Highest | Medium | Lowest |
+| **Convergence** | Fast | Slower | Fastest | N/A (inference) |
+| **Fault Tolerance** | Good | Best | Good | Poor |
+| **Memory Efficiency** | Low | Low | Low | High |
+| **Network Efficiency** | Direct all-reduce | Quantization supported | Raw gradients | Activations only |
+| **Communication** | All-to-all | Parameter server | Parameter server | Sequential |
+| **Staleness Monitoring** | WandB metrics | None | None | N/A |
+
 ## How Each Algorithm Works
+
+### ClassicDP (Classic Data Parallelism)
+
+1. **All-to-All Topology Setup**: Workers form a fully connected graph
+2. **Local Gradient Computation**: Each worker computes gradients on its data shard
+3. **All-Gather Phase**:
+   - Each worker broadcasts its gradients to all peers
+   - Workers buffer incoming gradients by step number
+   - Staleness check: reject gradients beyond bound (if configured)
+4. **Reduce Phase**:
+   - Workers average all received gradients
+   - Apply averaged gradients to local model
+5. **Scatter-Reduce Phase** (optional, for learning):
+   - Workers broadcast averaged gradients back to peers
+   - Used for validation and monitoring
+6. **Staleness Tracking**:
+   - Track step differences for all received gradients
+   - Log to WandB: avg/max step diff, stale gradient count
+   - Auto-cleanup gradients beyond staleness window
+
+**Bounded Staleness:**
+- `staleness_bound = 0`: All workers must be at exact same step (strict sync)
+- `staleness_bound = K`: Workers can be up to K steps apart (bounded async)
+- Training stops if any gradient exceeds the bound
 
 ### EDP (Elastic Distributed Parallelism)
 
