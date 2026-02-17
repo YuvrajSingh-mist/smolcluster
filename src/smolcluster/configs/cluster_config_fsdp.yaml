@@ -34,6 +34,11 @@ buffer_size:
 track_network_metrics: true  # Enable bandwidth, latency, buffer usage tracking
 metrics_log_interval: 50  # Log network metrics every N steps
 
+# FSDP stage selection
+# stage: 0 - ZeRO Stage 0 (optimizer state sharding)
+# stage: 1 - ZeRO Stage 1 (optimizer state partitioning)
+fsdp_stage: 1  # 0 for all-reduce, 1 for ZeRO Stage 1 optimizer partitioning
+
 # Bounded staleness for gradient synchronization
 # Allows workers to be at different steps within a bounded window
 # Set to 0 to disable (strict synchronous training)

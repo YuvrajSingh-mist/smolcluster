@@ -74,7 +74,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "🚀 SmolCluster Launch Script - FSDP (ZeRO Stage 1)"
+# Read FSDP stage from config
+FSDP_STAGE=$(yq '.fsdp_stage // 1' "$CONFIG_FILE")
+FSDP_STAGE_NAME="All-Reduce"
+if [[ $FSDP_STAGE -eq 1 ]]; then
+    FSDP_STAGE_NAME="ZeRO Stage 1 (Optimizer Partitioning)"
+fi
+
+echo "🚀 SmolCluster Launch Script - FSDP Stage $FSDP_STAGE ($FSDP_STAGE_NAME)"
 echo "📁 Project dir: $PROJECT_DIR"
 echo "⚙️  Config file: $CONFIG_FILE"
 
