@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import List, Tuple
 
 import torch
 from safetensors import safe_open
@@ -158,7 +159,7 @@ def load_weights_per_node(
 
 def get_model_per_node(
     model, num_nodes: int, local_rank: int, total_layers: int
-) -> list:
+) -> Tuple[torch.nn.ModuleList, dict]:
     out_layers = {}
 
     assert local_rank < num_nodes, "Local rank must be less than number of nodes"

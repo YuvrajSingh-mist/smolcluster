@@ -3,7 +3,7 @@ import socket
 import struct
 import time
 from typing import Any, Optional
-
+from smolcluster.utils.layers import get_model_per_node    
 import torch
 
 
@@ -354,3 +354,59 @@ def get_weights(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     for name, param in model.named_parameters():
         weights[name] = torch.Tensor(param.data.detach().cpu().clone())
     return weights
+
+
+def set_weights_by_layer(
+    weights_received_dict: dict[int, dict[str, torch.Tensor]],
+    model: torch.nn.Module,
+    worker_rank: int,
+    num_nodes: int,
+    total_layers: int,
+) -> None:
+    """
+    Update model with received weights from other workers (ZeRO Stage 1).
+    Only updates parameters belonging to other workers (skips own rank).
+    
+    Args:
+        weights_received_dict: Dict of {rank: state_dict} received from other workers
+        model: Full model to update
+        worker_rank: This worker's rank
+        num_nodes: Number of nodes in cluster
+        total_layers: Total number of layers
+    """
+ 
+   
+    if not weights_received_dict:
+        return
+    
+    with torch.no_grad():
+        for rank, state_dict in weights_received_dict.items():
+            # Skip our own rank - we already updated these params via optimizer.step()
+            if rank == worker_rank:
+                continue
+            
+            sharded_model, out_layers  = get_model_per_node(
+                model=model,
+                num_nodes=num_nodes,
+                local_rank=worker_rank,
+                total_layers=total_layers,
+                    
+            )
+            model_layers = out_layers
+            owned_params = [p for module in model_layers.values() for p in module.parameters()]
+        
+            # Build set of parameter names owned by this rank
+            rank_param_names = set()
+            for name, param in model.named_parameters():
+                for layer_param in owned_params:
+                    if param is layer_param:
+                        rank_param_names.add(name)
+                        break
+            
+            # Copy this rank's owned parameters from their broadcast
+            for param_name in rank_param_names:
+                if param_name in state_dict:
+                    for name, param in model.named_parameters():
+                        if name == param_name:
+                            param.data.copy_(state_dict[param_name].to(param.device))
+                            break

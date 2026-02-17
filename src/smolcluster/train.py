@@ -35,6 +35,7 @@ from smolcluster.algorithms.ModelParallelismPipeline.worker import (
 from smolcluster.algorithms.DataParallelism.ClassicDP.worker import run_classicdp_worker
 from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
+from smolcluster.algorithms.FSDP.worker import run_fsdp_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.utils.device import get_device
@@ -195,6 +196,11 @@ def run_server(
             "❌ FATAL: classicdp algorithm does not use a server. Only launch workers."
         )
         sys.exit(1)
+    elif algorithm == "fsdp":
+        logger.error(
+            "❌ FATAL: fsdp algorithm does not use a server. Only launch workers."
+        )
+        sys.exit(1)
     
     logger.info(f"Starting {algo_name} server...")
     if algorithm == "edp":
@@ -292,11 +298,11 @@ def run_worker(
     seed = cluster_config.get("seed", 42)
     # For mp_pipeline and classicdp, world_size is just num_workers (no separate server)
     # For other algorithms, world_size includes server (num_workers + 1)
-    world_size = num_workers if algorithm in ["mp_pipeline", "classicdp"] else num_workers + 1
+    world_size = num_workers if algorithm in ["mp_pipeline", "classicdp", "fsdp"] else num_workers + 1
 
     # Get server connection info (only needed for algorithms with server)
     host_ip = None
-    if algorithm in ["mp_pipeline", "classicdp"]:
+    if algorithm in ["mp_pipeline", "classicdp", "fsdp"]:
         # Pipeline topology and ClassicDP don't use host_ip for server connection
         pass
     else:
@@ -306,7 +312,7 @@ def run_worker(
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
         # For mp_pipeline and classicdp, get worker rank 0's hostname; for others, use server
-        if algorithm in ["mp_pipeline", "classicdp"]:
+        if algorithm in ["mp_pipeline", "classicdp", "fsdp"]:
             # For different topologies based on algorithm
             topology_key = "pipelineTopology" if algorithm == "mp_pipeline" else "allToAllTopology"
             workers_list = cluster_config[topology_key]["workers"]["regular"]
@@ -453,6 +459,21 @@ def run_worker(
             port=port,
             resume_checkpoint_path=resume_checkpoint_path,
         )
+    elif algorithm == 'fsdp':
+        run_fsdp_worker(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=gpt_config,
+            cluster_config=cluster_config,
+            worker_rank=local_rank,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+            host_ip=host_ip,
+            port=port,
+            resume_checkpoint_path=resume_checkpoint_path,
+        )
     wandb.finish()
 
 
@@ -467,7 +488,7 @@ def main():
     parser.add_argument(
         "-a",
         "--algorithm",
-        choices=["edp", "syncps", "mp", "mp_pipeline", "classicdp"],
+        choices=["edp", "syncps", "mp", "mp_pipeline", "classicdp", "fsdp"],
         default="syncps",
         help="Training algorithm to use (default: syncps)",
     )
@@ -528,9 +549,9 @@ def main():
         sys.exit(1)
 
     # Validate algorithm
-    if algorithm not in ["edp", "syncps", "mp", "mp_pipeline", "classicdp"]:
+    if algorithm not in ["edp", "syncps", "mp", "mp_pipeline", "classicdp", "fsdp"]:
         print(
-            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', 'mp_pipeline', or 'classicdp'"
+            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', 'mp_pipeline', 'classicdp', or 'fsdp'"
         )
         sys.exit(1)
 
