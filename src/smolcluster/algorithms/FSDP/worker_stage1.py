@@ -443,13 +443,20 @@ def run_fsdp_worker(
     # ZeRO Stage 1: Create optimizer ONLY for this worker's owned layers
     # This partitions optimizer states (momentum, variance) across workers
     # Each worker only updates its owned parameters during optimizer.step()
-    # Full model is synchronized via all-gather after each step
-    # Collect all parameters from the dict of modules
-    owned_params = [p for module in model_layers.values() for p in module.parameters()]
-    optimizer = torch.optim.AdamW(owned_params, lr=learning_rate)
+    # Full model is synchronized via broadcast after each step
+    # Build dict of owned parameters: {param_name: param_tensor}
+    # Since dicts are mutable and optimizer modifies tensors in-place,
+    # this dict will always have updated values after optimizer.step()
+    owned_params_dict = {}
+    for layer_name, module in model_layers.items():
+        for param_name, param in module.named_parameters():
+            full_param_name = f"{layer_name}.{param_name}"
+            owned_params_dict[full_param_name] = param
+    
+    optimizer = torch.optim.AdamW(owned_params_dict.values(), lr=learning_rate)
     logger.info(
         f"Created ZeRO Stage 1 optimizer for worker rank {worker_rank} with lr={learning_rate} "
-        f"managing {len(owned_params)} parameter tensors"
+        f"managing {len(owned_params_dict)} parameter tensors"
     )
 
     
@@ -648,7 +655,8 @@ def run_fsdp_worker(
                 f"[Step {step} / {num_epochs * len(train_loader)}] Worker {worker_rank} loss: {local_loss.item():.4f}"
             )
             train_ppl = math.exp(local_loss.item())
-
+            split_grads = torch.chunk(list(local_grads.values()), NUM_WORKERS)  # Split grads by num workers
+            
             wandb.log(
                 {
                     "step": step,
@@ -665,19 +673,7 @@ def run_fsdp_worker(
                 "Performing all-gather: broadcasting local gradients to all peers"
             )
 
-            for peer_rank, peer_socket in outbound_worker_sockets.items():
-                send_message(
-                    peer_socket,
-                    (
-                        "all_gather",
-                        step,
-                        worker_rank,
-                        local_grads,
-                    ),
-                )
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} sent gradients to worker {peer_rank}"
-                )
+            
             # Wait for all workers (all gather) to send their gradients for this step
             # Check for staleness violations and clean up stale gradients (only if staleness_bound > 0)
             while True:
@@ -801,7 +797,17 @@ def run_fsdp_worker(
                 
                 logger.info(f"[Step {step}] Starting broadcasting weights to all peers after local update")
                 
-                # broadcast  weights to all peers via outbound connections
+                # ZeRO Stage 1 optimization: Only broadcast parameters this worker owns/updated
+                # owned_params_dict already has updated values (optimizer modified tensors in-place)
+                # Just move to CPU and clone for network transmission
+                owned_state_dict = {
+                    name: param.data.cpu().clone() 
+                    for name, param in owned_params_dict.items()
+                }
+                
+                logger.info(f"[Step {step}] Broadcasting {len(owned_state_dict)} owned parameters (reduced from full state_dict)")
+                
+                # broadcast owned weights to all peers via outbound connections
                 for peer_rank, peer_socket in outbound_worker_sockets.items():
                     send_message(
                         peer_socket,
@@ -809,11 +815,11 @@ def run_fsdp_worker(
                             "broadcast_weights",
                             step,
                             worker_rank,
-                            model.state_dict(),
+                            owned_state_dict,
                         ),
                     )
                     logger.info(
-                        f"[Step {step}] Worker {worker_rank} sent averaged weights to worker {peer_rank}"
+                        f"[Step {step}] Worker {worker_rank} sent owned weights to worker {peer_rank}"
                     )
 
                 logger.info(
@@ -866,9 +872,7 @@ def run_fsdp_worker(
                 set_weights_by_layer(
                     weights_received[step],
                     model,
-                    worker_rank,
-                    num_nodes,
-                    num_layers,
+                    worker_rank
                 )
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} merged weights from all workers"
@@ -884,6 +888,17 @@ def run_fsdp_worker(
                             if old_step < step - staleness_bound:
                                 logger.info(f"[Step {step}] Cleaning up stale reduced gradients from step {old_step}")
                                 reduced_grads_received.pop(old_step, None)
+                        
+                        for old_step in list(grads_received.keys()):
+                            if old_step < step - staleness_bound:
+                                logger.info(f"[Step {step}] Cleaning up stale all-gather gradients from step {old_step}")
+                                grads_received.pop(old_step, None)
+                                
+                                
+                        for old_step in list(weights_received.keys()):
+                            if old_step < step - staleness_bound:
+                                logger.info(f"[Step {step}] Cleaning up stale weights from step {old_step}")
+                                weights_received.pop(old_step, None)
                         
                         for old_step in list(grads_received.keys()):
                             if old_step < step - staleness_bound:

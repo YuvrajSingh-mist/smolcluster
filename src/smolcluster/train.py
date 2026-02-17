@@ -35,7 +35,7 @@ from smolcluster.algorithms.ModelParallelismPipeline.worker import (
 from smolcluster.algorithms.DataParallelism.ClassicDP.worker import run_classicdp_worker
 from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
-from smolcluster.algorithms.FSDP.worker import run_fsdp_worker
+from smolcluster.algorithms.FSDP.worker_stage0 import run_fsdp_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.utils.device import get_device
