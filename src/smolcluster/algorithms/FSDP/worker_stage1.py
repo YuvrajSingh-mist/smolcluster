@@ -190,7 +190,7 @@ def handle_worker(
 
             command, recv_step, rank, data = message
 
-            if command == "scatter_reduce":
+            if command == "all_reduce":
                 logger.info(
                     f"Received message '{command}' from worker {addr} (rank {rank}) for step {recv_step}"
                 )
@@ -394,7 +394,7 @@ def run_fsdp_worker(
     
     # Staleness tracking (only if staleness_bound > 0)
     staleness_stats = {
-        "scatter_reduce_step_diffs": [],  # Track step differences for scatter_reduce gradients
+        "all_reduce_step_diffs": [],  # Track step differences for all_reduce gradients
         "stale_gradient_count": 0,  # Count of gradients with step_diff > 0
         "max_step_diff": 0,  # Maximum step difference observed
         "broadcast_weights_step_diffs": [],  # Track step differences for broadcast weights
@@ -679,7 +679,7 @@ def run_fsdp_worker(
                 send_message(
                     peer_socket,
                     (
-                        "scatter_reduce",
+                        "all_reduce",
                         step,
                         worker_rank,
                         grads_split,
@@ -699,7 +699,7 @@ def run_fsdp_worker(
                             step_diff = abs(recv_step - step)
                             
                             # Track staleness statistics
-                            staleness_stats["scatter_reduce_step_diffs"].append(step_diff)
+                            staleness_stats["all_reduce_step_diffs"].append(step_diff)
                             staleness_stats["max_step_diff"] = max(
                                 staleness_stats["max_step_diff"], step_diff
                             )
@@ -739,64 +739,6 @@ def run_fsdp_worker(
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} averaged gradients successfully"
                 )
-
-                # # Scatter-reduce: broadcast averaged gradients to all peers via outbound connections
-                # for peer_rank, peer_socket in outbound_worker_sockets.items():
-                #     send_message(
-                #         peer_socket,
-                #         (
-                #             "scatter_reduce",
-                #             step,
-                #             worker_rank,
-                #             grads_reduced,
-                #         ),
-                #     )
-                #     logger.info(
-                #         f"[Step {step}] Worker {worker_rank} sent averaged gradients to worker {peer_rank}"
-                #     )
-
-                # logger.info(
-                #     f"[Step {step}] Worker {worker_rank} scatter-reduce complete"
-                # )
-
-                # # Wait for reduced gradients from all peers (for learning - shows full all-reduce flow)
-                # logger.info(f"[Step {step}] Worker {worker_rank} waiting for reduced gradients from peers...")
-                # while True:
-                #     with lock:
-                #         # Only check staleness if bounded async is enabled
-                #         if staleness_bound > 0:
-                #             for recv_step in list(reduced_grads_received.keys()):
-                #                 step_diff = abs(recv_step - step)
-                                
-                #                 # Track staleness statistics
-                #                 staleness_stats["scatter_reduce_step_diffs"].append(step_diff)
-                #                 staleness_stats["max_step_diff"] = max(
-                #                     staleness_stats["max_step_diff"], step_diff
-                #                 )
-                #                 if step_diff > 0:
-                #                     staleness_stats["stale_gradient_count"] += 1
-                                
-                #                 if step_diff > staleness_bound:
-                #                     logger.error(
-                #                         f"[Step {step}] STALENESS VIOLATION in scatter-reduce: Received gradient from step {recv_step} "
-                #                         f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
-                #                     )
-                #                     raise RuntimeError(
-                #                         f"Staleness bound violated in scatter-reduce: step difference {step_diff} exceeds bound {staleness_bound}"
-                #                     )
-                        
-                #         curr_reduced_len = len(reduced_grads_received[step])
-                    
-                #     logger.info(
-                #         f"[Step {step}] Worker {worker_rank} received {curr_reduced_len}/{NUM_WORKERS - 1} reduced gradient sets"
-                #     )
-                    
-                #     if curr_reduced_len >= NUM_WORKERS - 1:
-                #         logger.info(f"[Step {step}] Worker {worker_rank} received all reduced gradients")
-                #         break
-                    
-                #     step_event.wait()
-                #     step_event.clear()
 
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} applying averaged gradients to local model"
@@ -962,11 +904,11 @@ def run_fsdp_worker(
             # Log staleness metrics if bounded async is enabled and we have data
             if staleness_bound > 0 and step % metrics_log_interval == 0:
                 with lock:
-                    if staleness_stats["scatter_reduce_step_diffs"]:
-                        avg_scatter_reduce_diff = sum(staleness_stats["scatter_reduce_step_diffs"]) / len(
-                            staleness_stats["scatter_reduce_step_diffs"]
+                    if staleness_stats["all_reduce_step_diffs"]:
+                        avg_all_reduce_diff = sum(staleness_stats["all_reduce_step_diffs"]) / len(
+                            staleness_stats["all_reduce_step_diffs"]
                         )
-                        wandb_metrics[f"staleness/worker_{worker_rank}_scatter_reduce_avg_step_diff"] = avg_scatter_reduce_diff
+                        wandb_metrics[f"staleness/worker_{worker_rank}_all_reduce_avg_step_diff"] = avg_all_reduce_diff
                     
                  
                     if staleness_stats["broadcast_weights_step_diffs"]:
@@ -982,7 +924,7 @@ def run_fsdp_worker(
                     
                     # Reset stats for next interval
                    
-                    staleness_stats["scatter_reduce_step_diffs"] = []
+                    staleness_stats["all_reduce_step_diffs"] = []
                     staleness_stats["broadcast_weights_step_diffs"] = []
                     staleness_stats["stale_gradient_count"] = 0
                     staleness_stats["stale_weight_count"] = 0

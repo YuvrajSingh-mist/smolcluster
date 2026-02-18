@@ -205,7 +205,7 @@ def handle_worker(
                 # reduced_grads = reduce(grads_received[recv_step], len(grads_received[recv_step]))
                 step_event.set()
 
-            elif command == "scatter_reduce":
+            elif command == "all_reduce":
                 logger.info(
                     f"[Step {recv_step}] Received reduced gradients from worker {rank}"
                 )
@@ -409,7 +409,7 @@ def run_fsdp_worker(
     # Staleness tracking (only if staleness_bound > 0)
     staleness_stats = {
         "all_gather_step_diffs": [],  # Track step differences for all_gather gradients
-        "scatter_reduce_step_diffs": [],  # Track step differences for scatter_reduce gradients
+        "all_reduce_step_diffs": [],  # Track step differences for all_reduce gradients
         "stale_gradient_count": 0,  # Count of gradients with step_diff > 0
         "max_step_diff": 0,  # Maximum step difference observed
         "broadcast_weights_step_diffs": [],  # Track step differences for broadcast weights
@@ -741,7 +741,7 @@ def run_fsdp_worker(
                     send_message(
                         peer_socket,
                         (
-                            "scatter_reduce",
+                            "all_reduce",
                             step,
                             worker_rank,
                             grads_reduced,
@@ -765,7 +765,7 @@ def run_fsdp_worker(
                                 step_diff = abs(recv_step - step)
                                 
                                 # Track staleness statistics
-                                staleness_stats["scatter_reduce_step_diffs"].append(step_diff)
+                                staleness_stats["all_reduce_step_diffs"].append(step_diff)
                                 staleness_stats["max_step_diff"] = max(
                                     staleness_stats["max_step_diff"], step_diff
                                 )
@@ -964,11 +964,11 @@ def run_fsdp_worker(
                         )
                         wandb_metrics[f"staleness/worker_{worker_rank}_all_gather_avg_step_diff"] = avg_all_gather_diff
                     
-                    if staleness_stats["scatter_reduce_step_diffs"]:
-                        avg_scatter_diff = sum(staleness_stats["scatter_reduce_step_diffs"]) / len(
-                            staleness_stats["scatter_reduce_step_diffs"]
+                    if staleness_stats["all_reduce_step_diffs"]:
+                        avg_scatter_diff = sum(staleness_stats["all_reduce_step_diffs"]) / len(
+                            staleness_stats["all_reduce_step_diffs"]
                         )
-                        wandb_metrics[f"staleness/worker_{worker_rank}_scatter_reduce_avg_step_diff"] = avg_scatter_diff
+                        wandb_metrics[f"staleness/worker_{worker_rank}_all_reduce_avg_step_diff"] = avg_scatter_diff
                     
                     if staleness_stats["broadcast_weights_step_diffs"]:
                         avg_weights_diff = sum(staleness_stats["broadcast_weights_step_diffs"]) / len(
@@ -983,7 +983,7 @@ def run_fsdp_worker(
                     
                     # Reset stats for next interval
                     staleness_stats["all_gather_step_diffs"] = []
-                    staleness_stats["scatter_reduce_step_diffs"] = []
+                    staleness_stats["all_reduce_step_diffs"] = []
                     staleness_stats["broadcast_weights_step_diffs"] = []
                     staleness_stats["stale_gradient_count"] = 0
                     staleness_stats["stale_weight_count"] = 0
