@@ -571,6 +571,7 @@ def run_classicdp_worker(
             if step < start_step:
                 continue
 
+            batch_start_time = time.time()
             data = data.to(device)
             target = target.to(device)
             # Update learning rate if scheduler enabled
@@ -782,8 +783,13 @@ def run_classicdp_worker(
             # Clear GPU memory after optimizer step
             clear_gpu_cache(device)
 
+            # Calculate tokens/sec
+            batch_time = time.time() - batch_start_time
+            tokens_processed = data.size(0) * data.size(1)
+            tok_per_sec = tokens_processed / batch_time if batch_time > 0 else 0
+
             # Update batch progress bar with current metrics
-            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step})
+            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step, "tok/s": f"{tok_per_sec:.0f}"})
 
             # Log training metrics
             wandb_metrics = {
@@ -791,6 +797,7 @@ def run_classicdp_worker(
                 "epoch": epoch + 1,
                 "lr": current_lr,
                 "batch_size": batch_size,
+                f"throughput/worker_{worker_rank}_tok_per_sec": tok_per_sec,
             }
             
             # Log staleness metrics if bounded async is enabled and we have data

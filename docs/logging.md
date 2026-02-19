@@ -3,6 +3,26 @@
 
 SmolCluster includes a production-grade distributed logging system that aggregates logs from all training nodes in real-time, making it easy to monitor and debug multi-node training jobs.
 
+## Table of Contents
+
+- [Overview](#overview)
+  - [Architecture](#architecture)
+  - [Key Features](#key-features)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Automatic Setup (Recommended)](#automatic-setup-recommended)
+  - [Accessing Grafana](#accessing-grafana)
+- [Log Structure](#log-structure)
+- [Manual Setup](#manual-setup)
+  - [1. Start Loki + Grafana (Controller)](#1-start-loki--grafana-controller)
+  - [2. Start Promtail on Server Node](#2-start-promtail-on-server-node)
+  - [3. Start Promtail on Worker Nodes](#3-start-promtail-on-worker-nodes)
+  - [4. Verify Promtail is Running](#4-verify-promtail-is-running)
+- [Grafana Query Examples](#grafana-query-examples)
+- [Configuration Files](#configuration-files)
+
+---
+
 ## Overview
 
 The logging system is built on the Grafana observability stack:

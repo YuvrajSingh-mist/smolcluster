@@ -3,6 +3,7 @@ import logging
 import math
 import socket
 import threading
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import torch
 import torchinfo
 import wandb
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
@@ -313,12 +315,23 @@ def run_syncps_server(
         total_loss = 0.0
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
-        for batch_idx, (data, target) in enumerate(train_loader):
+        # Create batch progress bar for this epoch
+        batch_pbar = tqdm(
+            enumerate(train_loader),
+            total=len(train_loader),
+            desc=f"Epoch {epoch + 1}/{num_epochs} [Server]",
+            leave=True,
+            ncols=120,
+        )
+
+        for batch_idx, (data, target) in batch_pbar:
             step = epoch * len(train_loader) + batch_idx
 
             # Skip batches if resuming mid-epoch
             if step < start_step:
                 continue
+
+            batch_start_time = time.time()
 
             logger.info(
                 f"[Step {step}  / {total_steps}] Server computing leader gradients"
@@ -410,14 +423,23 @@ def run_syncps_server(
 
             # Log training metrics
 
+            # Calculate tokens/sec
+            batch_time = time.time() - batch_start_time
+            tokens_processed = data.size(0) * data.size(1)
+            tok_per_sec = tokens_processed / batch_time if batch_time > 0 else 0
+
             wandb.log(
                 {
                     "step": step,
                     "epoch": epoch + 1,
                     "lr": optimizer.param_groups[0]["lr"],
                     "batch_size": batch_size,
+                    "throughput/server_tok_per_sec": tok_per_sec,
                 }
             )
+
+            # Update progress bar
+            batch_pbar.set_postfix({"lr": f"{optimizer.param_groups[0]['lr']:.2e}", "step": step, "tok/s": f"{tok_per_sec:.0f}"})
 
             # Evaluation
             if step % eval_steps == 0:

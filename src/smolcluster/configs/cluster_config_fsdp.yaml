@@ -8,6 +8,7 @@ syncPS:
     pi5: "192.168.50.1"
     win: "10.10.0.1"
     ipad: "172.20.10.3"
+    "jetson": "192.168.52.2" 
 
 port:
   default: 65432
@@ -66,10 +67,10 @@ allToAllTopology:
         rank: 1
         port: 65433
         ip: "10.10.0.2"
-      - hostname: mini3
+      - hostname: jetson
         rank: 2
         port: 65434
-        ip: "10.10.0.3"
+        ip: "192.168.52.2"
 
 
 #Model parallelism specific configs

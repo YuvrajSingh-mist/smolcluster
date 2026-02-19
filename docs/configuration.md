@@ -7,6 +7,8 @@ Smolcluster uses YAML configuration files to manage cluster topology, model arch
 ## Table of Contents
 
 - [Cluster Configuration](#cluster-configuration)
+  - [FSDP (Fully Sharded Data Parallel)](#cluster_config_fsdpyaml-fully-sharded-data-parallel)
+  - [Classic Data Parallelism (ClassicDP)](#cluster_config_classicdpyaml-classic-data-parallelism)
   - [Elastic Distributed Parallelism (EDP)](#cluster_config_edpyaml-elastic-distributed-parallelism)
   - [Synchronous Parameter Server (SyncPS)](#cluster_config_syncpsyaml-synchronous-parameter-server)
   - [Model Parallelism (MP)](#cluster_config_mpyaml-model-parallelism)
@@ -23,6 +25,126 @@ Smolcluster uses YAML configuration files to manage cluster topology, model arch
 ---
 
 ## Cluster Configuration
+
+### cluster_config_fsdp.yaml (Fully Sharded Data Parallel)
+
+ZeRO-optimized data parallelism with configurable optimizer state partitioning, ideal for memory-constrained setups and large models.
+
+```yaml
+# FSDP stage selection
+fsdp_stage: 1                  # 0: All-Reduce, 1: ZeRO Stage 1 optimizer partitioning
+
+# Bounded staleness for gradient synchronization
+staleness_bound: 5             # Allow workers to be 5 steps apart (0 = strict sync)
+
+# Network buffer sizes (in MB) - device-specific optimizations
+buffer_size:
+  mini1: 8                     # Mac Mini - 8MB (Thunderbolt 40Gbps)
+  mini2: 8                     # Mac Mini - 8MB
+  mini3: 8                     # Mac Mini - 8MB
+  macbook: 8                   # MacBook - 8MB
+  pi4: 2                       # Raspberry Pi 4 - 2MB (Gigabit Ethernet)
+  pi5: 2                       # Raspberry Pi 5 - 2MB
+
+# Network metrics tracking
+track_network_metrics: true    # Enable bandwidth, latency, buffer usage tracking
+metrics_log_interval: 50       # Log network metrics every N steps
+
+# Cluster configuration
+num_workers: 3                 # Number of worker nodes
+
+# All-to-all topology (fully connected)
+allToAllTopology:
+  workers:
+    regular:
+      - hostname: mini1
+        rank: 0
+        port: 65432
+        ip: \"10.10.0.1\"
+      - hostname: mini2
+        rank: 1
+        port: 65433
+        ip: \"10.10.0.2\"
+      - hostname: mini3
+        rank: 2
+        port: 65434
+        ip: \"10.10.0.3\"
+
+# Model parallelism specific configs
+num_nodes: 3                   # Number of nodes in cluster
+num_layers: 6                  # Number of transformer blocks
+model_name: causal_gpt2        # Model architecture identifier
+seed: 42                       # Random seed
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `fsdp_stage` | int | ZeRO optimization stage: 0 (All-Reduce), 1 (Optimizer Partitioning) |
+| `staleness_bound` | int | Maximum step difference (0 = strict sync, K = bounded async) |
+| `buffer_size` | dict | Network buffer sizes per device (MB) for optimized throughput |
+| `track_network_metrics` | bool | Enable bandwidth/latency tracking |
+| `metrics_log_interval` | int | Steps between metric logging |
+| `num_workers` | int | Total number of workers in cluster |
+| `allToAllTopology` | dict | Fully connected worker topology (rank, port, IP per worker) |
+| `num_nodes` | int | Number of nodes (same as num_workers) |
+| `num_layers` | int | Model layers for partitioning (used in ZeRO Stage 1) |
+| `model_name` | str | Model architecture identifier |
+| `seed` | int | Random seed for reproducibility |
+
+**FSDP Stage Details:**
+- **Stage 0 (All-Reduce)**: Classic data parallelism with full model replicas on each worker. All gradients averaged, all parameters synchronized.
+- **Stage 1 (ZeRO Optimizer Partitioning)**: Each worker owns subset of model layers and only updates those parameters. Memory savings: ~1/N optimizer states per worker. Bandwidth optimization: only owned parameters broadcasted.
+
+### cluster_config_classicdp.yaml (Classic Data Parallelism)
+
+All-Reduce based data parallelism with bounded staleness, ideal for balanced clusters with moderate network latency.
+
+```yaml
+# Bounded staleness for gradient synchronization
+staleness_bound: 5             # Allow workers to be 5 steps apart (0 = strict sync)
+
+# Network buffer sizes and metrics (same as FSDP)
+buffer_size:
+  mini1: 8
+  mini2: 8
+  mini3: 8
+
+track_network_metrics: true
+metrics_log_interval: 50
+
+# Cluster configuration (all-to-all topology)
+num_workers: 3
+allToAllTopology:
+  workers:
+    regular:
+      - hostname: mini1
+        rank: 0
+        port: 65432
+        ip: \"10.10.0.1\"
+      - hostname: mini2
+        rank: 1
+        port: 65433
+        ip: \"10.10.0.2\"
+      - hostname: mini3
+        rank: 2
+        port: 65434
+        ip: \"10.10.0.3\"
+
+seed: 42
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `staleness_bound` | int | Maximum step difference (0 = strict sync, K = bounded async) |
+| `buffer_size` | dict | Network buffer sizes per device (MB) |
+| `track_network_metrics` | bool | Enable bandwidth/latency tracking |
+| `num_workers` | int | Total number of workers |
+| `allToAllTopology` | dict | Fully connected worker topology |
+| `seed` | int | Random seed for reproducibility |
 
 ### cluster_config_edp.yaml (Elastic Distributed Parallelism)
 

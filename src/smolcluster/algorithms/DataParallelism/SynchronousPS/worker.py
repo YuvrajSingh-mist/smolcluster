@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 import wandb
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
@@ -261,13 +262,23 @@ def run_syncps_worker(
         model.train()
         total_loss = 0.0
 
-        for batch_idx, (data, target) in enumerate(train_loader):
+        # Create batch progress bar for this epoch
+        batch_pbar = tqdm(
+            enumerate(train_loader),
+            total=len(train_loader),
+            desc=f"Epoch {epoch + 1}/{num_epochs} [Worker {worker_rank}]",
+            leave=True,
+            ncols=120,
+        )
+
+        for batch_idx, (data, target) in batch_pbar:
             step = epoch * len(train_loader) + batch_idx
 
             # Skip batches if resuming mid-epoch
             if step < start_step:
                 continue
 
+            batch_start_time = time.time()
             logger.info(
                 f"[Step {step} / {total_steps}] Starting forward and backward pass"
             )
@@ -281,6 +292,11 @@ def run_syncps_worker(
             total_loss += loss.item()
             train_ppl = math.exp(loss.item())
 
+            # Calculate tokens/sec
+            batch_time = time.time() - batch_start_time
+            tokens_processed = data.size(0) * data.size(1)
+            tok_per_sec = tokens_processed / batch_time if batch_time > 0 else 0
+
             wandb.log(
                 {
                     "step": step,
@@ -288,6 +304,7 @@ def run_syncps_worker(
                     "losses/train_step": loss.item(),
                     "losses/total_train": total_loss / (batch_idx + 1),
                     "ppl/train": train_ppl,
+                    f"throughput/worker_{worker_rank}_tok_per_sec": tok_per_sec,
                 }
             )
 
@@ -350,6 +367,9 @@ def run_syncps_worker(
                                 "epoch": epoch + 1,
                             }
                         )
+
+            # Update progress bar
+            batch_pbar.set_postfix({"step": step, "tok/s": f"{tok_per_sec:.0f}"})
 
             # Evaluation
             if step % eval_steps == 0:

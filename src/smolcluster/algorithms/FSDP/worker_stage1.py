@@ -426,11 +426,7 @@ def run_fsdp_worker(
     # print(sharded_model)
     
     # ZeRO Stage 1: Create optimizer ONLY for this worker's owned layers
-    # This partitions optimizer states (momentum, variance) across workers
-    # Each worker only updates its owned parameters during optimizer.step()
-    # Full model is synchronized via broadcast after each step
     # Build dict of owned parameters: {param_name: param_tensor}
-    # Since dicts are mutable and optimizer modifies tensors in-place,
     # this dict will always have updated values after optimizer.step()
     owned_params_dict = {}
     for layer_name, module in model_layers.items():
@@ -525,7 +521,7 @@ def run_fsdp_worker(
     logger.info(f"Worker {worker_rank} listening on port {my_port}")
 
     # Step 2: Connect to next worker in linear topology (if not last worker)
-    max_retries = 60
+    max_retries = 120
     retry_delay = 2
 
     for _ in range(NUM_WORKERS - 1):
@@ -610,6 +606,7 @@ def run_fsdp_worker(
             if step < start_step:
                 continue
 
+            batch_start_time = time.time()
             data = data.to(device)
             target = target.to(device)
             # Update learning rate if scheduler enabled
@@ -890,8 +887,13 @@ def run_fsdp_worker(
             # Clear GPU memory after optimizer step
             clear_gpu_cache(device)
 
+            # Calculate tokens/sec
+            batch_time = time.time() - batch_start_time
+            tokens_processed = data.size(0) * data.size(1)
+            tok_per_sec = tokens_processed / batch_time if batch_time > 0 else 0
+
             # Update batch progress bar with current metrics
-            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step})
+            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step, "tok/s": f"{tok_per_sec:.0f}"})
 
             # Log training metrics
             wandb_metrics = {
@@ -899,6 +901,7 @@ def run_fsdp_worker(
                 "epoch": epoch + 1,
                 "lr": current_lr,
                 "batch_size": batch_size,
+                f"throughput/worker_{worker_rank}_tok_per_sec": tok_per_sec,
             }
             
             # Log staleness metrics if bounded async is enabled and we have data

@@ -1,17 +1,14 @@
 #!/bin/bash
 
-# Load environment variables from .env
-if [[ -f ".env" ]]; then
-    export $(grep -v '^#' .env | xargs)
-fi
+# SmolCluster Launch Script - EDP Version
+# Launches distributed training across Mac mini nodes via SSH using EDP (Elastic Distributed Parameter server)
 
-# Set WANDB_API_KEY for wandb compatibility
-export WANDB_API_KEY="$WANDB_API_TOKEN"
+set -e  # Exit on any error
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_syncps.yaml"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_edp.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # Read configuration from YAML
@@ -33,9 +30,24 @@ if [[ "$1" == "--dry-run" ]]; then
     echo "🏃 Dry run mode - will show commands without executing"
 fi
 
-echo "🚀 SmolCluster Launch Script - SyncPS MNIST Demo"
+echo "🚀 SmolCluster Launch Script - EDP Version"
 echo "📁 Project dir: $PROJECT_DIR"
 echo "⚙️  Config file: $CONFIG_FILE"
+
+# Enforce wandb login
+echo ""
+echo "🔐 Weights & Biases (wandb) Authentication"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [[ -z "$WANDB_API_KEY" ]]; then
+    echo "⚠️  WANDB_API_KEY not set. Please provide your API key."
+    echo "Get your API key from: https://wandb.ai/authorize"
+    echo ""
+    read -p "Enter WANDB_API_KEY: " WANDB_API_KEY
+    if [[ -z "$WANDB_API_KEY" ]]; then
+        echo "❌ No API key provided. Exiting."
+        exit 1
+    fi
+fi
 
 # Verify the API key works by setting it as env var and testing
 export WANDB_API_KEY
@@ -74,40 +86,6 @@ if [[ "$DRY_RUN" != "true" ]]; then
             exit 1
         fi
         
-        # Check if Promtail is installed on remote node (cross-platform)
-        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe || test -f /mnt/c/promtail/promtail.exe || test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" || test -f \"C:\\\\promtail\\\\promtail.exe\")" &>/dev/null; then
-            # Kill any existing Promtail processes (cleanup old/broken instances)
-            echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
-            ssh "$node" "(pkill -f promtail || taskkill /F /IM promtail.exe 2>nul)" &>/dev/null || true
-            
-            # Delete old log files and position files for fresh start
-            ssh "$node" "rm -f /tmp/smolcluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" &>/dev/null || true
-            
-            # Ensure log directory exists
-            ssh "$node" "mkdir -p /tmp/smolcluster-logs"
-            sleep 1
-            
-            # Determine config file based on node type
-            if [[ "$node" == "$SERVER" ]]; then
-                config_file="logging/promtail-server-remote.yaml"
-            else
-                config_file="logging/promtail-worker-remote.yaml"
-            fi
-            
-            # Start Promtail in background (auto-detect path)
-            echo "🚀 $node: Starting Promtail..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
-            sleep 1
-            if ssh "$node" "(pgrep -f promtail || tasklist /FI \"IMAGENAME eq promtail.exe\" 2>nul | findstr promtail)" &>/dev/null; then
-                echo "✅ $node: Promtail started successfully"
-            else
-                echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
-            fi
-        else
-            echo "⚠️  Warning: Promtail not found on $node. Centralized logging will not work."
-            echo "   Install: See logging/SETUP.md (macOS/Linux/Windows supported)"
-        fi
-        
         # Check that venv exists and sync dependencies
         echo "📦 Checking venv on $node..."
         if ! ssh "$node" "test -f $REMOTE_PROJECT_DIR/.venv/bin/python"; then
@@ -120,7 +98,6 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
     done
-
 else
     echo "✅ SSH and remote checks skipped (dry run)"
 fi
@@ -130,42 +107,6 @@ fi
 echo "Server: $SERVER"
 echo "Workers: ${WORKERS[*]}"
 echo "All nodes: ${ALL_NODES[*]}"
-
-# Start logging infrastructure on controller (this machine)
-echo ""
-echo "📈 Starting logging infrastructure on controller..."
-if [[ -f "$PROJECT_DIR/logging/docker-compose.yml" ]]; then
-    if docker ps | grep -q loki; then
-        echo "🧹 Cleaning up old logs from Loki..."
-        # Stop Loki, remove volumes (deletes old data), then restart
-        (cd "$PROJECT_DIR/logging" && docker-compose down loki && docker volume rm logging_loki-data 2>/dev/null || true)
-        (cd "$PROJECT_DIR/logging" && docker-compose up -d loki)
-        sleep 3
-        if curl -s http://localhost:3100/ready | grep -q "ready"; then
-            echo "✅ Loki restarted with fresh database"
-        else
-            echo "⚠️  Loki may not be ready yet, but continuing..."
-        fi
-        
-        # Ensure Grafana is also running
-        if ! docker ps | grep -q grafana; then
-            (cd "$PROJECT_DIR/logging" && docker-compose up -d grafana)
-            echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
-        fi
-    else
-        echo "🚀 Starting Loki + Grafana..."
-        (cd "$PROJECT_DIR/logging" && docker-compose up -d)
-        sleep 3
-        if curl -s http://localhost:3100/ready | grep -q "ready"; then
-            echo "✅ Loki ready at http://localhost:3100"
-            echo "📊 Grafana UI at http://localhost:3000 (admin/admin)"
-        else
-            echo "⚠️  Loki may not be ready yet, but continuing..."
-        fi
-    fi
-else
-    echo "⚠️  Logging not configured (logging/docker-compose.yml not found)"
-fi
 
 # Function to launch on a node
 launch_on_node() {
@@ -217,7 +158,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching server on $SERVER..."
-SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train_mnist.py server $SERVER"
+SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/train_mnist.py server $SERVER"
 launch_on_node "$SERVER" "$SERVER_CMD" "server"
 
 # Wait a moment for server to start
@@ -229,7 +170,7 @@ echo ""
 echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train_mnist.py worker $i $node"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/train_mnist.py worker $i $node"
     launch_on_node "$node" "$WORKER_CMD" "worker$i"
     echo "   $node: worker$i"
 done
@@ -242,4 +183,3 @@ echo "   ssh $SERVER 'tmux ls'"
 echo "   ssh $SERVER 'tmux attach -t server'"
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"
-echo "📊 View centralized logs at: http://localhost:3000 (Grafana)"

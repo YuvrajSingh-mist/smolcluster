@@ -3,6 +3,43 @@
 
 This guide explains how to set up a **hybrid distributed training cluster** using **Thunderbolt fabric** for inter-Mac communication, **Ethernet edge links** for Raspberry Pis, and **proper routing** to ensure traffic flows correctly.
 
+## Table of Contents
+
+- [Network Topology](#network-topology)
+- [Hardware Components](#hardware-components)
+- [Part 1: Thunderbolt Fabric Setup (Mac minis)](#part-1-thunderbolt-fabric-setup-mac-minis)
+  - [Physical Setup](#physical-setup)
+  - [IP Assignment](#ip-assignment)
+  - [Verification](#verification)
+- [Part 2: Ethernet Edge Links (Pis ↔ Macs)](#part-2-ethernet-edge-links-pis--macs)
+  - [Mac mini 1 Ethernet (Pi 5 Link)](#mac-mini-1-ethernet-pi-5-link)
+  - [Mac mini 3 Ethernet (Pi 4 Link)](#mac-mini-3-ethernet-pi-4-link)
+  - [Pi 5 Network Setup](#pi-5-network-setup)
+  - [Pi 4 Network Setup](#pi-4-network-setup)
+  - [Key Routing Insights](#key-routing-insights)
+- [Part 3: Network Verification](#part-3-network-verification)
+  - [From Pi 4](#from-pi-4)
+  - [From Pi 5](#from-pi-5)
+  - [From Mac minis](#from-mac-minis)
+- [Part 4: SSH Setup (Control from MacBook)](#part-4-ssh-setup-control-from-macbook)
+  - [Generate SSH key (once)](#generate-ssh-key-once)
+  - [Find WiFi IPs for SSH](#find-wifi-ips-for-ssh)
+  - [Copy keys to all nodes](#copy-keys-to-all-nodes)
+  - [SSH config (optional but recommended)](#ssh-config-optional-but-recommended)
+  - [SSH Troubleshooting](#ssh-troubleshooting)
+- [Part 5: Training Launch](#part-5-training-launch)
+  - [Automated Launch (Recommended)](#automated-launch-recommended)
+- [Part 6: Troubleshooting](#part-6-troubleshooting)
+  - [Connection Issues](#connection-issues)
+  - [Mac IP Forwarding](#mac-ip-forwarding)
+  - [ARP Cache Issues](#arp-cache-issues)
+  - [Network Debugging Commands](#network-debugging-commands)
+- [Part 7: Network Performance Verification](#part-7-network-performance-verification)
+  - [Install iperf3](#install-iperf3)
+  - [Bandwidth Testing](#bandwidth-testing)
+
+---
+
 ## Network Topology
 
 ```

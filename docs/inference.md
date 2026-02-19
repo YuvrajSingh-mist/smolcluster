@@ -2,6 +2,28 @@
 
 This guide explains how to deploy distributed GPT inference using Model Parallelism across multiple nodes in the Smolcluster.
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Supported Deployment Configurations](#supported-deployment-configurations)
+  - [Configuration 1: Mac Mini Cluster (CPU-based)](#configuration-1-mac-mini-cluster-cpu-based)
+  - [Configuration 2: iPad + Mac Mini Hybrid Cluster (CoreML + CPU)](#configuration-2-ipad--mac-mini-hybrid-cluster-coreml--cpu)
+- [Architecture](#architecture)
+  - [Standard Configuration (Mac Mini Cluster)](#standard-configuration-mac-mini-cluster)
+  - [Hybrid Configuration (iPad + Mac Mini with MacBook Controller)](#hybrid-configuration-ipad--mac-mini-with-macbook-controller)
+- [Configuration](#configuration)
+  - [Model Configuration](#model-configuration)
+  - [Cluster Configuration](#cluster-configuration)
+- [Deployment](#deployment)
+  - [Standard Deployment (Mac Mini Cluster)](#standard-deployment-mac-mini-cluster)
+  - [Hybrid Deployment (iPad + Mac Mini)](#hybrid-deployment-ipad--mac-mini)
+- [API Usage](#api-usage)
+  - [Health Check](#health-check)
+  - [Text Generation](#text-generation)
+  - [Stream Generation](#stream-generation)
+
+---
+
 ## Overview
 
 Model Parallelism enables large language model inference by splitting model layers across multiple workers, allowing inference on models that exceed a single device's memory capacity. The system uses a leader-worker architecture where activations are sequentially forwarded through distributed transformer layers.

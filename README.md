@@ -6,7 +6,7 @@ A distributed deep learning library for training neural networks across heteroge
 
 ## Features
 
-- **Distributed Training Algorithms**: Classic Data Parallelism (All-Reduce), Elastic Distributed Parallelism (EDP), Synchronous Parameter Server (SyncPS), and Model Parallelism
+- **Distributed Training Algorithms**: FSDP (ZeRO-optimized), Classic Data Parallelism (All-Reduce), Elastic Distributed Parallelism (EDP), Synchronous Parameter Server (SyncPS), and Model Parallelism
 - **Heterogeneous Hardware**: Mac minis, Raspberry Pis, MacBooks, and Windows machines
 - **Model Support**: MNIST, GPT-2, and custom neural networks
 - **Distributed Inference**: Model parallelism with streaming token generation
@@ -42,6 +42,20 @@ bash scripts/launch_edp_train_gpt.sh
 - **[Inference Guide](docs/inference.md)** - Model parallelism inference
 
 ## Training Algorithms
+
+### FSDP (Fully Sharded Data Parallel)
+ZeRO-optimized data parallelism with configurable optimizer state partitioning. Best for memory-constrained setups and large models.
+
+```bash
+bash scripts/launch_fsdp_train_gpt.sh
+```
+
+**Features:**
+- ZeRO Stage 0: All-Reduce (classic data parallelism)
+- ZeRO Stage 1: Optimizer state partitioning (~1/N memory per worker)
+- Bandwidth-optimized weight broadcasting (only owned parameters)
+- Configurable bounded staleness (0 = strict sync, K > 0 = async up to K steps)
+- Real-time staleness monitoring via WandB
 
 ### Classic Data Parallelism (ClassicDP)
 All-Reduce based data parallelism with bounded staleness. Best for balanced clusters with moderate network latency.

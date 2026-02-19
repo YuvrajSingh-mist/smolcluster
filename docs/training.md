@@ -1,8 +1,63 @@
 # Training Guide
 
+## Table of Contents
+
+- [Training Algorithms](#training-algorithms)
+  - [FSDP (Fully Sharded Data Parallel)](#fsdp-fully-sharded-data-parallel)
+  - [Classic Data Parallelism (ClassicDP)](#classic-data-parallelism-classicdp)
+  - [Elastic Distributed Parallelism (EDP)](#elastic-distributed-parallelism-edp)
+  - [Synchronous Parameter Server (SyncPS)](#synchronous-parameter-server-syncps)
+  - [Model Parallelism (MP)](#model-parallelism-mp)
+- [Algorithm Comparison](#algorithm-comparison)
+- [How Each Algorithm Works](#how-each-algorithm-works)
+  - [FSDP (Fully Sharded Data Parallel)](#fsdp-fully-sharded-data-parallel-1)
+  - [ClassicDP (Classic Data Parallelism)](#classicdp-classic-data-parallelism)
+  - [EDP (Elastic Distributed Parallelism)](#edp-elastic-distributed-parallelism)
+  - [SyncPS (Synchronous Parameter Server)](#syncps-synchronous-parameter-server)
+  - [Model Parallelism](#model-parallelism)
+- [Usage Examples](#usage-examples)
+  - [MNIST Training (Simple NN)](#mnist-training-simple-nn)
+  - [GPT Training (Language Model)](#gpt-training-language-model)
+  - [GPT Inference (Model Parallelism)](#gpt-inference-model-parallelism)
+- [Monitoring Training](#monitoring-training)
+  - [Console Logs](#console-logs)
+  - [Weights & Biases (W&B)](#weights--biases-wb)
+  - [Grafana (Centralized Logging)](#grafana-centralized-logging)
+
+---
+
 ## Training Algorithms
 
 SmolCluster implements multiple distributed training paradigms:
+
+### FSDP (Fully Sharded Data Parallel)
+
+**ZeRO-optimized data parallelism with optimizer state partitioning**
+
+- Configurable ZeRO stages (Stage 0: All-Reduce, Stage 1: Optimizer Partitioning)
+- All-to-all gradient communication (ring all-reduce topology)
+- Reduced memory footprint through state partitioning
+- Bandwidth-optimized weight broadcasting (only owned parameters)
+- Configurable staleness bound for async flexibility
+- Real-time staleness metrics tracked in WandB
+
+**Best for:** Memory-constrained setups, large models, efficient bandwidth usage
+
+**Launch:**
+```bash
+bash scripts/launch_fsdp_train_gpt.sh
+```
+
+**Configuration:**
+```yaml
+# In cluster_config_fsdp.yaml
+fsdp_stage: 1  # 0 for All-Reduce, 1 for ZeRO Stage 1
+staleness_bound: 5  # Allow workers to be 5 steps apart (0 = strict sync)
+```
+
+**FSDP Stages:**
+- `fsdp_stage: 0` - All-Reduce (classic data parallelism, full model replicas)
+- `fsdp_stage: 1` - ZeRO Stage 1 (optimizer state partitioning, ~1/N memory per worker)
 
 ### Classic Data Parallelism (ClassicDP)
 
@@ -86,20 +141,51 @@ bash scripts/inference/launch_api.sh
 
 ## Algorithm Comparison
 
-| Feature | ClassicDP | EDP | SyncPS | Model Parallelism |
-|---------|-----------|-----|--------|-------------------|
-| **Synchronization** | Configurable | Asynchronous | Synchronous | Sequential |
-| **Gradient Staleness** | Bounded (0 to K) | Tolerates stale | Fresh only | N/A |
-| **Barrier Points** | Optional | None | Every step | Per layer |
-| **Throughput** | High | Highest | Medium | Lowest |
-| **Convergence** | Fast | Slower | Fastest | N/A (inference) |
-| **Fault Tolerance** | Good | Best | Good | Poor |
-| **Memory Efficiency** | Low | Low | Low | High |
-| **Network Efficiency** | Direct all-reduce | Quantization supported | Raw gradients | Activations only |
-| **Communication** | All-to-all | Parameter server | Parameter server | Sequential |
-| **Staleness Monitoring** | WandB metrics | None | None | N/A |
+| Feature | FSDP | ClassicDP | EDP | SyncPS | Model Parallelism |
+|---------|------|-----------|-----|--------|-------------------|
+| **Synchronization** | Configurable | Configurable | Asynchronous | Synchronous | Sequential |
+| **Gradient Staleness** | Bounded (0 to K) | Bounded (0 to K) | Tolerates stale | Fresh only | N/A |
+| **Barrier Points** | Optional | Optional | None | Every step | Per layer |
+| **Throughput** | High | High | Highest | Medium | Lowest |
+| **Convergence** | Fast | Fast | Slower | Fastest | N/A (inference) |
+| **Fault Tolerance** | Good | Good | Best | Good | Poor |
+| **Memory Efficiency** | High (ZeRO-1) | Low | Low | Low | High |
+| **Network Efficiency** | Optimized (owned params) | Direct all-reduce | Quantization supported | Raw gradients | Activations only |
+| **Communication** | All-to-all | All-to-all | Parameter server | Parameter server | Sequential |
+| **Optimizer Sharding** | Yes (Stage 1) | No | No | No | No |
+| **Staleness Monitoring** | WandB metrics | WandB metrics | None | None | N/A |
 
 ## How Each Algorithm Works
+
+### FSDP (Fully Sharded Data Parallel)
+
+**Stage 0: All-Reduce Mode**
+1. **All-to-All Topology Setup**: Workers form a fully connected graph
+2. **Local Gradient Computation**: Each worker computes gradients on its data shard
+3. **All-Gather Phase**: Each worker broadcasts gradients to all peers
+4. **Reduce Phase**: Workers average all received gradients
+5. **Model Update**: Apply averaged gradients to full model replica
+6. **Weight Broadcast**: Synchronize model weights across all workers
+
+**Stage 1: ZeRO Optimizer Partitioning**
+1. **Layer Partitioning**: Each worker owns specific model layers
+2. **Optimizer Creation**: Worker creates optimizer only for owned parameters (~1/N memory)
+3. **Forward/Backward**: Each worker runs full model on local data
+4. **All-Reduce Gradients**: Average gradients across all workers
+5. **Partial Update**: Worker's optimizer updates only its owned parameters
+6. **Optimized Broadcast**: Each worker broadcasts only its updated parameters (not full model)
+7. **Weight Merging**: Workers merge received parameters into full model
+
+**ZeRO Stage 1 Benefits:**
+- Memory savings: Optimizer states distributed across workers (1/N per worker)
+- Bandwidth optimization: Only owned parameters broadcasted (1/N traffic per worker)
+- Full model maintained: Each worker has complete model for training
+- Scalability: Memory and bandwidth scale linearly with worker count
+
+**Bounded Staleness:**
+- `staleness_bound = 0`: All workers at exact same step (strict sync)
+- `staleness_bound = K`: Workers can be up to K steps apart (bounded async)
+- Training stops if any gradient/weight update exceeds the bound
 
 ### ClassicDP (Classic Data Parallelism)
 
@@ -255,39 +341,3 @@ Real-time log aggregation from all nodes:
 ```
 
 See [logging.md](logging.md) for full setup instructions.
-
-## Troubleshooting
-
-### Connection Issues
-
-**Symptom:** Workers can't connect to server
-
-**Solutions:**
-```bash
-# Verify network connectivity
-ping 10.10.0.1
-
-# Check port availability
-nc -zv 10.10.0.1 65432
-
-# Verify firewall rules
-sudo ufw allow 65432/tcp  # Linux
-# macOS: System Preferences → Security → Firewall → Options
-
-# Ensure server started before workers
-tmux attach -t mp_server  # Check server logs
-```
-
-### Training Issues
-
-**SyncPS stragglers:**
-```yaml
-# cluster_config_syncps.yaml
-timeout: 1.0  # Increase timeout for slow workers
-```
-
-**EDP staleness issues:**
-```yaml
-# cluster_config_edp.yaml
-worker_update_interval: 5  # Decrease interval for fresher weights
-```
