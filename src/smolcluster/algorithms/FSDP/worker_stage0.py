@@ -548,12 +548,13 @@ def run_fsdp_worker(
         next_worker = next(w for w in workers_list if w["rank"] != worker_rank)
         next_ip = next_worker["ip"]
         next_port = next_worker["port"]
+        next_rank = next_worker["rank"]
         del workers_list[
             workers_list.index(next_worker)
         ]  # Remove the next worker from the list to avoid duplicate connections
 
         logger.info(
-            f"Worker {worker_rank} will connect to worker {worker_rank + 1} at {next_ip}:{next_port}"
+            f"Worker {worker_rank} will connect to worker {next_rank} at {next_ip}:{next_port}"
         )
         time.sleep(worker_rank * 0.5)  # Stagger connections
 
@@ -564,22 +565,22 @@ def run_fsdp_worker(
                 send_message(next_sock, ("register", worker_rank))
 
                 logger.info(
-                    f"Worker {worker_rank} connected to worker {worker_rank + 1} at {next_ip}:{next_port}"
+                    f"Worker {worker_rank} connected to worker {next_rank} at {next_ip}:{next_port}"
                 )
                 outbound_worker_sockets[next_worker["rank"]] = (
                     next_sock  # This is important because this has the IP + PORT to which the nodes connected to it listen to which is what we have defined and not send stuff to the port we received through sock.accept()!
                 )
                 break
-            except ConnectionRefusedError:
+            except Exception as e:
                 if attempt < max_retries - 1:
                     logger.warning(
-                        f"Connection to worker {worker_rank + 1} refused (attempt {attempt + 1}/{max_retries} at IP: {next_ip}:{next_port}). "
+                        f"Connection to worker {next_rank} failed (attempt {attempt + 1}/{max_retries} at IP: {next_ip}:{next_port}): {e}. "
                         f"Retrying in {retry_delay}s..."
                     )
                     time.sleep(retry_delay)
                 else:
                     logger.error(
-                        f"Failed to connect to worker {worker_rank + 1} after {max_retries} attempts"
+                        f"Failed to connect to worker {next_rank} after {max_retries} attempts: {e}"
                     )
                     raise
 

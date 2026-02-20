@@ -39,7 +39,7 @@ metrics_log_interval: 50  # Log network metrics every N steps
 # FSDP stage selection
 # stage: 0 - ZeRO Stage 0 (optimizer state sharding)
 # stage: 1 - ZeRO Stage 1 (optimizer state partitioning)
-fsdp_stage: 1  # 0 for all-reduce, 1 for ZeRO Stage 1 optimizer partitioning
+fsdp_stage: 0  # 0 for all-reduce, 1 for ZeRO Stage 1 optimizer partitioning
 
 # Bounded staleness for gradient synchronization
 # Allows workers to be at different steps within a bounded window
@@ -55,7 +55,7 @@ timeout: 0.1  # How long server waits for gradients (seconds)
 seed: 42
 
 # Cluster configuration (other than Parameter-Server)
-num_workers: 3
+num_workers: 2
 
 allToAllTopology:
   workers:
@@ -64,17 +64,20 @@ allToAllTopology:
         rank: 0
         port: 65432
         ip: "10.10.0.1"
-      - hostname: mini2
+      # - hostname: mini2
+      #   rank: 1
+      #   port: 65433
+        # ip: "10.10.0.2"
+      - hostname: jetson
         rank: 1
         port: 65433
-        ip: "10.10.0.2"
-      - hostname: jetson
-        rank: 2
-        port: 65434
         ip: "192.168.52.2"
-
+      # - hostname: mini3
+      #   rank: 2
+      #   port: 65434
+      #   ip: "10.10.0.3"
 
 #Model parallelism specific configs
-num_nodes: 3
+num_nodes: 2  # Total number of nodes in the cluster (auto-detected from config, this is just for reference)
 num_layers: 6  # Number of transformer blocks (auto-detected from model, this is just for reference)
 model_name: causal_gpt2 
