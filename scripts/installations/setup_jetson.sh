@@ -3,6 +3,26 @@
 set -e
 
 echo "=== Jetson PyTorch GPU Install Script ==="
+
+# Check if passwordless sudo is configured
+if ! sudo -n true 2>/dev/null; then
+    echo "❌ ERROR: This script requires passwordless sudo access."
+    echo ""
+    echo "To configure passwordless sudo on your Jetson:"
+    echo "  1. Run: sudo visudo"
+    echo "  2. Add this line at the end (replace 'username' with your actual username):"
+    echo "     username ALL=(ALL) NOPASSWD:ALL"
+    echo "  3. Save and exit (Ctrl+X, then Y, then Enter)"
+    echo ""
+    echo "Alternatively, run these commands manually with sudo:"
+    echo "  sudo apt update && sudo apt upgrade -y"
+    echo "  sudo apt install -y python3-pip python3-venv libopenblas-base libopenmpi-dev python3.10 python3.10-venv python3.10-dev"
+    echo ""
+    echo "Then run this script again."
+    exit 1
+fi
+
+echo "✅ Passwordless sudo configured"
 echo "Updating system packages..."
 sudo apt update -y
 sudo apt upgrade -y
@@ -106,6 +126,10 @@ echo "Using venv's pip directly for Jetson-specific installation..."
 uv pip install torch==2.8.0 torchvision==0.23.0 \
     --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
 
+echo ""
+echo "=== Downgrading NumPy for compatibility with Jetson PyTorch ==="
+echo "Jetson PyTorch 2.8.0 was compiled with NumPy 1.x..."
+uv pip install "numpy<2"
 
 echo ""
 echo "=== Installation done! Verifying PyTorch CUDA ==="

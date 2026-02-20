@@ -1,107 +1,86 @@
 
-# SmolCluster – Hybrid Network Setup Guide
+# SmolCluster – Cluster Setup Guide
 
-This guide explains how to set up a **hybrid distributed training cluster** using **Thunderbolt fabric** for inter-Mac communication, **Ethernet edge links** for Raspberry Pis, and **proper routing** to ensure traffic flows correctly.
+Complete guide for setting up a distributed training cluster across Mac minis, Raspberry Pis, and NVIDIA Jetson devices.
 
 ## Table of Contents
 
-- [Network Topology](#network-topology)
-- [Hardware Components](#hardware-components)
-- [Part 1: Thunderbolt Fabric Setup (Mac minis)](#part-1-thunderbolt-fabric-setup-mac-minis)
-  - [Physical Setup](#physical-setup)
-  - [IP Assignment](#ip-assignment)
-  - [Verification](#verification)
-- [Part 2: Ethernet Edge Links (Pis ↔ Macs)](#part-2-ethernet-edge-links-pis--macs)
-  - [Mac mini 1 Ethernet (Pi 5 Link)](#mac-mini-1-ethernet-pi-5-link)
-  - [Mac mini 3 Ethernet (Pi 4 Link)](#mac-mini-3-ethernet-pi-4-link)
-  - [Pi 5 Network Setup](#pi-5-network-setup)
-  - [Pi 4 Network Setup](#pi-4-network-setup)
-  - [Key Routing Insights](#key-routing-insights)
-- [Part 3: Network Verification](#part-3-network-verification)
-  - [From Pi 4](#from-pi-4)
-  - [From Pi 5](#from-pi-5)
-  - [From Mac minis](#from-mac-minis)
-- [Part 4: SSH Setup (Control from MacBook)](#part-4-ssh-setup-control-from-macbook)
-  - [Generate SSH key (once)](#generate-ssh-key-once)
-  - [Find WiFi IPs for SSH](#find-wifi-ips-for-ssh)
-  - [Copy keys to all nodes](#copy-keys-to-all-nodes)
-  - [SSH config (optional but recommended)](#ssh-config-optional-but-recommended)
-  - [SSH Troubleshooting](#ssh-troubleshooting)
-- [Part 5: Training Launch](#part-5-training-launch)
-  - [Automated Launch (Recommended)](#automated-launch-recommended)
-- [Part 6: Troubleshooting](#part-6-troubleshooting)
-  - [Connection Issues](#connection-issues)
-  - [Mac IP Forwarding](#mac-ip-forwarding)
-  - [ARP Cache Issues](#arp-cache-issues)
-  - [Network Debugging Commands](#network-debugging-commands)
-- [Part 7: Network Performance Verification](#part-7-network-performance-verification)
-  - [Install iperf3](#install-iperf3)
-  - [Bandwidth Testing](#bandwidth-testing)
+- [Overview](#overview)
+- [Network Setup](#network-setup)
+- [Jetson GPU Worker Setup](#jetson-gpu-worker-setup)
+- [SSH Configuration](#ssh-configuration)
+- [Training Launch](#training-launch)
+- [Network Troubleshooting](#network-troubleshooting)
+- [iPad + Mac Mini Hybrid Inference](#ipad--mac-mini-hybrid-inference-cluster-setup)
 
 ---
 
-## Network Topology
+## Overview
 
-```
-┌──────────────────────────────────────────────────────┐
-│         Thunderbolt Fabric (10.10.0.0/24)           │
-│                                                      │
-│  Mac mini 1 (SERVER)  ←─→  Mac mini 2  ←─→  Mac mini 3 │
-│     10.10.0.1              10.10.0.2        10.10.0.3  │
-│         │                                       │      │
-└─────────┼───────────────────────────────────────┼──────┘
-          │                                       │
-          │ Ethernet                              │ Ethernet
-          │ 192.168.50.0/24                      │ 192.168.51.0/24
-          │                                       │
-     ┌────▼────┐                            ┌────▼────┐
-     │   Pi 5  │                            │   Pi 4  │
-     │ .50.2   │                            │ .51.4   │
-     └─────────┘                            └─────────┘
-```
+SmolCluster uses a **hybrid network topology**:
+- **Thunderbolt fabric** (10.10.0.0/24) for high-speed Mac-to-Mac communication (20-40 Gbps)
+- **Ethernet edge links** (192.168.5x.0/24) for Raspberry Pis and Jetson to reach the fabric
+- **Wi-Fi** for internet access and SSH control
 
-**Design Principles:**
-- ✅ **One subnet per physical link** (no L2 bridging between Ethernet segments)
-- ✅ **Specific routes** for cluster traffic (not stealing default routes)
-- ✅ **Macs act as gateways** for Pis to reach Thunderbolt fabric
-- ✅ **Server listens only on Thunderbolt** (10.10.0.1:65432)
-
-## Hardware Components
+### Hardware Components
 
 * **Mac mini 1**: Server + Pi 5 gateway (Thunderbolt + Ethernet)
 * **Mac mini 2**: Worker (Thunderbolt only)
-* **Mac mini 3**: Worker + Pi 4 gateway (Thunderbolt + Ethernet)
-* **Pi 4, Pi 5**: Edge workers (Ethernet + Wi-Fi for internet)
-* **MacBook**: Optional worker (Wi-Fi)
+* **Mac mini 3**: Worker + Pi 4/Jetson gateway (Thunderbolt + Ethernet)
+* **Pi 4, Pi 5**: Edge workers (Ethernet + Wi-Fi)
+* **NVIDIA Jetson Orin Nano**: GPU edge worker (Ethernet + Wi-Fi)
+* **MacBook**: Optional controller/worker (Wi-Fi)
 
-## Part 1: Thunderbolt Fabric Setup (Mac minis)
+---
 
-### Physical Setup
-1. Connect Mac minis via **Thunderbolt 4 cables** (daisy chain or star topology)
-2. On each Mac mini: **System Settings → Network → Thunderbolt Bridge → Configure IPv4**
+## Network Setup
 
-### IP Assignment
+**For complete network configuration instructions, see [Network Configuration Guide](networking.md).**
 
-Set **Manual** configuration with these static IPs:
+The networking guide covers:
+- Thunderbolt fabric configuration (Mac minis)
+- Ethernet edge link setup (Pis & Jetson)
+- Routing configuration and verification
+- Troubleshooting common network issues
+- Performance testing (bandwidth, latency)
 
-| Mac mini | Thunderbolt IP | Subnet Mask     | Router  |
-| -------- | -------------- | --------------- | ------- |
-| mini1    | 10.10.0.1      | 255.255.255.0   | (empty) |
-| mini2    | 10.10.0.2      | 255.255.255.0   | (empty) |
-| mini3    | 10.10.0.3      | 255.255.255.0   | (empty) |
+### Quick Setup Summary
 
-### Verification
+**1. Configure Thunderbolt fabric** between Mac minis:
+- Assign static IPs: 10.10.0.1, 10.10.0.2, 10.10.0.3
+- Leave router field empty
 
+**2. Configure Ethernet gateways** on Mac minis:
+- Mac mini 1 Ethernet: 192.168.50.1 (for Pi 5)
+- Mac mini 3 Ethernet: 192.168.51.2 (for Pi 4 & Jetson)
+- Enable IP forwarding: `sudo sysctl -w net.inet.ip.forwarding=1`
+
+**3. Configure edge workers** (Pi 4, Pi 5, Jetson):
+- Set static IP on Ethernet interface
+- Add specific route to 10.10.0.0/24 via Mac gateway
+- Keep Wi-Fi for internet access
+
+**4. Verify connectivity:**
 ```bash
-# From any Mac mini, ping others:
-ping 10.10.0.1  # mini1
-ping 10.10.0.2  # mini2
-ping 10.10.0.3  # mini3
+# From edge workers
+ping 10.10.0.1  # Should reach server via routing
 ```
 
-✅ All Macs should be reachable via Thunderbolt IPs
+**For detailed step-by-step instructions, troubleshooting, and performance testing, see [networking.md](networking.md).**
 
-## Part 2: Ethernet Edge Links (Pis ↔ Macs)
+---
+
+## Jetson GPU Worker Setup
+
+### Prerequisites
+
+**Configure passwordless sudo** (required for automated setup):
+```bash
+sudo visudo
+# Add: username ALL=(ALL) NOPASSWD:ALL
+```
+
+For network configuration, follow the [Network Configuration Guide](networking.md#nvidia-jetson-orin-nano-configuration).
 
 ### Mac mini 1 Ethernet (Pi 5 Link)
 
@@ -129,397 +108,175 @@ echo "net.inet.ip.forwarding=1" | sudo tee -a /etc/sysctl.conf
 sudo sysctl -w net.inet.ip.forwarding=1
 echo "net.inet.ip.forwarding=1" | sudo tee -a /etc/sysctl.conf
 ```
+### Software Setup
 
-### Pi 5 Network Setup
-
-**Connect Ethernet cable to Mac mini 1.**
-
-**Configure static IP with NetworkManager:**
+**Automated installation:**
 ```bash
-sudo nmcli con add type ethernet ifname eth0 con-name eth-static \
-  ipv4.method manual \
-  ipv4.addresses 192.168.50.2/24 \
-  ipv4.never-default yes
-
-# Add route to Thunderbolt network via mini1
-sudo nmcli con mod eth-static +ipv4.routes "10.10.0.0/24 192.168.50.1"
-
-# Bring up connection
-sudo nmcli con up eth-static
+cd ~/Desktop
+git clone https://github.com/YuvrajSingh-mist/smolcluster.git
+cd smolcluster
+bash scripts/installations/setup_jetson.sh
 ```
 
-**Verify routing:**
+The script automatically:
+- Installs system dependencies (CUDA libs, OpenBLAS, OpenMPI, Python 3.10)
+- Creates Python 3.10 venv with `uv`
+- Installs project dependencies
+- **Installs Jetson-specific PyTorch 2.8.0 with CUDA 12.6** from NVIDIA's Jetson AI Lab index
+- Verifies CUDA availability
+
+**Verify CUDA:**
 ```bash
-ip route
-# Should show:
-# default via <wifi-gateway> dev wlan0     ← Internet via Wi-Fi
-# 10.10.0.0/24 via 192.168.50.1 dev eth0   ← Cluster via Ethernet
-# 192.168.50.0/24 dev eth0                 ← Local Ethernet
+source .venv/bin/activate
+python3 -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
+# Expected: CUDA: True, Device: Orin
 ```
 
-**Test connectivity:**
-```bash
-ping 192.168.50.1  # Mac mini 1 Ethernet
-ping 10.10.0.1     # Mac mini 1 Thunderbolt (SERVER)
-```
+### PyTorch Wheels Source
 
-### Pi 4 Network Setup
+> **Critical**: Jetson requires custom ARM64+CUDA wheels from `https://pypi.jetson-ai-lab.io/jp6/cu126`  
+> Standard `pip install torch` installs incompatible CPU-only builds. Always use the setup script.
 
-**Connect Ethernet cable to Mac mini 3.**
+### Performance Notes
+- **GPU**: 1024 CUDA cores, 8GB shared memory
+- **Power**: 7-15W (edge-optimized)
+- **Bandwidth**: ~950 Mbps over Gigabit Ethernet
 
-**Configure static IP:**
-```bash
-sudo nmcli con add type ethernet ifname eth0 con-name eth-static \
-  ipv4.method manual \
-  ipv4.addresses 192.168.51.4/24 \
-  ipv4.never-default yes
+### Troubleshooting
 
-# Add route to Thunderbolt network via mini3
-sudo nmcli con mod eth-static +ipv4.routes "10.10.0.0/24 192.168.51.2"
+| Issue | Solution |
+|---|---|
+| **CUDA not detected** | Run `ldconfig -p \| grep libcuda` to verify CUDA libs. Check `cat /etc/nv_tegra_release` for JetPack version. |
+| **Wrong PyTorch version** | Remove `.venv` and re-run `setup_jetson.sh` to get Jetson-specific wheels. |
+| **Network issues** | See [Network Configuration Guide](networking.md#troubleshooting) for routing and connectivity fixes. |
 
-# Bring up connection
-sudo nmcli con up eth-static
-```
+---
 
-**Verify routing:**
-```bash
-ip route
-# Should show:
-# default via <wifi-gateway> dev wlan0     ← Internet via Wi-Fi
-# 10.10.0.0/24 via 192.168.51.2 dev eth0   ← Cluster via Ethernet  
-# 192.168.51.0/24 dev eth0                 ← Local Ethernet
-```
+## SSH Configuration
 
-**Test connectivity:**
-```bash
-ping 192.168.51.2  # Mac mini 3 Ethernet
-ping 10.10.0.1     # Server via routing through mini3
-```
-
-### Key Routing Insights
-
-🎯 **What's happening:**
-- Pis keep **internet via Wi-Fi** (default route unchanged)
-- Pis add **specific route** to 10.10.0.0/24 via their Ethernet gateway
-- Mac gateways **forward packets** from Ethernet → Thunderbolt
-- Server only listens on 10.10.0.1 (Thunderbolt)
-
-🚫 **What we're NOT doing:**
-- Making Ethernet the default gateway (would break internet)
-- Bridging the two Ethernet subnets (would violate L2 design)
-- Having Pis talk directly (they route via Macs)
-
-✅ **This mirrors real cluster design:**
-- Thunderbolt = InfiniBand/RoCE fabric
-- Ethernet = ToR (Top-of-Rack) links
-- Pis = leaf compute nodes
-- Routing = explicit fabric path control
-
-## Part 3: Network Verification
-
-Run these tests from each node to verify correct routing:
-
-### From Pi 4
-```bash
-# Local Ethernet link
-ping -c 3 192.168.51.2        # \u2705 Should work (Mac mini 3 Ethernet)
-
-# Thunderbolt fabric (via routing)
-ping -c 3 10.10.0.1           # \u2705 Should work (Server)
-ping -c 3 10.10.0.3           # \u2705 Should work (Mac mini 3 Thunderbolt)
-
-# Other Ethernet subnet  
-ping -c 3 192.168.50.1        # \u274c Should FAIL (good! Different L2 domain)
-
-# Internet
-ping -c 3 8.8.8.8             # \u2705 Should work (via Wi-Fi)
-```
-
-### From Pi 5
-```bash
-# Local Ethernet link
-ping -c 3 192.168.50.1        # \u2705 Should work (Mac mini 1 Ethernet)
-
-# Thunderbolt fabric (via routing)
-ping -c 3 10.10.0.1           # \u2705 Should work (Server)
-ping -c 3 10.10.0.2           # \u2705 Should work (Mac mini 2)
-
-# Other Ethernet subnet
-ping -c 3 192.168.51.2        # \u274c Should FAIL (good! Separate link)
-
-# Internet
-ping -c 3 8.8.8.8             # \u2705 Should work (via Wi-Fi)
-```
-
-### From Mac minis
-```bash
-# Thunderbolt fabric
-ping -c 3 10.10.0.1           # \u2705 All minis can reach all Thunderbolt IPs
-ping -c 3 10.10.0.2
-ping -c 3 10.10.0.3
-
-# Ethernet (only on mini1 and mini3)
-# On mini1:
-ping -c 3 192.168.50.2        # \u2705 Should reach Pi 5
-
-# On mini3:
-ping -c 3 192.168.51.4        # \u2705 Should reach Pi 4
-```
-
-## Part 4: SSH Setup (Control from MacBook)
-
-### Generate SSH key (once)
+### Generate SSH Key
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/macmini_cluster -C "macmini-cluster"
 ```
 
-### Find WiFi IPs for SSH
+### Important: SSH Uses Wi-Fi IPs
 
-**IMPORTANT:** SSH uses **Wi-Fi IPs**, not cluster IPs (Ethernet/Thunderbolt).
+**SSH connections use Wi-Fi IPs, NOT cluster IPs (Ethernet/Thunderbolt).**
 
-**Find IP on Mac mini:**
+**Find Wi-Fi IP on Mac mini:**
 ```bash
-# Get WiFi IP address
 ifconfig en0 | grep "inet " | awk '{print $2}'
 ```
 
-**Find IP on Raspberry Pi:**
+**Find Wi-Fi IP on Raspberry Pi/Jetson:**
 ```bash
-# Get WiFi IP address
 ip addr show wlan0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
-
-# Or check DHCP lease
-hostname -I
+# Or: hostname -I
 ```
 
-**Ensure all nodes are on the same WiFi network** for SSH to work!
+### Copy SSH Keys
 
-### Copy keys to all nodes
-
-**To Mac minis (use WiFi IP):**
 ```bash
+# To Mac minis
 ssh-copy-id -i ~/.ssh/macmini_cluster.pub yuvrajsingh1@<mini_wifi_ip>
-```
 
-**To Pis (use WiFi IP):**
-```bash
+# To Pis/Jetson
 ssh-copy-id -i ~/.ssh/macmini_cluster.pub pi@<pi_wifi_ip>
 ```
 
-### SSH config (optional but recommended)
+### SSH Config (Optional)
 
-```bash
-nano ~/.ssh/config
-```
+Create `~/.ssh/config`:
 
 ```ssh
 Host mini1
-    HostName <mini1_wifi_ip>     # Find with: ifconfig en0
+    HostName <mini1_wifi_ip>
     User yuvrajsingh1
     IdentityFile ~/.ssh/macmini_cluster
-    IdentitiesOnly yes
 
 Host mini2
     HostName <mini2_wifi_ip>
     User yuvrajsingh1
     IdentityFile ~/.ssh/macmini_cluster
-    IdentitiesOnly yes
 
 Host mini3
     HostName <mini3_wifi_ip>
     User yuvrajsingh1
     IdentityFile ~/.ssh/macmini_cluster
-    IdentitiesOnly yes
 
 Host pi4
-    HostName <pi4_wifi_ip>       # Find with: hostname -I
+    HostName <pi4_wifi_ip>
     User pi
     IdentityFile ~/.ssh/macmini_cluster
-    IdentitiesOnly yes
 
 Host pi5
     HostName <pi5_wifi_ip>
     User pi
     IdentityFile ~/.ssh/macmini_cluster
-    IdentitiesOnly yes
+
+Host jetson
+    HostName <jetson_wifi_ip>
+    User yuvrajsingh
+    IdentityFile ~/.ssh/macmini_cluster
 ```
 
 ### SSH Troubleshooting
 
-**"Connection timed out" errors:**
-
-1. **Verify WiFi connectivity:**
-   ```bash
-   # From MacBook, ping the WiFi IP
-   ping <node_wifi_ip>
-   ```
-
-2. **Check nodes are on same WiFi network:**
-   ```bash
-   # On each node
-   iwgetid -r  # Linux - shows WiFi SSID
-   
-   # macOS
-   /System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I | grep SSID
-   ```
-
-3. **Verify SSH is running on target:**
-   ```bash
-   # On Mac mini
-   sudo systemsetup -getremotelogin
-   
-   # On Pi
-   sudo systemctl status ssh
-   ```
-
-4. **Enable SSH if needed:**
-   ```bash
-   # On Mac mini
-   sudo systemsetup -setremotelogin on
-   
-   # On Pi
-   sudo systemctl enable ssh
-   sudo systemctl start ssh
-   ```
-
-## Part 5: Training Launch
-
-### Automated Launch (Recommended)
-
-Use `launch_edp.sh` for elastic distributed training:
-
+**Enable SSH on nodes if needed:**
 ```bash
-cd /path/to/smolcluster
-bash ./launch_edp.sh
+# Mac mini
+sudo systemsetup -setremotelogin on
+
+# Pi/Jetson
+sudo systemctl enable ssh && sudo systemctl start ssh
 ```
 
-This script:
-- Starts server on mini1 (10.10.0.1)
-- Launches workers on configured nodes
-- Uses tmux for persistent sessions
-- Handles connection retries automatically
+---
 
-## Part 6: Troubleshooting
+## Training Launch
 
-### Connection Issues
+### Automated Launch Scripts
 
-**Pi cannot reach server:**
-```bash
-# Verify Ethernet link
-ping 192.168.51.2  # (or .50.1 for Pi 5)
-
-# Verify routing
-ip route | grep 10.10.0.0
-
-# Should see: 10.10.0.0/24 via 192.168.51.2 dev eth0
-
-# Test server connectivity
-nc -zv 10.10.0.1 65432
-```
-
-**Fix missing route:**
-```bash
-# Pi 4:
-sudo nmcli con mod eth-static +ipv4.routes \"10.10.0.0/24 192.168.51.2\"
-sudo nmcli con up eth-static
-
-# Pi 5:
-sudo nmcli con mod eth-static +ipv4.routes \"10.10.0.0/24 192.168.50.1\"
-sudo nmcli con up eth-static
-```
-
-### Mac IP Forwarding
-
-**Verify forwarding is enabled:**
-```bash
-sysctl net.inet.ip.forwarding
-# Should return: net.inet.ip.forwarding: 1
-```
-
-**Re-enable if disabled:**
-```bash
-sudo sysctl -w net.inet.ip.forwarding=1
-```
-
-### ARP Cache Issues
-
-**Clear ARP cache on Mac:**
-```bash
-sudo arp -a -d  # Clear all ARP entries
-```
-
-**Warm up ARP before training:**
-```bash
-# From Pi, ping the Mac gateway
-ping -c 5 192.168.51.2
-```
-### Network Debugging Commands
+Launch distributed training using the provided scripts:
 
 ```bash
-# Show all network interfaces and IPs
-ip addr show  # Linux
-ifconfig      # macOS
+cd /path/to/smolcluster/scripts/training
 
-# Show routing table
-ip route      # Linux
-netstat -rn   # macOS
+# FSDP (ZeRO-optimized, recommended for large models)
+bash launch_fsdp_train_gpt.sh
 
-# Trace packet path
-traceroute 10.10.0.1  # See hops to server
+# Classic Data Parallelism
+bash launch_dp_train_gpt.sh
 
-# Monitor live traffic
-sudo tcpdump -i eth0 port 65432  # Watch training traffic
-```
-1
-## Part 7: Network Performance Verification
+# Elastic Distributed Parallelism
+bash launch_edp_train_gpt.sh
 
-### Install iperf3
-
-**On macOS (all Macs):**
-```bash
-brew install iperf3
+# Model Parallelism
+bash launch_mp_train_gpt.sh
 ```
 
-**On Raspberry Pis (Debian/Ubuntu):**
-```bash
-sudo apt update
-sudo apt install iperf3 -y
-```
+Launch scripts automatically:
+- Sync code to all nodes via rsync
+- Start server on mini1 (10.10.0.1:65432)
+- Launch workers on configured nodes
+- Use tmux for persistent sessions
+- Handle connection retries and logging
 
-### Bandwidth Testing
+For detailed algorithm information, see [Training Guide](training.md).
 
-**Between Macs (Thunderbolt):**
-```bash
-# On mini1 (server)
-iperf3 -s
+---
 
-# On mini2 (client)
-iperf3 -c 10.10.0.1
-# Should see: 20-40 Gbps (Thunderbolt 4 capability)
-```
+## Network Troubleshooting
 
-**Pi to Server (via Ethernet + routing):**
-```bash
-# On mini1 (server)
-iperf3 -s
+For network connectivity issues, see the comprehensive troubleshooting section in [Network Configuration Guide](networking.md#part-4-troubleshooting).
 
-# On Pi 4
-iperf3 -c 10.10.0.1
-# Should see: 800-950 Mbps (Gigabit Ethernet)
-```
-
-### Latency Testing
-
-```bash
-# From Pi 4 to server (multi-hop)
-ping -c 100 10.10.0.1 | tail -1
-# Expect: avg < 2ms
-
-# From mini2 to server (direct Thunderbolt)
-ping -c 100 10.10.0.1 | tail -1
-# Expect: avg < 0.5ms
-```
+Common issues covered:
+- Edge worker cannot reach server (routing problems)
+- Mac gateway not forwarding packets (IP forwarding disabled)
+- Internet broken on edge worker (default route issues)
+- ARP cache problems
+- Connection refused on training port
 
 ---
 

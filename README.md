@@ -35,11 +35,12 @@ bash scripts/launch_edp_train_gpt.sh
 
 ## Documentation
 
-- **[Configuration Guide](docs/configuration.md)** - Cluster and model configuration
+- **[Cluster Setup Guide](docs/setup_cluster.md)** - Complete setup for distributed training cluster
+- **[Network Configuration Guide](docs/networking.md)** - Detailed networking setup (Thunderbolt + Ethernet)
 - **[Training Guide](docs/training.md)** - Training algorithms and usage
-- **[Logging Setup](docs/logging.md)** - Grafana + Loki distributed logging
-- **[Cluster Setup](docs/setup_cluster.md)** - Hardware setup and networking
+- **[Configuration Guide](docs/configuration.md)** - Cluster and model configuration
 - **[Inference Guide](docs/inference.md)** - Model parallelism inference
+- **[Logging Setup](docs/logging.md)** - Grafana + Loki distributed logging
 
 ## Training Algorithms
 

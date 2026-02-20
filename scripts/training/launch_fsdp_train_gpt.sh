@@ -12,6 +12,12 @@ fi
 # Set WANDB_API_KEY for wandb compatibility
 export WANDB_API_KEY="$WANDB_API_TOKEN"
 
+# Set CUDA environment variables (for Jetson and other CUDA devices)
+if [[ -n "$CUDA_HOME" ]]; then
+    export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
+    export PATH="$CUDA_HOME/bin:$PATH"
+fi
+
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -188,6 +194,15 @@ if [[ "$DRY_RUN" != "true" ]]; then
             echo "✅ Venv exists on $node. Running uv sync..."
             ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"
         fi
+        
+        # Special handling for Jetson devices - install CUDA-enabled PyTorch
+        if [[ "$node" == *"jetson"* ]]; then
+            echo "🤖 Detected Jetson device: $node"
+            echo "   Installing Jetson-specific PyTorch with CUDA support..."
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && bash scripts/installations/setup_jetson.sh"
+            echo "   ✅ Jetson PyTorch installation complete"
+        fi
+        
         echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
     done
 else

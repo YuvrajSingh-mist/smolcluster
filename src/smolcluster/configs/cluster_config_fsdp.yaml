@@ -30,6 +30,7 @@ buffer_size:
   pi4: 2  # Raspberry Pi 4 - 2MB (Gigabit Ethernet)
   pi5: 2  # Raspberry Pi 5 - 2MB (Gigabit Ethernet)
   win: 1  # Windows 11 - 1MB (conservative for compatibility)
+  jetson: 4  # Jetson - 4MB (optimized for its network capabilities)
 
 # Network metrics tracking
 track_network_metrics: true  # Enable bandwidth, latency, buffer usage tracking

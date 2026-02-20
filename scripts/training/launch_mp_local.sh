@@ -10,6 +10,12 @@ fi
 # Set WANDB_API_KEY for wandb compatibility
 export WANDB_API_KEY="$WANDB_API_TOKEN"
 
+# Set CUDA environment variables (for Jetson and other CUDA devices)
+if [[ -n "$CUDA_HOME" ]]; then
+    export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
+    export PATH="$CUDA_HOME/bin:$PATH"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_mp.yaml"
