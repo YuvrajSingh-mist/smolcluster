@@ -84,7 +84,7 @@ done
 FSDP_STAGE=$(yq '.fsdp_stage // 1' "$CONFIG_FILE")
 FSDP_STAGE_NAME="ZeRO Stage 0 (Optimizer Partitioning)"
 if [[ $FSDP_STAGE -eq 1 ]]; then
-    FSDP_STAGE_NAME="ZeRO Stage 1 (Optimizer Partitioning + Gradient Partitioning)"
+    FSDP_STAGE_NAME="ZeRO Stage 1 (Optimizer + Gradient Partitioning)"
 elif [[ $FSDP_STAGE -eq 2 ]]; then
     FSDP_STAGE_NAME="ZeRO Stage 2 (Optimizer + Gradient + Parameter Partitioning)"
 fi
@@ -320,9 +320,6 @@ fi
 launch_on_node "$WORKER_0_HOSTNAME" "$WORKER_0_CMD" "fsdp_worker0"
 echo "   ✅ Rank 0: $WORKER_0_HOSTNAME (fsdp_worker0)"
 
-# Wait a moment for worker 0 to start
-echo "⏳ Waiting 3 seconds for worker 0 to initialize..."
-sleep 3
 
 if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
     echo "ℹ️  Tablets should run manually: "

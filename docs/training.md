@@ -34,7 +34,7 @@ SmolCluster implements multiple distributed training paradigms:
 
 **ZeRO-optimized data parallelism with optimizer state partitioning**
 
-- Configurable ZeRO stages (Stage 0: All-Reduce, Stage 1: Optimizer Partitioning, Stage 2: Optimizer + Gradient Partitioning)
+- Configurable ZeRO stages (Stage 0: Optimizer, Stage 1: +Gradient, Stage 2: +Parameter Partitioning)
 - All-to-all gradient communication (ring all-reduce topology)
 - Reduced memory footprint through state partitioning
 - Bandwidth-optimized weight broadcasting (only owned parameters)
@@ -51,14 +51,14 @@ bash scripts/launch_fsdp_train_gpt.sh
 **Configuration:**
 ```yaml
 # In cluster_config_fsdp.yaml
-fsdp_stage: 1  # 0 for All-Reduce, 1 for ZeRO Stage 1, 2 for ZeRO Stage 2
+fsdp_stage: 0  # 0=Optimizer, 1=+Gradient, 2=+Parameter partitioning
 staleness_bound: 5  # Allow workers to be 5 steps apart (0 = strict sync)
 ```
 
 **FSDP Stages:**
-- `fsdp_stage: 0` - All-Reduce (classic data parallelism, full model replicas)
-- `fsdp_stage: 1` - ZeRO Stage 1 (optimizer state partitioning, ~1/N memory per worker)
-- `fsdp_stage: 2` - ZeRO Stage 2 (optimizer + gradient partitioning, ~1/N memory + reduced communication)
+- `fsdp_stage: 0` - ZeRO-0 (optimizer state partitioning, ~1/N optimizer memory)
+- `fsdp_stage: 1` - ZeRO-1 (optimizer + gradient partitioning, ~1/N optimizer + gradient memory)
+- `fsdp_stage: 2` - ZeRO-2 (optimizer + gradient + parameter partitioning, ~1/N total memory)
 
 ### Classic Data Parallelism (ClassicDP)
 

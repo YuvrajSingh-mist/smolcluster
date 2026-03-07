@@ -366,7 +366,7 @@ def set_weights_by_layer(
     worker_rank: int,
 ) -> None:
     """
-    Update model with received weights from other workers (ZeRO Stage 1).
+    Update model with received weights from other workers (ZeRO Stage 1 + 2).
     Each worker sends only their owned parameters, so we just copy them into the model.
     
     Args:
@@ -389,7 +389,7 @@ def set_weights_by_layer(
             # Just copy all parameters from their state_dict into the model
             
 
-            # logger.info(state_dict)
+            logger.info(state_dict)
             for param_name, param_value in state_dict.items():
                 
                 if param_name.startswith('model.'):

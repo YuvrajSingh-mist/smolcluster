@@ -31,15 +31,15 @@ buffer_size:
   pi4: 2  # Raspberry Pi 4 - 2MB (Gigabit Ethernet)
   pi5: 2  # Raspberry Pi 5 - 2MB (Gigabit Ethernet)
   win: 1  # Windows 11 - 1MB (conservative for compatibility)
-  jetson: 4  # Jetson - 4MB (optimized for its network capabilities)
-
+  jetson2: 4  # Jetson - 4MB (optimized for its network capabilities)
+  jetson3: 4  # Jetson - 4MB
 # Network metrics tracking
 track_network_metrics: true  # Enable bandwidth, latency, buffer usage tracking
 metrics_log_interval: 50  # Log network metrics every N steps
 
 # FSDP stage selection
-# stage: 0 - ZeRO Stage 0 (optimizer partitioning )
-# stage: 1 - ZeRO Stage 1 (optimizer state + gradients partitioning)
+# stage: 0 - ZeRO Stage 0 (optimizer state partitioning)
+# stage: 1 - ZeRO Stage 1 (optimizer + gradient partitioning)
 # stage: 2 - ZeRO Stage 2 (optimizer + gradient + parameter partitioning)
 fsdp_stage: 2
 # Bounded staleness for gradient synchronization

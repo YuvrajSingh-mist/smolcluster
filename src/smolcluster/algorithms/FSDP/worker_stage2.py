@@ -331,8 +331,8 @@ def run_fsdp_worker(
     resume_checkpoint_path=None,
 ):
     """
-    Run FSDP (ZeRO Stage 1) training with optimizer state partitioning.
-    Workers partition optimizer states while maintaining full model replica.
+    Run FSDP (ZeRO Stage 2) training with optimizer + gradient + parameter partitioning.
+    Workers partition optimizer states, gradients, and model parameters for maximum memory efficiency.
 
     Args:
         model: PyTorch model to train
@@ -357,7 +357,7 @@ def run_fsdp_worker(
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
-    logger.info(f"🚀 FSDP Worker rank {worker_rank} starting up")
+    logger.info(f"🚀 FSDP Worker rank {worker_rank} starting up (ZeRO Stage 2)")
 
     # Extract configuration
     batch_size = config["batch_size"]
@@ -437,7 +437,7 @@ def run_fsdp_worker(
     model = model.to(device)
     logger.info(f"Model initialized on device: {device}")
     
-    _, out_layers  = get_model_per_node(
+    sharded_model, out_layers  = get_model_per_node(
         model=model,
         num_nodes=num_nodes,
         local_rank=worker_rank,
@@ -445,22 +445,15 @@ def run_fsdp_worker(
             
     )
 
-    #ZeRO Stage 3: Divide the model layers across workers and only keep the local layers on each worker to reduce memory and communication overhead. Each worker will only update its local layers and communicate those updates.
-    
+    # ZeRO Stage 2: Parameter partitioning + Gradient partitioning + Optimizer partitioning
+    # For Stage 2, we partition parameters across workers (only keep owned params in memory)
+    # This is achieved by get_model_per_node which gives us our layer partition
     
     model_layers = out_layers
     
-    total_params = sum(p.numel() for p in model.parameters())
-    parameter_indices = torch.arange(total_params)
-    split_indices = torch.chunk(parameter_indices, num_nodes)
-    
-    sharded_out_layers = out_layers[split_indices]
-    sharded_model = torch.nn.ModuleList(list(sharded_out_layers.values()))
-    # print(out_layers)
     logger.info(f"Worker rank {worker_rank} loaded {len(model_layers)} layers")
-    # print(sharded_model)
     
-    # ZeRO Stage 1: Create optimizer ONLY for this worker's owned layers
+    # ZeRO Stage 2: Create optimizer ONLY for this worker's owned layers
     # Build dict of owned parameters: {param_name: param_tensor}
     # this dict will always have updated values after optimizer.step()
     owned_params_dict = {}
@@ -471,7 +464,7 @@ def run_fsdp_worker(
     
     optimizer = torch.optim.AdamW(owned_params_dict.values(), lr=learning_rate)
     logger.info(
-        f"Created ZeRO Stage 1 optimizer for worker rank {worker_rank} with lr={learning_rate} "
+        f"Created ZeRO Stage 2 optimizer for worker rank {worker_rank} with lr={learning_rate} "
         f"managing {len(owned_params_dict)} parameter tensors"
     )
 
@@ -658,14 +651,16 @@ def run_fsdp_worker(
             logger.info(
                 "Performing all-gather: broadcasting local parameters to all peers"
             )
+            
+            parameters_received[step][worker_rank] = out_layers  # Include own parameters in the all-gather buffer for simplicity
 
             for peer_rank, peer_socket in outbound_worker_sockets.items():
                 
-                params_split = {}
-                for i, (name, param) in enumerate(sharded_out_layers.items()):
+                # params_split = {}
+                # for i, (name, param) in enumerate(model_layers.items()):
                     
-                    if i in split_indices[peer_rank % len(split_indices)]:
-                        params_split[name] = param.data.cpu().clone()  # Move to CPU and clone for network transmission
+                #     if i in split_indices[peer_rank % len(split_indices)]:
+                #         params_split[name] = param.data.cpu().clone()  # Move to CPU and clone for network transmission
                         
                     
                 send_message(
@@ -674,44 +669,57 @@ def run_fsdp_worker(
                         "all_reduce",
                         step,
                         worker_rank,
-                        params_split,
+                        out_layers,  
                         'parameters',
                     ),
                 )
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} sent parameters to worker {peer_rank}"
                 )
+                
+            logger.info(
+                f"[Step {step}] Worker {worker_rank} sent local parameters to all peers, now waiting to receive parameters from all peers for this step"
+            )
             # Wait for all workers (all gather) to send their parameters for this step
             # Check for staleness violations and clean up stale parameters (only if staleness_bound > 0)
 
             while True:
                 with lock:
+                    # Clean up old parameters beyond staleness window FIRST
+                    if staleness_bound > 0:
+                        for old_step in list(parameters_received.keys()):
+                            if old_step < step - staleness_bound:
+                                logger.info(f"[Step {step}] Cleaning up stale parameters from step {old_step}")
+                                parameters_received.pop(old_step, None)
+                    
                     # Only check staleness if bounded async is enabled
                     if staleness_bound > 0:
                         for recv_step in list(parameters_received.keys()):
-                            step_diff = abs(recv_step - step)
-                            
-                            # Track staleness statistics
-                            staleness_stats["all_reduce_step_diffs"].append(step_diff)
-                            staleness_stats["max_step_diff"] = max(
-                                staleness_stats["max_step_diff"], step_diff
-                            )
-                            if step_diff > 0:
-                                staleness_stats["stale_parameter_count"] += 1
-                            
-                            if step_diff > staleness_bound:
-                                logger.error(
-                                    f"[Step {step}] STALENESS VIOLATION: Received parameter from step {recv_step} "
-                                    f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                            # Only check steps within the staleness window
+                            if recv_step >= step - staleness_bound:
+                                step_diff = abs(recv_step - step)
+                                
+                                # Track staleness statistics
+                                staleness_stats["all_reduce_step_diffs"].append(step_diff)
+                                staleness_stats["max_step_diff"] = max(
+                                    staleness_stats["max_step_diff"], step_diff
                                 )
-                                raise RuntimeError(
-                                    f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
-                                )
+                                if step_diff > 0:
+                                    staleness_stats["stale_parameter_count"] += 1
+                                
+                                if step_diff > staleness_bound:
+                                    logger.error(
+                                        f"[Step {step}] STALENESS VIOLATION: Received parameter from step {recv_step} "
+                                        f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                                    )
+                                    raise RuntimeError(
+                                        f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
+                                    )
                     
                     curr_workers_len = len(parameters_received[step])
 
                 logger.info(
-                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received parameters from {curr_workers_len}/{NUM_WORKERS} workers."
+                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received parameters from {curr_workers_len}/{NUM_WORKERS - 1} peers."
                 )
                 if curr_workers_len < NUM_WORKERS:
                     logger.info(f"Waiting for more parameters for step {step}...")
@@ -731,18 +739,18 @@ def run_fsdp_worker(
                     f"[Step {step}  / {num_epochs * len(train_loader)}] Combining parameters from {len(parameters_received[step])} participants"
                 )
 
-                # combine the params
-                params_reduced = combine(parameters_received[step], type="parameters")
+                # # combine the params
+                # params_reduced = combine(parameters_received[step], type="parameters")
 
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} combined parameters successfully"
-                )
+                # logger.info(
+                #     f"[Step {step}] Worker {worker_rank} combined parameters successfully"
+                # )
 
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} applying combined parameters to local model"
-                )
+                # logger.info(
+                #     f"[Step {step}] Worker {worker_rank} applying combined parameters to local model"
+                # )
 
-                set_weights_by_layer(params_reduced[step], model, worker_rank)
+                set_weights_by_layer(parameters_received[step], model, worker_rank)
 
 
                 logger.info(
@@ -755,10 +763,10 @@ def run_fsdp_worker(
                 f"[Step {step}/{num_epochs * len(train_loader)}] Worker rank {worker_rank} computing local gradients"
             )
             
-            #ZeRO Stage 1 optimization: Only compute gradients for this worker's owned layers
+            #ZeRO Stage 2 optimization: Only compute gradients for this worker's owned layers
 
             local_loss, local_grads = compute_leader_gradients(
-                device, sharded_model, data, target, criterion, optimizer, config
+                device, model, data, target, criterion, optimizer, config
             )
             with lock:
                 grads_received[step][worker_rank] = local_grads
@@ -827,32 +835,41 @@ def run_fsdp_worker(
             
             while True:
                 with lock:
+                    # Clean up old gradients beyond staleness window FIRST
+                    if staleness_bound > 0:
+                        for old_step in list(grads_received.keys()):
+                            if old_step < step - staleness_bound:
+                                logger.info(f"[Step {step}] Cleaning up stale gradients from step {old_step}")
+                                grads_received.pop(old_step, None)
+                    
                     # Only check staleness if bounded async is enabled
                     if staleness_bound > 0:
                         for recv_step in list(grads_received.keys()):
-                            step_diff = abs(recv_step - step)
-                            
-                            # Track staleness statistics
-                            staleness_stats["all_reduce_step_diffs"].append(step_diff)
-                            staleness_stats["max_step_diff"] = max(
-                                staleness_stats["max_step_diff"], step_diff
-                            )
-                            if step_diff > 0:
-                                staleness_stats["stale_gradient_count"] += 1
-                            
-                            if step_diff > staleness_bound:
-                                logger.error(
-                                    f"[Step {step}] STALENESS VIOLATION: Received gradient from step {recv_step} "
-                                    f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                            # Only check steps within the staleness window
+                            if recv_step >= step - staleness_bound:
+                                step_diff = abs(recv_step - step)
+                                
+                                # Track staleness statistics
+                                staleness_stats["all_reduce_step_diffs"].append(step_diff)
+                                staleness_stats["max_step_diff"] = max(
+                                    staleness_stats["max_step_diff"], step_diff
                                 )
-                                raise RuntimeError(
-                                    f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
-                                )
+                                if step_diff > 0:
+                                    staleness_stats["stale_gradient_count"] += 1
+                                
+                                if step_diff > staleness_bound:
+                                    logger.error(
+                                        f"[Step {step}] STALENESS VIOLATION: Received gradient from step {recv_step} "
+                                        f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                                    )
+                                    raise RuntimeError(
+                                        f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
+                                    )
                     
                     curr_workers_len = len(grads_received[step])
 
                 logger.info(
-                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received gradients from {curr_workers_len}/{NUM_WORKERS} workers."
+                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received gradients from {curr_workers_len - 1}/{NUM_WORKERS - 1} peers (total: {curr_workers_len}/{NUM_WORKERS})."
                 )
                 if curr_workers_len < NUM_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")
@@ -907,7 +924,7 @@ def run_fsdp_worker(
                             step,
                             worker_rank,
                             owned_state_dict,
-                            
+                            None
                         ),
                     )
                     logger.info(
@@ -949,9 +966,9 @@ def run_fsdp_worker(
                         
                         curr_reduced_len = len(weights_received[step])
                     
-                    logger.info(
-                        f"[Step {step}] Worker {worker_rank} received {curr_reduced_len}/{NUM_WORKERS - 1} reduced weight sets"
-                    )
+                        logger.info(
+                            f"[Step {step}] Worker {worker_rank} received {curr_reduced_len}/{NUM_WORKERS - 1} reduced weight sets"
+                        )
                     
                     if curr_reduced_len >= NUM_WORKERS - 1:
                         logger.info(f"[Step {step}] Worker {worker_rank} received all reduced weights")

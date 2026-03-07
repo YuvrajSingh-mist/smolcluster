@@ -28,21 +28,6 @@ from smolcluster.utils.logging_utils import setup_cluster_logging
 
 step = 0  # Global step counter to track training progress across threads
 
-
-def combine(
-    grads_dict: dict[int, dict[str, torch.Tensor]]
-) -> dict[str, torch.Tensor]:
-    """Average gradients from all workers."""
-    grads_reduced = {}
-    for worker_id in list(grads_dict):
-        for name, worker_grads in grads_dict[worker_id].items():
-            grads_reduced[name] = grads_reduced.get(name, 0.0) + (
-                worker_grads 
-            ) 
-
-    return grads_reduced
-
-
 def compute_leader_activations(
     device: torch.device,
     model_layers: list[torch.nn.Module],
@@ -308,8 +293,8 @@ def run_fsdp_worker(
     resume_checkpoint_path=None,
 ):
     """
-    Run FSDP (ZeRO Stage 1) training with optimizer state partitioning.
-    Workers partition optimizer states while maintaining full model replica.
+    Run FSDP (ZeRO Stage 1) training with optimizer + gradient partitioning.
+    Workers partition optimizer states and gradients, maintaining full model replica.
 
     Args:
         model: PyTorch model to train
@@ -334,7 +319,7 @@ def run_fsdp_worker(
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
     )
-    logger.info(f"🚀 FSDP Worker rank {worker_rank} starting up")
+    logger.info(f"🚀 FSDP Worker rank {worker_rank} starting up (ZeRO Stage 1)")
 
     # Extract configuration
     batch_size = config["batch_size"]
@@ -633,7 +618,7 @@ def run_fsdp_worker(
 
             total_loss += local_loss.item()
 
-            #ZeRO Stage 2 optimization: Only split and communicate gradients for parameters this worker owns/updated
+            #ZeRO Stage 1: Split and communicate gradients for parameters this worker owns
             total_params = sum(p.numel() for p in model.parameters())
             grads_indices = torch.arange(total_params)
             split_indices = torch.chunk(grads_indices, num_nodes)
@@ -694,32 +679,41 @@ def run_fsdp_worker(
             
             while True:
                 with lock:
+                    # Clean up old gradients beyond staleness window FIRST
+                    if staleness_bound > 0:
+                        for old_step in list(grads_received.keys()):
+                            if old_step < step - staleness_bound:
+                                logger.info(f"[Step {step}] Cleaning up stale gradients from step {old_step}")
+                                grads_received.pop(old_step, None)
+                    
                     # Only check staleness if bounded async is enabled
                     if staleness_bound > 0:
                         for recv_step in list(grads_received.keys()):
-                            step_diff = abs(recv_step - step)
-                            
-                            # Track staleness statistics
-                            staleness_stats["all_reduce_step_diffs"].append(step_diff)
-                            staleness_stats["max_step_diff"] = max(
-                                staleness_stats["max_step_diff"], step_diff
-                            )
-                            if step_diff > 0:
-                                staleness_stats["stale_gradient_count"] += 1
-                            
-                            if step_diff > staleness_bound:
-                                logger.error(
-                                    f"[Step {step}] STALENESS VIOLATION: Received gradient from step {recv_step} "
-                                    f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                            # Only check steps within the staleness window
+                            if recv_step >= step - staleness_bound:
+                                step_diff = abs(recv_step - step)
+                                
+                                # Track staleness statistics
+                                staleness_stats["all_reduce_step_diffs"].append(step_diff)
+                                staleness_stats["max_step_diff"] = max(
+                                    staleness_stats["max_step_diff"], step_diff
                                 )
-                                raise RuntimeError(
-                                    f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
-                                )
+                                if step_diff > 0:
+                                    staleness_stats["stale_gradient_count"] += 1
+                                
+                                if step_diff > staleness_bound:
+                                    logger.error(
+                                        f"[Step {step}] STALENESS VIOLATION: Received gradient from step {recv_step} "
+                                        f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                                    )
+                                    raise RuntimeError(
+                                        f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
+                                    )
                     
                     curr_workers_len = len(grads_received[step])
 
                 logger.info(
-                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received gradients from {curr_workers_len}/{NUM_WORKERS} workers."
+                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received gradients from {curr_workers_len - 1}/{NUM_WORKERS - 1} peers (total: {curr_workers_len}/{NUM_WORKERS})."
                 )
                 if curr_workers_len < NUM_WORKERS:
                     logger.info(f"Waiting for more gradients for step {step}...")
@@ -734,18 +728,23 @@ def run_fsdp_worker(
                     f"[Step {step}  / {num_epochs * len(train_loader)}] Averaging gradients from {len(grads_received[step])} participants"
                 )
 
-                # combine the grads
-                grads_reduced = combine(grads_received[step])
-
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} averaged gradients successfully"
-                )
+              
 
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} applying averaged gradients to local model"
                 )
 
-                set_gradients(grads_reduced, model)
+                for peer_rank, peer_grads in grads_received[step].items():
+                    
+                    logger.info(
+                        f"[Step {step}] Worker {worker_rank} applying gradients from worker {peer_rank}"
+                    )
+                    set_gradients(peer_grads, model)
+                    
+                    logger.info(
+                        f"[Step {step}] Worker {worker_rank} applied gradients from worker {peer_rank}"
+                    )
+                    
                 optimizer.step()
 
                 logger.info(
@@ -791,27 +790,36 @@ def run_fsdp_worker(
                 logger.info(f"[Step {step}] Worker {worker_rank} waiting for weights from peers...")
                 while True:
                     with lock:
+                        # Clean up old weights beyond staleness window FIRST
+                        if staleness_bound > 0:
+                            for old_step in list(weights_received.keys()):
+                                if old_step < step - staleness_bound:
+                                    logger.info(f"[Step {step}] Cleaning up stale weights from step {old_step}")
+                                    weights_received.pop(old_step, None)
+                        
                         # Only check staleness if bounded async is enabled
                         if staleness_bound > 0:
                             for recv_step in list(weights_received.keys()):
-                                step_diff = abs(recv_step - step)
-                                
-                                # Track staleness statistics
-                                staleness_stats["broadcast_weights_step_diffs"].append(step_diff)
-                                staleness_stats["max_step_diff"] = max(
-                                    staleness_stats["max_step_diff"], step_diff
-                                )
-                                if step_diff > 0:
-                                    staleness_stats["stale_weight_count"] += 1
-                                
-                                if step_diff > staleness_bound:
-                                    logger.error(
-                                        f"[Step {step}] STALENESS VIOLATION in broadcast weights: Received weight from step {recv_step} "
-                                        f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                                # Only check steps within the staleness window
+                                if recv_step >= step - staleness_bound:
+                                    step_diff = abs(recv_step - step)
+                                    
+                                    # Track staleness statistics
+                                    staleness_stats["broadcast_weights_step_diffs"].append(step_diff)
+                                    staleness_stats["max_step_diff"] = max(
+                                        staleness_stats["max_step_diff"], step_diff
                                     )
-                                    raise RuntimeError(
-                                        f"Staleness bound violated in broadcast weights: step difference {step_diff} exceeds bound {staleness_bound}"
-                                    )
+                                    if step_diff > 0:
+                                        staleness_stats["stale_weight_count"] += 1
+                                    
+                                    if step_diff > staleness_bound:
+                                        logger.error(
+                                            f"[Step {step}] STALENESS VIOLATION in broadcast weights: Received weight from step {recv_step} "
+                                            f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
+                                        )
+                                        raise RuntimeError(
+                                            f"Staleness bound violated in broadcast weights: step difference {step_diff} exceeds bound {staleness_bound}"
+                                        )
                         
                         curr_reduced_len = len(weights_received[step])
                     

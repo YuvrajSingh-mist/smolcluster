@@ -32,7 +32,7 @@ ZeRO-optimized data parallelism with configurable optimizer state partitioning, 
 
 ```yaml
 # FSDP stage selection
-fsdp_stage: 1                  # 0: All-Reduce, 1: ZeRO Stage 1, 2: ZeRO Stage 2
+fsdp_stage: 0                  # 0: Optimizer partitioning, 1: +Gradient, 2: +Parameter
 
 # Bounded staleness for gradient synchronization
 staleness_bound: 5             # Allow workers to be 5 steps apart (0 = strict sync)
@@ -81,7 +81,7 @@ seed: 42                       # Random seed
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `fsdp_stage` | int | ZeRO optimization stage: 0 (All-Reduce), 1 (Optimizer Partitioning), 2 (Optimizer + Gradient Partitioning) |
+| `fsdp_stage` | int | ZeRO optimization stage: 0 (Optimizer Partitioning), 1 (+Gradient Partitioning), 2 (+Parameter Partitioning) |
 | `staleness_bound` | int | Maximum step difference (0 = strict sync, K = bounded async) |
 | `buffer_size` | dict | Network buffer sizes per device (MB) for optimized throughput |
 | `track_network_metrics` | bool | Enable bandwidth/latency tracking |
@@ -94,9 +94,9 @@ seed: 42                       # Random seed
 | `seed` | int | Random seed for reproducibility |
 
 **FSDP Stage Details:**
-- **Stage 0 (All-Reduce)**: Classic data parallelism with full model replicas on each worker. All gradients averaged, all parameters synchronized.
-- **Stage 1 (ZeRO Optimizer Partitioning)**: Each worker owns subset of model layers and only updates those parameters. Memory savings: ~1/N optimizer states per worker. Bandwidth optimization: only owned parameters broadcasted.
-- **Stage 2 (ZeRO Optimizer + Gradient Partitioning)**: Extends Stage 1 by partitioning gradients during communication. Each worker only sends/receives gradient chunks it owns. Memory savings: ~1/N optimizer states + ~1/N gradients. Communication optimization: reduced all-reduce bandwidth.
+- **Stage 0 (ZeRO-0: Optimizer Partitioning)**: Each worker owns a partition of optimizer states. Memory savings: ~1/N optimizer states per worker. Full model and gradients replicated.
+- **Stage 1 (ZeRO-1: Optimizer + Gradient Partitioning)**: Extends Stage 0 by partitioning gradients during communication. Each worker only sends/receives gradient chunks it owns. Memory savings: ~1/N optimizer states + ~1/N gradients. Communication optimization: reduced all-reduce bandwidth.
+- **Stage 2 (ZeRO-2: Optimizer + Gradient + Parameter Partitioning)**: Extends Stage 1 by partitioning parameters. Workers only keep parameters they own in memory, fetching others during forward/backward pass. Memory savings: ~1/N optimizer states + ~1/N gradients + ~1/N parameters. Maximum memory efficiency.
 
 ### cluster_config_classicdp.yaml (Classic Data Parallelism)
 

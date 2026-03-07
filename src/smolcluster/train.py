@@ -462,8 +462,8 @@ def run_worker(
             resume_checkpoint_path=resume_checkpoint_path,
         )
     elif algorithm == 'fsdp':
-        # Select FSDP stage: 0 = all-reduce, 1 = ZeRO Stage 1, 2 = ZeRO Stage 2
-        fsdp_stage = cluster_config.get('fsdp_stage', 1)
+        # Select FSDP stage: 0 = ZeRO-0 (optimizer), 1 = ZeRO-1 (+gradient), 2 = ZeRO-2 (+parameter)
+        fsdp_stage = cluster_config.get('fsdp_stage', 0)
         if fsdp_stage == 0:
             run_fsdp_worker_stage0(
                 model=model,
