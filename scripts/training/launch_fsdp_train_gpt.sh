@@ -182,15 +182,104 @@ if [[ "$DRY_RUN" != "true" ]]; then
             ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"
         fi
         
-        # Special handling for Jetson devices - install CUDA-enabled PyTorch
-        if [[ "$node" == *"jetson"* ]]; then
-            echo "🤖 Detected Jetson device: $node"
-            echo "   Installing Jetson-specific PyTorch with CUDA support..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && bash scripts/installations/setup_jetson.sh"
-            echo "   ✅ Jetson PyTorch installation complete"
+        # Check Python environment and required libraries
+        echo "🔍 $node: Checking Python environment and required libraries..."
+        
+        # Run comprehensive pre-check script using heredoc
+        PRECHECK_RESULT=$(ssh "$node" bash <<'ENDSSH'
+export PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH
+cd ~/Desktop/smolcluster
+source .venv/bin/activate
+python <<'ENDPYTHON'
+import sys
+import importlib.util
+
+def check_package(package_name, min_version=None):
+    try:
+        spec = importlib.util.find_spec(package_name)
+        if spec is None:
+            return False, None
+        module = importlib.import_module(package_name)
+        version = getattr(module, "__version__", "unknown")
+        if min_version and version != "unknown":
+            from packaging import version as pkg_version
+            if pkg_version.parse(version) < pkg_version.parse(min_version):
+                return False, version
+        return True, version
+    except ImportError:
+        return False, None
+
+# Check required packages
+required_packages = {
+    "torch": "2.0.0",
+    "numpy": "1.24.0",
+    "transformers": "4.57.5",
+    "datasets": "4.4.2",
+    "tqdm": None,
+    "wandb": "0.17.0",
+    "pyyaml": None
+}
+
+missing_packages = []
+version_mismatches = []
+
+for package, min_ver in required_packages.items():
+    found, version = check_package(package, min_ver)
+    if not found:
+        if version:
+            version_mismatches.append(f"{package} (found {version}, need >={min_ver})")
+        else:
+            missing_packages.append(package)
+
+# Check CUDA availability in PyTorch
+import torch
+cuda_available = torch.cuda.is_available()
+cuda_version = torch.version.cuda if cuda_available else None
+
+# Print results
+if missing_packages or version_mismatches:
+    print("MISSING_DEPS:", ",".join(missing_packages + version_mismatches))
+    sys.exit(1)
+else:
+    print(f"ALL_OK:CUDA={cuda_available}:CUDA_VERSION={cuda_version}:TORCH={torch.__version__}:PYTHON={sys.version.split()[0]}")
+    sys.exit(0)
+ENDPYTHON
+ENDSSH
+)
+        
+        PRECHECK_EXIT=$?
+        
+        if [[ $PRECHECK_EXIT -eq 0 ]]; then
+            # Parse the pre-check result
+            if [[ "$PRECHECK_RESULT" == ALL_OK:* ]]; then
+                echo "✅ $node: All dependencies satisfied"
+                echo "   $PRECHECK_RESULT" | sed 's/ALL_OK://; s/:/  /g'
+                
+                # Check if it's a Jetson device with failed CUDA
+                if [[ "$node" == *"jetson"* ]] && [[ "$PRECHECK_RESULT" != *"CUDA=True"* ]]; then
+                    echo "⚠️  $node: Jetson device detected but CUDA not available in PyTorch"
+                    echo "   Running Jetson-specific PyTorch installation..."
+                    ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && bash scripts/installations/setup_jetson.sh"
+                    echo "   ✅ Jetson PyTorch installation complete"
+                fi
+            fi
+        else
+            echo "⚠️  $node: Pre-check failed - missing dependencies or version mismatches"
+            echo "   $PRECHECK_RESULT"
+            
+            # For Jetson devices, run the setup script
+            if [[ "$node" == *"jetson"* ]]; then
+                echo "🤖 $node: Running Jetson-specific installation..."
+                ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && bash scripts/installations/setup_jetson.sh"
+                echo "   ✅ Jetson installation attempt complete"
+            else
+                echo "❌ $node: Please install missing dependencies manually"
+                echo "   Run: ssh $node 'cd $REMOTE_PROJECT_DIR && source .venv/bin/activate && uv pip install -e .'"
+                exit 1
+            fi
         fi
         
-        echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
+        echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK, dependencies OK"
     done
 else
     echo "✅ SSH and remote checks skipped (dry run)"

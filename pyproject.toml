@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "datasets>=4.4.2",
     "numpy>=1.24.0",
+    "packaging>=23.0",
     "pyyaml>=6.0.3",
     "torch>=2.0.0",
     "torchinfo>=1.8.0",
@@ -33,7 +34,9 @@ dev = [
     "mypy",
     "black",
     "build",
-    "twine"
+    "twine",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
 ]
 
 
@@ -63,6 +66,40 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/smolcluster/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--disable-warnings",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "cuda: marks tests as requiring CUDA (deselect with '-m \"not cuda\"')",
+]
+
+[tool.coverage.run]
+source = ["src/smolcluster"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
 
 [dependency-groups]
 dev = [

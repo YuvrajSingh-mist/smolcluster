@@ -41,6 +41,7 @@ from smolcluster.algorithms.FSDP.worker_stage2 import run_fsdp_worker as run_fsd
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.utils.device import get_device
+from smolcluster.utils.layers import get_model_per_node
 
 # -----------------------------------------------------------------------------
 # Configuration and Data Loading
@@ -347,25 +348,33 @@ def run_worker(
         dropout=gpt_config["dropout"],
     )
     device = get_device()
-    model = model.to(device)
-    logger.info(f"Model initialized on device: {device}")
+    
+    # For FSDP Stage 3, skip moving full model to device (workers never load full model)
+    # Model sharding happens later on CPU
+    if algorithm != 'fsdp':
+        model = model.to(device)
+        logger.info(f"Model initialized on device: {device}")
 
-    # Print model summary
-    logger.info("Model Summary:")
-    summary = torchinfo.summary(
-        model,
-        input_size=(worker_batch_size, gpt_config["max_seq_len"]),
-        device=device,
-        dtypes=[torch.long],
-    )
-    logger.info(f"\n{summary}")
+        # Print model summary
+        logger.info("Model Summary:")
+        summary = torchinfo.summary(
+            model,
+            input_size=(worker_batch_size, gpt_config["max_seq_len"]),
+            device=device,
+            dtypes=[torch.long],
+        )
+        logger.info(f"\n{summary}")
+    else:
+        logger.info(f"FSDP: Model will be sharded on CPU, skipping full model device transfer")
 
-    # Create optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=gpt_config["learning_rate"],
-        weight_decay=gpt_config["weight_decay"],
-    )
+    # Create optimizer (not needed for FSDP Stage 2, handled per-worker)
+    optimizer = None
+    if algorithm != 'fsdp':
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=gpt_config["learning_rate"],
+            weight_decay=gpt_config["weight_decay"],
+        )
 
     # Create criterion
     criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_token_id)
@@ -495,8 +504,43 @@ def run_worker(
                 resume_checkpoint_path=resume_checkpoint_path,
             )
         elif fsdp_stage == 2:
-            run_fsdp_worker_stage2(
+            # FSDP Stage 3: Shard model BEFORE passing to worker (never load full model on worker GPU)
+            logger.info(f"Sharding model for FSDP Stage 3 worker rank {local_rank}...")
+            num_nodes = cluster_config["num_nodes"]
+            num_layers = cluster_config["num_layers"]
+            
+            # Extract this worker's parameter shard on CPU
+            _, out_layers = get_model_per_node(
                 model=model,
+                num_nodes=num_nodes,
+                local_rank=local_rank,
+                total_layers=num_layers,
+            )
+            
+            # Extract owned parameters as dict (layer_name -> parameter tensor)
+            owned_params_dict = {}
+            for layer_name, module in out_layers.items():
+                for param_name, param in module.named_parameters():
+                    full_param_name = f"{layer_name}.{param_name}"
+                    owned_params_dict[full_param_name] = param.data.cpu().clone()
+            
+            logger.info(f"Worker rank {local_rank} will own {len(owned_params_dict)} parameters")
+            
+            # Create empty skeleton from full model (structure only, no weights)
+            model_skeleton = model
+            with torch.no_grad():
+                for param in model_skeleton.parameters():
+                    param.data = torch.empty(0, device='cpu')
+            
+            # Delete full model and shards to free memory
+            del model, out_layers
+            import gc
+            gc.collect()
+            
+            # Pass empty skeleton and shard dict to worker (no full model weights!)
+            run_fsdp_worker_stage2(
+                model_skeleton=model_skeleton,
+                owned_params_dict=owned_params_dict,
                 train_loader=train_loader,
                 val_loader=val_loader,
                 config=gpt_config,

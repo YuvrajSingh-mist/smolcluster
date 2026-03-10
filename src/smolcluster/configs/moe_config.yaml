@@ -1,0 +1,61 @@
+# Mixture of Experts (MoE) Training Configuration
+# Mixtral-style sparse MoE transformer
+
+# Model Architecture
+
+vocab_size: null  # Will be set from tokenizer
+embeddings_dims: 768    # Model dimension (embedding size)
+no_of_heads: 12         # Number of attention heads
+no_of_decoder_layers: 12  # Number of decoder layers
+num_experts: 8          # Number of experts in each MoE layer
+top_k: 2                # Number of experts to route to per token
+max_seq_len: 1024       # Maximum sequence length
+dropout: 0.1            # General dropout rate
+attn_dropout: 0.1       # Attention dropout rate
+
+# MoE-specific Settings
+
+noisy_topk: false       # Enable noisy top-k gating
+expert_capacity_factor: 1.25  # Expert capacity factor for load balancing
+
+# Training Hyperparameters
+  
+num_microbatches: 16    # Number of micro-batches for pipeline parallelism         
+batch_size: 2           # Batch size per device
+num_epochs: 2           # Number of epochs
+learning_rate: 0.0003   # Learning rate
+weight_decay: 0.01      # Weight decay for AdamW
+grad_clip_norm: 1.0     # Gradient clipping norm
+eval_steps: 1000        # Evaluation steps interval
+use_fp16: true          # Enable mixed precision training (fp16) with PyTorch AMP
+
+
+# Learning Rate Schedule
+
+use_lr_scheduler: true  # Enable/disable learning rate scheduling
+warmup_iters: 300       # Linear warmup iterations
+min_lr: 0.00003         # Minimum learning rate for cosine decay
+
+# Data
+
+dataset_name: "wikitext"              # Dataset name
+dataset_config: "wikitext-103-v1"     # Dataset configuration/subset
+tokenizer: "openai-community/gpt2"    # HuggingFace tokenizer
+
+# Logging & Checkpoints
+
+project_name: "smolcluster-mixtral-wikitext2"
+log_interval: 50        # Steps between logging
+track_gradients: true   # Whether to track gradient norms
+
+# Decoder-specific metrics
+decoder_type:
+  ppl: true             # If true, log Perplexity (PPL) metrics
+
+# Checkpoint Settings
+save_checkpoints: true  # Whether to save model checkpoints
+checkpoint_dir: "checkpoints"  # Directory to save checkpoints (relative to project root)
+checkpoint_steps: 1000  # Save checkpoint every N steps (set to 0 to disable step-based saving)
+
+# Load Balancing
+aux_loss_weight: 0.01   # Weight for auxiliary load balancing loss

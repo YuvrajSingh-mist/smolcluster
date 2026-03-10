@@ -7,81 +7,29 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
-import torch
-import torchinfo
-import wandb
 
+import torch
+
+import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from smolcluster.models.gpt import BaseTransformer
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
-    get_gradients,
+    clear_skeleton_gradients,
+    extract_owned_gradients,
+    forward_through_shard,
     get_network_metrics,
+    load_params_into_skeleton,
     receive_message,
     send_message,
-    set_gradients,
-    set_weights_by_layer,
+    unload_params_from_skeleton,
 )
 from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
 step = 0  # Global step counter to track training progress across threads
-
-
-def combine(
-    data: Any, type: str = "gradients"
-) -> dict[str, torch.Tensor] | None:
-    """Conbining data from all workers."""
-    
-    if type == "gradients":
-        
-        logger.info(f"Averaging gradients from {len(data)} workers")
-        grads_reduced = {}
-        for worker_id in list(data):
-            for name, worker_grads in data[worker_id].items():
-                grads_reduced[name] = grads_reduced.get(name, 0.0) + (
-                    worker_grads 
-                )
-        return grads_reduced
-
-    elif type == "parameters":
-        logger.info(f"combining parameters from {len(data)} workers")
-        params_reduced = {}
-        for worker_id in list(data):
-            for name, worker_params in data[worker_id].items():
-                params_reduced[name] = params_reduced.get(name, 0.0) + (
-                    worker_params 
-                )
-   
-        return params_reduced
-    
-    else:
-        logger.error(f"Unknown data type for combine: {type}")
-        return None
-
-def compute_leader_activations(
-    device: torch.device,
-    model_layers: list[torch.nn.Module],
-    data: torch.Tensor,
-) -> torch.Tensor:
-    """Compute gradients for worker rank 0 (leader node)."""
-
-    data = data.to(device)
-    out = None
-    # with torch.no_grad():
-
-    out = model_layers[0](data)
-
-    pos_ids = torch.arange(out.shape[1], dtype=torch.long, device=device)
-    out = out + model_layers[1](pos_ids)
-
-    for layer in model_layers[2:]:
-        output = layer(out)
-        out = output[0] if isinstance(output, tuple) else output
-
-    return out
-
 
 def evaluate(
     device: torch.device,
@@ -117,32 +65,137 @@ def clear_gpu_cache(device: torch.device) -> None:
         torch.cuda.empty_cache()
 
 
-def compute_leader_gradients(
+def compute_activations_sequential(
     device: torch.device,
-    model: torch.nn.Module,
+    model_skeleton: torch.nn.Module,
+    all_worker_params: dict,  # Dict of {rank: params_dict}
     data: torch.Tensor,
+    num_workers: int,
+    log_layers: bool = False,
+) -> torch.Tensor:
+    """
+    FSDP Stage 2: Sequential forward pass through ALL worker shards.
+    
+    Like Model Parallelism, process shards sequentially:
+    1. Load worker N's params into skeleton
+    2. Forward through worker N's layers
+    3. Cache activations (preserves computation graph)
+    4. Unload worker N's params
+    5. Repeat for worker N+1...
+    
+    Memory efficient: Only 1 shard loaded at a time!
+    Returns final activations WITH computation graph for backward.
+    """
+    model_skeleton.train()
+    activations = data.to(device)
+
+    # Process each worker's shard sequentially
+    for rank in sorted(all_worker_params.keys()):
+        worker_params = all_worker_params[rank]
+        
+        # Log which layers this worker has (only on first call)
+        if log_layers:
+            layer_names = set()
+            for param_name in worker_params.keys():
+                parts = param_name.replace('model.', '').split('.')
+                if parts[0] == 'blocks' and len(parts) > 1:
+                    layer_names.add(f"{parts[0]}.{parts[1]}")
+                else:
+                    layer_names.add(parts[0])
+            sorted_layers = sorted(layer_names, key=lambda x: (
+                0 if x == 'token_embedding' else
+                1 if x == 'position_embedding' else
+                2 if x.startswith('blocks.') else
+                3 if x == 'ln_f' else
+                4 if x == 'lm_head' else 5
+            ))
+            logger.info(f"📦 Worker {rank} shard contains layers: {sorted_layers}")
+
+        # Load this worker's params into skeleton (one shard at a time)
+        load_params_into_skeleton(model_skeleton, worker_params, device)
+        
+        # Forward through this worker's layers
+        activations = forward_through_shard(model_skeleton, activations, worker_params, rank, num_workers, device)
+        
+        # Unload params to free memory (computation graph preserved via activations)
+        unload_params_from_skeleton(model_skeleton)
+        
+        gc.collect()
+        clear_gpu_cache(device)
+
+    return activations
+
+
+def compute_worker_gradients(
+    device: torch.device,
+    model_skeleton: torch.nn.Module,
+    own_params: dict,
+    all_worker_params: dict,
+    final_output: torch.Tensor,
     target: torch.Tensor,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     config: dict,
+    worker_rank: int,
+    num_workers: int,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Compute gradients for leader/server node."""
+    """
+    Compute gradients for owned parameters using cached computation graph.
+    
+    CRITICAL: Must reload ALL worker parameters before backward.
+    Unlike Model Parallelism (where each worker's forward uses only its params),
+    our sequential forward builds a computation graph referencing ALL parameters.
+    During backward, PyTorch needs all parameter tensors to be valid (not empty).
+    
+    Memory profile:
+    - Forward: 1 shard at a time (~57MB peak)
+    - Backward: All shards temporarily loaded (~114MB)
+    - After gradient extraction: Back to empty skeleton
+    
+    Args:
+        own_params: Dict of {layer_name: param_tensor} for our owned shard
+        all_worker_params: Dict of {rank: params_dict} for all workers
+        final_output: Model output with computation graph attached
+        target: Target labels for loss computation
+    
+    Returns:
+        (loss, grads): Loss value and gradients dict for owned parameters
+    """
     optimizer.zero_grad()
-    model.train()
-    data, target = data.to(device), target.to(device)
-    output = model(data)
-    B, T, C = output.shape
-    output = output.view(B * T, C)
-    target = target.view(B * T)
-    loss = criterion(output, target)
+    
+    # CRITICAL: Reload ALL worker parameters before backward
+    # The computation graph from sequential forward needs all params to be valid
+    for rank in sorted(all_worker_params.keys()):
+        worker_params = all_worker_params[rank]
+        load_params_into_skeleton(model_skeleton, worker_params, device)
+    
+    # Compute loss (final_output preserves computation graph from forward pass)
+    target = target.to(device)
+    B, T, C = final_output.shape
+    loss = criterion(final_output.view(B * T, C), target.view(B * T))
+    
+    # Backward through cached computation graph (all params now loaded)
+    # PyTorch traces through all layers, computes gradients for all parameters
     loss.backward()
-    # Gradient clipping
+    
+    # Apply gradient clipping to owned parameters only
     if config.get("gradient_clipping", {}).get("enabled", False):
         max_norm = config["gradient_clipping"].get("max_norm", 1.0)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-
-    grads = get_gradients(model)
-    return loss, grads
+        # Clip only parameters that have gradients (our owned shard)
+        params_with_grads = [p for p in model_skeleton.parameters() if p.grad is not None]
+        if params_with_grads:
+            torch.nn.utils.clip_grad_norm_(params_with_grads, max_norm)
+    
+    # Extract only owned parameter gradients
+    grads = extract_owned_gradients(model_skeleton, own_params)
+    
+    # Clean up skeleton to free memory
+    unload_params_from_skeleton(model_skeleton)
+    clear_skeleton_gradients(model_skeleton)
+    gc.collect()
+    clear_gpu_cache(device)
+    
+    return loss.detach(), grads
 
 
 def get_lr_schedule(warmup_iters, max_iters, learning_rate, min_lr):
@@ -212,15 +265,20 @@ def handle_worker(
                 logger.info(
                     f"Received message '{command}' from worker {addr} (rank {rank}) for step {recv_step}"
                 )
-                logger.info(f"[Step {recv_step}] Storing gradients from worker {rank}")
-
+                
                 if type == "gradients":
+                    
+                    logger.info(f"[Step {recv_step}] Storing gradients from worker {rank}")
+
                     with lock:
                         grads_received[recv_step][rank] = data
                         logger.info(
                             f"[Step {recv_step}] Now have {len(grads_received[recv_step])} gradient sets"
                         )
                 elif type == "parameters":
+                    
+                    logger.info(f"[Step {recv_step}] Storing parameters from worker {rank}")
+
                     with lock:
                         parameters_received[recv_step][rank] = data
                         logger.info(
@@ -317,7 +375,8 @@ def accept_workers(
 
 
 def run_fsdp_worker(
-    model,
+    model_skeleton,
+    owned_params_dict,
     train_loader,
     val_loader,
     config,
@@ -331,11 +390,15 @@ def run_fsdp_worker(
     resume_checkpoint_path=None,
 ):
     """
-    Run FSDP (ZeRO Stage 2) training with optimizer + gradient + parameter partitioning.
+    Run FSDP (ZeRO Stage 3) training with optimizer + gradient + parameter partitioning.
     Workers partition optimizer states, gradients, and model parameters for maximum memory efficiency.
+    
+    CRITICAL: This worker NEVER loads the full model. It receives an empty skeleton model
+    and its parameter shard for sequential forward computation.
 
     Args:
-        model: PyTorch model to train
+        model_skeleton: Empty model skeleton (structure only, no weights)
+        owned_params_dict: Dict of {layer_name: param_tensor} for this worker's shard
         train_loader: Training data loader
         val_loader: Validation data loader
         config: Training configuration dict (nn_config)
@@ -419,6 +482,7 @@ def run_fsdp_worker(
     
     # Staleness tracking (only if staleness_bound > 0)
     staleness_stats = {
+        "all_gather_step_diffs": [],  # Track step differences for all_gather parameters
         "all_reduce_step_diffs": [],  # Track step differences for all_reduce gradients
         "stale_gradient_count": 0,  # Count of gradients with step_diff > 0
         "max_step_diff": 0,  # Maximum step difference observed
@@ -433,58 +497,30 @@ def run_fsdp_worker(
     else:
         logger.info("Gradient clipping disabled")
 
-    # Load model
-    model = model.to(device)
-    logger.info(f"Model initialized on device: {device}")
+    # FSDP Stage 3: Use empty model skeleton received from train.py
+    logger.info(f"Using empty model skeleton for worker rank {worker_rank} (received from train.py)...")
     
-    sharded_model, out_layers  = get_model_per_node(
-        model=model,
-        num_nodes=num_nodes,
-        local_rank=worker_rank,
-        total_layers=num_layers,
-            
-    )
-
-    # ZeRO Stage 2: Parameter partitioning + Gradient partitioning + Optimizer partitioning
-    # For Stage 2, we partition parameters across workers (only keep owned params in memory)
-    # This is achieved by get_model_per_node which gives us our layer partition
+    # Move empty skeleton to device (takes minimal memory)
+    model_skeleton = model_skeleton.to(device)
+    logger.info(f"Model skeleton moved to device (no weights loaded on this worker)")
     
-    model_layers = out_layers
+    # Track original owned param names for gradient accumulation
+    original_owned_param_names = list(owned_params_dict.keys())
+    logger.info(f"Worker rank {worker_rank} owns {len(owned_params_dict)} parameters (received from train.py)")
     
-    logger.info(f"Worker rank {worker_rank} loaded {len(model_layers)} layers")
-    
-    # ZeRO Stage 2: Create optimizer ONLY for this worker's owned layers
-    # Build dict of owned parameters: {param_name: param_tensor}
-    # this dict will always have updated values after optimizer.step()
-    owned_params_dict = {}
-    for layer_name, module in model_layers.items():
-        for param_name, param in module.named_parameters():
-            full_param_name = f"{layer_name}.{param_name}"
-            owned_params_dict[full_param_name] = param
-    
-    optimizer = torch.optim.AdamW(owned_params_dict.values(), lr=learning_rate)
+    # Create optimizer for owned parameters only
+    # We'll create dummy parameters for optimizer
+    owned_param_list = [torch.nn.Parameter(p.to(device)) for p in owned_params_dict.values()]
+    optimizer = torch.optim.AdamW(owned_param_list, lr=learning_rate)
     logger.info(
-        f"Created ZeRO Stage 2 optimizer for worker rank {worker_rank} with lr={learning_rate} "
+        f"Created FSDP Stage 3 optimizer for worker rank {worker_rank} with lr={learning_rate} "
         f"managing {len(owned_params_dict)} parameter tensors"
     )
-
     
-    # Log model summary
-    model_summary = str(torchinfo.summary(model, verbose=0, device=device))
-    logger.info("Model Summary:")
-    logger.info(model_summary)
-    wandb.log({"model_structure": model_summary})
-
-    # Load model layers for this worker rank
-    config["num_layers"] = cluster_config["num_layers"]
-    logger.info(f"Loading worker rank {worker_rank}'s share of model layers...")
-
-    model = model.to(device)
-    logger.info(
-        f"Worker rank {worker_rank} loaded model layers and moved to device: {device}"
-    )
-
-    
+    # Clear GPU cache
+    gc.collect()
+    clear_gpu_cache(device)
+    logger.info(f"FSDP Stage 3: Empty skeleton created, owns {len(owned_params_dict)} params (never loaded full model!)")
 
     # Learning rate scheduler setup (after optimizer creation)
     use_lr_scheduler = config.get("use_lr_scheduler", False)
@@ -503,10 +539,13 @@ def run_fsdp_worker(
         )
     else:
         logger.info(f"LR scheduler disabled, using constant lr={learning_rate}")
-
+    
     # Resume from checkpoint if specified
     start_epoch = 0
     start_step = 0
+    checkpoint_path = None
+    metadata = None
+    
     if save_checkpoints and resume_from_checkpoint:
         if resume_from_checkpoint == "latest":
             checkpoint_path = checkpoint_manager.find_latest_checkpoint()
@@ -515,25 +554,66 @@ def run_fsdp_worker(
 
         if checkpoint_path:
             logger.info(f"Resuming from checkpoint: {checkpoint_path}")
-            # Create a temporary model with only this worker's layers for loading
-
+            
+            # Create temporary full model to load checkpoint (only case where we create BaseTransformer)
+            # Extract config from existing skeleton structure
+            num_layers_from_skeleton = len(model_skeleton.blocks)
+            
+            # Get config from first block to match architecture
+            first_block = model_skeleton.blocks[0]
+            num_heads_from_skeleton = first_block.num_heads
+            ff_dim_from_skeleton = first_block.ffn[0].out_features
+            dropout_from_skeleton = first_block.dropout.p if hasattr(first_block.dropout, 'p') else 0.1
+            
+            temp_model = BaseTransformer(
+                vocab_size=model_skeleton.vocab_size,
+                max_seq_len=model_skeleton.max_seq_len,
+                model_dim=model_skeleton.model_dim,
+                num_layers=num_layers_from_skeleton,
+                num_heads=num_heads_from_skeleton,
+                ff_dim=ff_dim_from_skeleton,
+                dropout=dropout_from_skeleton,
+            )
+            
             metadata = checkpoint_manager.load_checkpoint(
                 checkpoint_path=checkpoint_path,
-                model=model,
-                optimizer=optimizer if save_optimizer_state else None,
-                scheduler=scheduler,  # Load scheduler state if it exists
+                model=temp_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
                 device=device,
             )
-            # Copy loaded state back to model_layers
-            # for i, layer in enumerate(model_layers):
-            model.load_state_dict(metadata["model_state_dict"])
+            
+            # Update owned_params_dict from loaded model
+            _, out_layers = get_model_per_node(
+                model=temp_model,
+                num_nodes=num_nodes,
+                local_rank=worker_rank,
+                total_layers=num_layers,
+            )
+            
+            for layer_name, module in out_layers.items():
+                for param_name, param in module.named_parameters():
+                    full_param_name = f"{layer_name}.{param_name}"
+                    if full_param_name in owned_params_dict:
+                        owned_params_dict[full_param_name] = param.data.cpu().clone()
+            
+            # Update owned_param_list from dict
+            for i, name in enumerate(original_owned_param_names):
+                owned_param_list[i].data = owned_params_dict[name].to(device)
+            
             start_epoch = metadata.get("epoch", 0)
             start_step = metadata.get("step", 0)
-            logger.info(f"Resumed from epoch={start_epoch}, step={start_step}")
+            
+            # Delete temporary model
+            del temp_model, out_layers
+            gc.collect()
+            clear_gpu_cache(device)
+            
+            logger.info(f"Resumed owned shard from epoch={start_epoch}, step={start_step}")
         else:
             logger.warning("No checkpoint found to resume from, starting fresh")
-
-    logger.info("Starting all-to-all topology setup for FSDP (ZeRO Stage 1).")
+    
+    logger.info("Starting all-to-all topology setup for FSDP (ZeRO Stage 3).")
 
     # Get my worker configuration from allToAllTopology
     workers_list = cluster_config["allToAllTopology"]["workers"]["regular"]
@@ -611,7 +691,7 @@ def run_fsdp_worker(
         total_loss = 0.0
         val_loss = None #to make the ckpt manager happy at the end of the epoch when it tries to save the checkpoint and log the val_loss in the metadata
         
-        model.train()
+        model_skeleton.train()
 
         global step  # Declare step as global to modify the global step counter
 
@@ -645,36 +725,29 @@ def run_fsdp_worker(
 
             activations = None
 
-            #Gathering all the model parameters
+            # FSDP Stage 3: All-gather parameters from all workers
+            # Each worker sends their owned parameter shard
             
             # All-gather: send local parameters to all peers via outbound connections
             logger.info(
-                "Performing all-gather: broadcasting local parameters to all peers"
+                "FSDP Stage 3: Broadcasting owned parameters to all peers for sequential activation computation"
             )
             
-            parameters_received[step][worker_rank] = out_layers  # Include own parameters in the all-gather buffer for simplicity
+            parameters_received[step][worker_rank] = owned_params_dict  # Include own parameters
 
             for peer_rank, peer_socket in outbound_worker_sockets.items():
-                
-                # params_split = {}
-                # for i, (name, param) in enumerate(model_layers.items()):
-                    
-                #     if i in split_indices[peer_rank % len(split_indices)]:
-                #         params_split[name] = param.data.cpu().clone()  # Move to CPU and clone for network transmission
-                        
-                    
                 send_message(
                     peer_socket,
                     (
                         "all_reduce",
                         step,
                         worker_rank,
-                        out_layers,  
+                        owned_params_dict,  # Send dict of {layer_name: param_tensor}
                         'parameters',
                     ),
                 )
                 logger.info(
-                    f"[Step {step}] Worker {worker_rank} sent parameters to worker {peer_rank}"
+                    f"[Step {step}] Worker {worker_rank} sent {len(owned_params_dict)} owned parameters to worker {peer_rank}"
                 )
                 
             logger.info(
@@ -699,8 +772,8 @@ def run_fsdp_worker(
                             if recv_step >= step - staleness_bound:
                                 step_diff = abs(recv_step - step)
                                 
-                                # Track staleness statistics
-                                staleness_stats["all_reduce_step_diffs"].append(step_diff)
+                                # Track staleness statistics for all_gather (parameters)
+                                staleness_stats["all_gather_step_diffs"].append(step_diff)
                                 staleness_stats["max_step_diff"] = max(
                                     staleness_stats["max_step_diff"], step_diff
                                 )
@@ -719,7 +792,7 @@ def run_fsdp_worker(
                     curr_workers_len = len(parameters_received[step])
 
                 logger.info(
-                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received parameters from {curr_workers_len}/{NUM_WORKERS - 1} peers."
+                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received parameters from {curr_workers_len}/{NUM_WORKERS} workers (including self)."
                 )
                 if curr_workers_len < NUM_WORKERS:
                     logger.info(f"Waiting for more parameters for step {step}...")
@@ -733,56 +806,55 @@ def run_fsdp_worker(
                 f"[Step {step}] Worker {worker_rank} received all parameters from peers, now updating local model parameters with all-gathered parameters"
             )
             
-            # Average gradients and update model
-            if len(parameters_received[step]) != 0:
+            # FSDP Stage 2: Compute activations sequentially through all worker shards
+            if len(parameters_received[step]) == NUM_WORKERS:
                 logger.info(
-                    f"[Step {step}  / {num_epochs * len(train_loader)}] Combining parameters from {len(parameters_received[step])} participants"
+                    f"[Step {step}  / {num_epochs * len(train_loader)}] FSDP Stage 2: Sequential forward (one shard at a time)"
                 )
-
-                # # combine the params
-                # params_reduced = combine(parameters_received[step], type="parameters")
-
-                # logger.info(
-                #     f"[Step {step}] Worker {worker_rank} combined parameters successfully"
-                # )
-
-                # logger.info(
-                #     f"[Step {step}] Worker {worker_rank} applying combined parameters to local model"
-                # )
-
-                set_weights_by_layer(parameters_received[step], model, worker_rank)
-
-
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} model updated with averaged parameters"
+                              
+                # Step 1: Sequential forward through ALL shards (only one loaded at a time!)
+                final_output = compute_activations_sequential(
+                    device=device,
+                    model_skeleton=model_skeleton,
+                    all_worker_params=parameters_received[step],  # Dict of {rank: params}
+                    data=data,
+                    num_workers=NUM_WORKERS,
+                    log_layers=(step == 0),  # Only log layer distribution on first step
                 )
                 
-                
-            # Each worker computes its own gradients on its local data
-            logger.info(
-                f"[Step {step}/{num_epochs * len(train_loader)}] Worker rank {worker_rank} computing local gradients"
-            )
+                logger.info(
+                    f"[Step {step}] Sequential forward complete, now computing gradients for OUR shard only"
+                )
             
-            #ZeRO Stage 2 optimization: Only compute gradients for this worker's owned layers
+                # Step 2: Compute gradients for OUR shard only (like Model Parallelism)
+                local_loss, local_grads = compute_worker_gradients(
+                    device=device,
+                    model_skeleton=model_skeleton,
+                    own_params=owned_params_dict,
+                    all_worker_params=parameters_received[step],  # Need all params for backward
+                    final_output=final_output,
+                    target=target,
+                    criterion=criterion,
+                    optimizer=optimizer,
+                    config=config,
+                    worker_rank=worker_rank,
+                    num_workers=NUM_WORKERS,
+                )
+                
+                # Store our gradients
+                with lock:
+                    grads_received[step][worker_rank] = local_grads
 
-            local_loss, local_grads = compute_leader_gradients(
-                device, model, data, target, criterion, optimizer, config
-            )
-            with lock:
-                grads_received[step][worker_rank] = local_grads
-
-            total_loss += local_loss.item()
-
-            #ZeRO Stage 2 optimization: Only split and communicate gradients for parameters this worker owns/updated
-            total_params = sum(p.numel() for p in model.parameters())
-            grads_indices = torch.arange(total_params)
-            split_indices = torch.chunk(grads_indices, num_nodes)
-        
-            # grads_tensor = torch.stack(list(grads_received[step][worker_rank].values()))
-            # grads_split = torch.chunk(grads_tensor, NUM_WORKERS, dim=0)
-            logger.info(
-                f"[Step {step}] Worker {worker_rank} computed local gradients and split into {len(split_indices)} chunks for scatter-reduce"
-            )
+                total_loss += local_loss.item()
+                
+                # Clean up activations
+                del final_output
+                gc.collect()
+                clear_gpu_cache(device)
+                
+                logger.info(
+                    f"[Step {step}] Worker {worker_rank} computed {len(local_grads)} gradients for owned layers (Stage 2: never loaded full model!)"
+                )
             
             # Clear GPU cache
             clear_gpu_cache(device)
@@ -809,13 +881,7 @@ def run_fsdp_worker(
             )
 
             for peer_rank, peer_socket in outbound_worker_sockets.items():
-                
-                grads_split = {}
-                for i, (name, grad) in enumerate(local_grads.items()):
-                    
-                    if i in split_indices[peer_rank % len(split_indices)]:
-                        grads_split[name] = grad
-                        
+               
                     
                 send_message(
                     peer_socket,
@@ -823,7 +889,7 @@ def run_fsdp_worker(
                         "all_reduce",
                         step,
                         worker_rank,
-                        grads_split,
+                        local_grads,
                         'gradients',
                     ),
                 )
@@ -881,21 +947,33 @@ def run_fsdp_worker(
             # Average gradients and update model
             if len(grads_received[step]) != 0:
                 logger.info(
-                    f"[Step {step}  / {num_epochs * len(train_loader)}] Averaging gradients from {len(grads_received[step])} participants"
+                    f"[Step {step}  / {num_epochs * len(train_loader)}] Combining gradients from {len(grads_received[step])} participants"
                 )
 
-                # combine the grads
-                grads_reduced = combine(grads_received[step], type='gradients')
-
+               
                 logger.info(
-                    f"[Step {step}] Worker {worker_rank} averaged gradients successfully"
+                    f"[Step {step}] Worker {worker_rank} applying averaged gradients to owned parameters"
                 )
 
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} applying averaged gradients to local model"
-                )
-
-                set_gradients(grads_reduced, model)
+                # FSDP Stage 3: Accumulate gradients for owned parameters
+                # Average gradients across all workers
+                for peer_rank, peer_grads in grads_received[step].items():
+                    logger.info(
+                        f"[Step {step}] Worker {worker_rank} accumulating gradients from worker {peer_rank} (scaled by 1/{NUM_WORKERS})"
+                    )
+                    
+                    # Accumulate into owned_param_list (only our owned params)
+                    for i, layer_name in enumerate(original_owned_param_names):
+                        if layer_name in peer_grads:
+                            if owned_param_list[i].grad is None:
+                                owned_param_list[i].grad = peer_grads[layer_name].to(device) / NUM_WORKERS
+                            else:
+                                owned_param_list[i].grad += peer_grads[layer_name].to(device) / NUM_WORKERS
+                    
+                    logger.info(
+                        f"[Step {step}] Worker {worker_rank} accumulated gradients from worker {peer_rank}"
+                    )
+                    
                 optimizer.step()
 
                 logger.info(
@@ -905,13 +983,13 @@ def run_fsdp_worker(
                 
                 logger.info(f"[Step {step}] Starting broadcasting weights to all peers after local update")
                 
-                # ZeRO Stage 1 optimization: Only broadcast parameters this worker owns/updated
-                # owned_params_dict already has updated values (optimizer modified tensors in-place)
-                # Just move to CPU and clone for network transmission
-                owned_state_dict = {
-                    name: param.data.cpu().clone() 
-                    for name, param in owned_params_dict.items()
-                }
+                # FSDP Stage 3: Sync owned_params_dict with optimizer state
+                # The optimizer modified owned_param_list in-place, sync back to dict
+                for i, name in enumerate(original_owned_param_names):
+                    owned_params_dict[name] = owned_param_list[i].data.cpu().clone()
+                
+                # Only broadcast OUR owned parameters (not merged ones)
+                owned_state_dict = {name: owned_params_dict[name] for name in original_owned_param_names}
                 
                 logger.info(f"[Step {step}] Broadcasting {len(owned_state_dict)} owned parameters (reduced from full state_dict)")
                 
@@ -977,14 +1055,19 @@ def run_fsdp_worker(
                     step_event.wait()
                     step_event.clear()
 
-                # Merge weights from all workers: take each worker's owned parameters
-                set_weights_by_layer(
-                    weights_received[step],
-                    model,
-                    worker_rank
-                )
+                # FSDP Stage 3: Merge weights from all workers into owned_params_dict
+                for peer_rank, peer_weights in weights_received[step].items():
+                    for layer_name, weight_data in peer_weights.items():
+                        owned_params_dict[layer_name] = weight_data
+                
+                # Sync only OUR owned weights back to owned_param_list for optimizer
+                # (we received updates from other workers for our params)
+                for i, name in enumerate(original_owned_param_names):
+                    if name in owned_params_dict:
+                        owned_param_list[i].data = owned_params_dict[name].to(device)
+                
                 logger.info(
-                    f"[Step {step}] Worker {worker_rank} merged weights from all workers"
+                    f"[Step {step}] Worker {worker_rank} merged weights from all workers into owned_params_dict"
                 )
                 
                 # Cleanup old weights beyond staleness window
@@ -1017,7 +1100,7 @@ def run_fsdp_worker(
                 # Cleanup current step gradients
                 reduced_grads_received.pop(step, None)
                 grads_received.pop(step, None)
-                del grads_reduced, local_grads
+                del local_grads
                 gc.collect()
             else:
                 logger.warning(
@@ -1028,7 +1111,7 @@ def run_fsdp_worker(
             # Apply gradient clipping
             if grad_clip_norm > 0.0:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), grad_clip_norm
+                    owned_param_list, grad_clip_norm
                 )
                 if step % 100 == 0:  # Log occasionally to avoid spam
                     logger.info(
@@ -1062,13 +1145,18 @@ def run_fsdp_worker(
             # Log staleness metrics if bounded async is enabled and we have data
             if staleness_bound > 0 and step % metrics_log_interval == 0:
                 with lock:
+                    if staleness_stats["all_gather_step_diffs"]:
+                        avg_all_gather_diff = sum(staleness_stats["all_gather_step_diffs"]) / len(
+                            staleness_stats["all_gather_step_diffs"]
+                        )
+                        wandb_metrics[f"staleness/worker_{worker_rank}_all_gather_avg_step_diff"] = avg_all_gather_diff
+                    
                     if staleness_stats["all_reduce_step_diffs"]:
                         avg_all_reduce_diff = sum(staleness_stats["all_reduce_step_diffs"]) / len(
                             staleness_stats["all_reduce_step_diffs"]
                         )
                         wandb_metrics[f"staleness/worker_{worker_rank}_all_reduce_avg_step_diff"] = avg_all_reduce_diff
                     
-                 
                     if staleness_stats["broadcast_weights_step_diffs"]:
                         avg_weights_diff = sum(staleness_stats["broadcast_weights_step_diffs"]) / len(
                             staleness_stats["broadcast_weights_step_diffs"]
@@ -1081,7 +1169,7 @@ def run_fsdp_worker(
                     wandb_metrics[f"staleness/worker_{worker_rank}_staleness_bound"] = staleness_bound
                     
                     # Reset stats for next interval
-                   
+                    staleness_stats["all_gather_step_diffs"] = []
                     staleness_stats["all_reduce_step_diffs"] = []
                     staleness_stats["broadcast_weights_step_diffs"] = []
                     staleness_stats["stale_gradient_count"] = 0
@@ -1098,7 +1186,8 @@ def run_fsdp_worker(
 
             # Log gradient norms if tracking enabled
             if track_gradients:
-                for name, param in model.named_parameters():
+                for i, name in enumerate(original_owned_param_names):
+                    param = owned_param_list[i]
                     if param.grad is not None:
                         grad_norm = torch.norm(param.grad.detach(), 2).item()
                         wandb.log(
@@ -1142,54 +1231,33 @@ def run_fsdp_worker(
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
                     )
 
-            # Evaluation
+            # Evaluation (skip for FSDP Stage 3 - requires full model reconstruction)
             if step % eval_steps == 0:
-                val_loss, val_ppl = evaluate(
-                    device,
-                    model,
-                    val_loader,
-                    criterion,
-                    decoder_type_ppl=decoder_type_ppl,
-                )
-
-                if decoder_type_ppl:
-                    wandb.log(
-                        {
-                            "step": step,
-                            "epoch": epoch + 1,
-                            "losses/val": val_loss,
-                            "ppl/val": val_ppl,
-                        }
-                    )
-                    eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}, Val PPL={val_ppl:.2f}"
-                    logger.info(eval_msg)
-
-                    # Update progress bar
-                    batch_pbar.set_postfix(
-                        {"val_loss": f"{val_loss:.4f}", "ppl": f"{val_ppl:.2f}"}
-                    )
-                else:
-                    wandb.log(
-                        {
-                            "step": step,
-                            "epoch": epoch + 1,
-                            "losses/val": val_loss,
-                        }
-                    )
-                    eval_msg = f"[Step {step}] Evaluation: Val Loss={val_loss:.4f}"
-                    logger.info(eval_msg)
-
-                    # Update progress bar
-                    batch_pbar.set_postfix({"val_loss": f"{val_loss:.4f}"})
+                logger.info(f"[Step {step}] Skipping evaluation for FSDP Stage 3 (requires all-gather of full model)")
+                val_loss = None
+                val_ppl = None
+                # Skip wandb logging for evaluation in FSDP Stage 3
 
             # Save checkpoint at regular intervals
             if save_checkpoints and should_save_checkpoint(
                 step, epoch, checkpoint_steps, num_epochs * len(train_loader)
             ):
-                # Wrap model_layers in Sequential for proper state_dict saving
+                # FSDP Stage 3: Save model skeleton + owned params
+                # Create a state dict with owned params loaded into skeleton
+                with torch.no_grad():
+                    for layer_name, param_data in owned_params_dict.items():
+                        clean_name = layer_name.replace('model.', '', 1) if layer_name.startswith('model.') else layer_name
+                        module = model_skeleton
+                        parts = clean_name.split('.')
+                        for part in parts[:-1]:
+                            module = getattr(module, part)
+                        param_name = parts[-1]
+                        if hasattr(module, param_name):
+                            param = getattr(module, param_name)
+                            param.data = param_data.to(device)
 
                 checkpoint_manager.save_checkpoint(
-                    model=model,
+                    model=model_skeleton,
                     optimizer=optimizer,
                     scheduler=scheduler,  # Save scheduler state
                     step=step,

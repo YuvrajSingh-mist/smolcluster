@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
+    avg_grads,
     get_gradients,
     get_network_metrics,
     receive_message,
@@ -618,15 +619,8 @@ def run_fsdp_worker(
 
             total_loss += local_loss.item()
 
-            #ZeRO Stage 1: Split and communicate gradients for parameters this worker owns
-            total_params = sum(p.numel() for p in model.parameters())
-            grads_indices = torch.arange(total_params)
-            split_indices = torch.chunk(grads_indices, num_nodes)
-        
-            # grads_tensor = torch.stack(list(grads_received[step][worker_rank].values()))
-            # grads_split = torch.chunk(grads_tensor, NUM_WORKERS, dim=0)
             logger.info(
-                f"[Step {step}] Worker {worker_rank} computed local gradients and split into {len(split_indices)} chunks for scatter-reduce"
+                f"[Step {step}] Worker {worker_rank} computed local gradients for sharded layers"
             )
             
             # Clear GPU cache
@@ -649,31 +643,25 @@ def run_fsdp_worker(
             )
 
             # All-gather: send local gradients to all peers via outbound connections
+            # Since model is sharded, each worker sends their complete layer gradients to all peers
             logger.info(
                 "Performing all-gather: broadcasting local gradients to all peers"
             )
 
             for peer_rank, peer_socket in outbound_worker_sockets.items():
-                
-                grads_split = {}
-                for i, (name, grad) in enumerate(local_grads.items()):
-                    
-                    if i in split_indices[peer_rank % len(split_indices)]:
-                        grads_split[name] = grad
-                        
-                    
                 send_message(
                     peer_socket,
                     (
                         "all_reduce",
                         step,
                         worker_rank,
-                        grads_split,
+                        local_grads,
                     ),
                 )
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} sent gradients to worker {peer_rank}"
                 )
+            
             # Wait for all workers (all gather) to send their gradients for this step
             # Check for staleness violations and clean up stale gradients (only if staleness_bound > 0)
             
@@ -725,7 +713,7 @@ def run_fsdp_worker(
             # Average gradients and update model
             if len(grads_received[step]) != 0:
                 logger.info(
-                    f"[Step {step}  / {num_epochs * len(train_loader)}] Averaging gradients from {len(grads_received[step])} participants"
+                    f"[Step {step}  / {num_epochs * len(train_loader)}] Combining gradients from {len(grads_received[step])} participants"
                 )
 
               
@@ -734,15 +722,15 @@ def run_fsdp_worker(
                     f"[Step {step}] Worker {worker_rank} applying averaged gradients to local model"
                 )
 
+                # Accumulate gradients worker-by-worker with averaging factor
                 for peer_rank, peer_grads in grads_received[step].items():
-                    
                     logger.info(
-                        f"[Step {step}] Worker {worker_rank} applying gradients from worker {peer_rank}"
+                        f"[Step {step}] Worker {worker_rank} accumulating gradients from worker {peer_rank} (scaled by 1/{NUM_WORKERS})"
                     )
-                    set_gradients(peer_grads, model)
+                    avg_grads(peer_grads, model, NUM_WORKERS)
                     
                     logger.info(
-                        f"[Step {step}] Worker {worker_rank} applied gradients from worker {peer_rank}"
+                        f"[Step {step}] Worker {worker_rank} accumulated gradients from worker {peer_rank}"
                     )
                     
                 optimizer.step()
@@ -874,7 +862,7 @@ def run_fsdp_worker(
                 # Cleanup current step gradients
                 reduced_grads_received.pop(step, None)
                 grads_received.pop(step, None)
-                del grads_reduced, local_grads
+                del local_grads
                 gc.collect()
             else:
                 logger.warning(
