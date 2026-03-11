@@ -38,8 +38,10 @@ from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_sync
 from smolcluster.algorithms.FSDP.worker_stage0 import run_fsdp_worker as run_fsdp_worker_stage0
 from smolcluster.algorithms.FSDP.worker_stage1 import run_fsdp_worker as run_fsdp_worker_stage1
 from smolcluster.algorithms.FSDP.worker_stage2 import run_fsdp_worker as run_fsdp_worker_stage2
+from smolcluster.algorithms.ExpertParallelism.worker import run_ep_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
+from smolcluster.models.moe import Mixtral
 from smolcluster.utils.device import get_device
 from smolcluster.utils.layers import get_model_per_node
 
@@ -52,19 +54,26 @@ def load_configs(algorithm: str = "syncps"):
     """Load configuration files.
 
     Args:
-        algorithm: Either 'edp' or 'syncps' to determine which cluster config to load
+        algorithm: Training algorithm to determine which configs to load
     """
     CONFIG_DIR = Path(__file__).parent / "configs"
 
-    with open(CONFIG_DIR / "gpt_config.yaml") as f:
-        gpt_config = yaml.safe_load(f)
+    # Load appropriate model config based on algorithm
+    if algorithm == 'ep':
+        # Expert Parallelism uses MoE config
+        with open(CONFIG_DIR / "moe_config.yaml") as f:
+            model_config = yaml.safe_load(f)
+    else:
+        # Other algorithms use GPT config
+        with open(CONFIG_DIR / "gpt_config.yaml") as f:
+            model_config = yaml.safe_load(f)
 
     # Load appropriate cluster config based on algorithm
     config_file = f"cluster_config_{algorithm}.yaml"
     with open(CONFIG_DIR / config_file) as f:
         cluster_config = yaml.safe_load(f)
 
-    return gpt_config, cluster_config
+    return model_config, cluster_config
 
 
 def load_data(config, world_size: int, seed: int, rank: int, batch_size: int):
@@ -299,14 +308,14 @@ def run_worker(
     # Setup parameters
     num_workers = cluster_config["num_workers"]
     seed = cluster_config.get("seed", 42)
-    # For mp_pipeline and classicdp, world_size is just num_workers (no separate server)
+    # For mp_pipeline, classicdp, fsdp, and ep: world_size is just num_workers (no separate server)
     # For other algorithms, world_size includes server (num_workers + 1)
-    world_size = num_workers if algorithm in ["mp_pipeline", "classicdp", "fsdp"] else num_workers + 1
+    world_size = num_workers if algorithm in ["mp_pipeline", "classicdp", "fsdp", "ep"] else num_workers + 1
 
     # Get server connection info (only needed for algorithms with server)
     host_ip = None
-    if algorithm in ["mp_pipeline", "classicdp", "fsdp"]:
-        # Pipeline topology and ClassicDP don't use host_ip for server connection
+    if algorithm in ["mp_pipeline", "classicdp", "fsdp", "ep"]:
+        # Pipeline topology, ClassicDP, FSDP, and EP don't use host_ip for server connection
         pass
     else:
         # Require host_ip for other algorithms
@@ -314,8 +323,8 @@ def run_worker(
     
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
-        # For mp_pipeline and classicdp, get worker rank 0's hostname; for others, use server
-        if algorithm in ["mp_pipeline", "classicdp", "fsdp"]:
+        # For mp_pipeline, classicdp, fsdp, and ep: get worker rank 0's hostname; for others, use server
+        if algorithm in ["mp_pipeline", "classicdp", "fsdp", "ep"]:
             # For different topologies based on algorithm
             topology_key = "pipelineTopology" if algorithm == "mp_pipeline" else "allToAllTopology"
             workers_list = cluster_config[topology_key]["workers"]["regular"]
@@ -338,20 +347,36 @@ def run_worker(
     )
 
     # Create model
-    model = BaseTransformer(
-        vocab_size=vocab_size,
-        max_seq_len=gpt_config["max_seq_len"],
-        model_dim=gpt_config["model_dim"],
-        num_layers=gpt_config["num_layers"],
-        num_heads=gpt_config["num_heads"],
-        ff_dim=gpt_config["ff_dim"],
-        dropout=gpt_config["dropout"],
-    )
+    if algorithm == 'ep':
+        # Expert Parallelism uses Mixtral (MoE) model
+        model = Mixtral(
+            vocab_size=vocab_size,
+            embedding_dims=gpt_config["embedding_dims"],
+            num_experts=gpt_config["num_experts"],
+            top_k=gpt_config["top_k"],
+            num_layers=gpt_config["num_layers"],
+            num_heads=gpt_config["num_heads"],
+            max_seq_len=gpt_config["max_seq_len"],
+            dropout=gpt_config["dropout"],
+            use_flash_attention=gpt_config.get("use_flash_attention", False),
+        )
+    else:
+        # Other algorithms use BaseTransformer (GPT-2)
+        model = BaseTransformer(
+            vocab_size=vocab_size,
+            max_seq_len=gpt_config["max_seq_len"],
+            model_dim=gpt_config["model_dim"],
+            num_layers=gpt_config["num_layers"],
+            num_heads=gpt_config["num_heads"],
+            ff_dim=gpt_config["ff_dim"],
+            dropout=gpt_config["dropout"],
+        )
+    
     device = get_device()
     
-    # For FSDP Stage 3, skip moving full model to device (workers never load full model)
-    # Model sharding happens later on CPU
-    if algorithm != 'fsdp':
+    # For FSDP Stage 3 and EP, skip moving full model to device
+    # Model sharding happens later on CPU or per-worker
+    if algorithm not in ['fsdp', 'ep']:
         model = model.to(device)
         logger.info(f"Model initialized on device: {device}")
 
@@ -365,11 +390,11 @@ def run_worker(
         )
         logger.info(f"\n{summary}")
     else:
-        logger.info(f"FSDP: Model will be sharded on CPU, skipping full model device transfer")
+        logger.info(f"{algorithm.upper()}: Model will be sharded, skipping full model device transfer")
 
-    # Create optimizer (not needed for FSDP Stage 2, handled per-worker)
+    # Create optimizer (not needed for FSDP Stage 2 or EP, handled per-worker)
     optimizer = None
-    if algorithm != 'fsdp':
+    if algorithm not in ['fsdp', 'ep']:
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=gpt_config["learning_rate"],
@@ -555,6 +580,22 @@ def run_worker(
             )
         else:
             raise ValueError(f"Invalid fsdp_stage: {fsdp_stage}. Must be 0, 1, or 2.")
+    elif algorithm == 'ep':
+        # Expert Parallelism: Each worker processes tokens for its assigned experts
+        run_ep_worker(
+            model=model,
+            train_loader=train_loader if local_rank == 0 else None,  # Only rank 0 needs dataloader
+            val_loader=val_loader if local_rank == 0 else None,  # Only rank 0 needs val loader
+            config=gpt_config,
+            cluster_config=cluster_config,
+            worker_rank=local_rank,
+            hostname=hostname,
+            device=device,
+            criterion=criterion,
+            host_ip=host_ip,
+            port=port,
+            resume_checkpoint_path=resume_checkpoint_path,
+        )
     wandb.finish()
 
 
@@ -569,7 +610,7 @@ def main():
     parser.add_argument(
         "-a",
         "--algorithm",
-        choices=["edp", "syncps", "mp", "mp_pipeline", "classicdp", "fsdp"],
+        choices=["edp", "syncps", "mp", "mp_pipeline", "classicdp", "fsdp", "ep"],
         default="syncps",
         help="Training algorithm to use (default: syncps)",
     )

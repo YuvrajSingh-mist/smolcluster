@@ -158,56 +158,132 @@ def load_weights_per_node(
 
 
 def get_model_per_node(
-    model, num_nodes: int, local_rank: int, total_layers: int
+    model, num_nodes: int, local_rank: int, total_layers: int, model_type: str = "causal_gpt2",
+    num_experts: int = None, expert_indices: List[int] = None
 ) -> Tuple[torch.nn.ModuleList, dict]:
+    """Partition model across nodes based on model type.
+    
+    Args:
+        model: The model to partition
+        num_nodes: Total number of nodes
+        local_rank: Rank of this node
+        total_layers: Total number of layers
+        model_type: Type of model ('causal_gpt2' or 'causal_mixtral')
+        num_experts: Total number of experts (for MoE models)
+        expert_indices: List of expert indices assigned to this node
+    
+    Returns:
+        Tuple of (ModuleList of layers, dict of layer names to modules)
+    """
     out_layers = {}
 
     assert local_rank < num_nodes, "Local rank must be less than number of nodes"
 
-   
-    # Collect all transformer layers
-    layers = list(model.blocks)
+    if model_type == "causal_gpt2":
+        # Collect all transformer layers
+        layers = list(model.blocks)
 
-    # Create indices for all layers and split them across nodes using torch.chunk
-    # This handles uneven splits automatically
-    layer_indices = torch.arange(total_layers)
-    split_indices = torch.chunk(layer_indices, num_nodes)
-    logger.info(f"Layer splits: {split_indices}")
+        # Create indices for all layers and split them across nodes using torch.chunk
+        # This handles uneven splits automatically
+        layer_indices = torch.arange(total_layers)
+        split_indices = torch.chunk(layer_indices, num_nodes)
+        logger.info(f"Layer splits: {split_indices}")
 
-    assert len(split_indices) <= num_nodes
+        assert len(split_indices) <= num_nodes
 
-    # Add embeddings for first node
-    if local_rank == 0:
-        out_layers["model.token_embedding"] = model.token_embedding
-        out_layers["model.position_embedding"] = model.position_embedding
+        # Add embeddings for first node
+        if local_rank == 0:
+            out_layers["model.token_embedding"] = model.token_embedding
+            out_layers["model.position_embedding"] = model.position_embedding
 
-        # Get the indices for this node's layers
-        node_layer_indices = split_indices[local_rank].tolist()
+            # Get the indices for this node's layers
+            node_layer_indices = split_indices[local_rank].tolist()
 
-        # Add transformer layers for this node
-        for layer_idx in node_layer_indices:
-            out_layers[f"model.blocks.{layer_idx}"] = layers[layer_idx]
+            # Add transformer layers for this node
+            for layer_idx in node_layer_indices:
+                out_layers[f"model.blocks.{layer_idx}"] = layers[layer_idx]
 
-    # Add final layers for last node
-    elif local_rank == num_nodes - 1:
-        # Get the indices for this node's layers
-        node_layer_indices = split_indices[local_rank].tolist()
+        # Add final layers for last node
+        elif local_rank == num_nodes - 1:
+            # Get the indices for this node's layers
+            node_layer_indices = split_indices[local_rank].tolist()
 
-        # Add transformer layers for this node
-        for layer_idx in node_layer_indices:
-            out_layers[f"model.blocks.{layer_idx}"] = layers[layer_idx]
+            # Add transformer layers for this node
+            for layer_idx in node_layer_indices:
+                out_layers[f"model.blocks.{layer_idx}"] = layers[layer_idx]
 
-        out_layers["model.ln_f"] = model.ln_f
-        out_layers["model.lm_head"] = model.lm_head
+            out_layers["model.ln_f"] = model.ln_f
+            out_layers["model.lm_head"] = model.lm_head
 
+        else:
+            # Get the indices for this node's layers
+            node_layer_indices = split_indices[local_rank].tolist()
+
+            # Add transformer layers for this node
+            for layer_idx in node_layer_indices:
+                out_layers[f"model.blocks.{layer_idx}"] = layers[layer_idx]
+
+    elif model_type == "causal_mixtral":
+        # Expert Parallelism: Build components for this rank
+        # Note: For EP, the worker should build a partitioned model, not extract from full model
+        # This function returns info about what components this rank should have
+        
+        assert num_experts is not None, "num_experts must be provided for causal_mixtral"
+        assert expert_indices is not None, "expert_indices must be provided for causal_mixtral"
+        
+        # Collect all decoder layers
+        layers = list(model.decoder_layers) if hasattr(model, 'decoder_layers') else []
+        
+        # Create indices for all layers and split them across nodes using torch.chunk
+        # This handles uneven splits automatically
+        layer_indices = torch.arange(total_layers)
+        split_indices = torch.chunk(layer_indices, num_nodes)
+        logger.info(f"Layer splits: {split_indices}")
+        logger.info(f"Rank {local_rank}: Expert Parallelism - Assigned experts {expert_indices}")
+        
+        assert len(split_indices) <= num_nodes
+        
+        # Add embeddings for first node
+        if local_rank == 0:
+            if hasattr(model, 'text_embds'):
+                out_layers["model.text_embds"] = model.text_embds
+                logger.info(f"Rank {local_rank}: Added text embeddings")
+            
+            # Get the indices for this node's layers
+            node_layer_indices = split_indices[local_rank].tolist()
+            
+            # Add decoder layers for this node
+            for layer_idx in node_layer_indices:
+                out_layers[f"model.decoder_layers.{layer_idx}"] = layers[layer_idx]
+        
+        # Add final layers for last node
+        elif local_rank == num_nodes - 1:
+            # Get the indices for this node's layers
+            node_layer_indices = split_indices[local_rank].tolist()
+            
+            # Add decoder layers for this node
+            for layer_idx in node_layer_indices:
+                out_layers[f"model.decoder_layers.{layer_idx}"] = layers[layer_idx]
+            
+            if hasattr(model, 'layer_norm'):
+                out_layers["model.layer_norm"] = model.layer_norm
+            if hasattr(model, 'linear_layer'):
+                out_layers["model.lm_head"] = model.linear_layer
+            logger.info(f"Rank {local_rank}: Added layer_norm and lm_head")
+        
+        else:
+            # Get the indices for this node's layers
+            node_layer_indices = split_indices[local_rank].tolist()
+            
+            # Add decoder layers for this node
+            for layer_idx in node_layer_indices:
+                out_layers[f"model.decoder_layers.{layer_idx}"] = layers[layer_idx]
+        
+        logger.info(f"Rank {local_rank}: Added {len([k for k in out_layers.keys() if 'decoder_layers' in k])} decoder layers")
+    
     else:
-        # Get the indices for this node's layers
-        node_layer_indices = split_indices[local_rank].tolist()
-
-        # Add transformer layers for this node
-        for layer_idx in node_layer_indices:
-            out_layers[f"model.blocks.{layer_idx}"] = layers[layer_idx]
-
+        raise ValueError(f"Unknown model_type: {model_type}. Supported: 'causal_gpt2', 'causal_mixtral'")
+    
     logger.info(f"Loaded layers: {list(out_layers.keys())}")
 
     final_model = torch.nn.ModuleList(list(out_layers.values()))

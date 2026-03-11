@@ -6,6 +6,7 @@ import threading
 import time
 from collections import defaultdict
 from pathlib import Path
+from typing import Dict, Tuple
 
 import torch
 import torchinfo
@@ -22,7 +23,7 @@ from smolcluster.utils.common_utils import (
     send_message,
     set_gradients
 )
-from smolcluster.utils.layers import get_expert_per_node
+from smolcluster.utils.layers import get_expert_per_node, get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
 step = 0  # Global step counter to track training progress across threads
@@ -56,11 +57,15 @@ def compute_leader_activations(
     
     return out
 
-def get_expert_probs_and_indices(router: Router, data: torch.Tensor, text_embeds: TextEmbeddings) -> tuple[torch.Tensor, torch.Tensor]:
+def get_expert_probs_and_indices(model: torch.nn.ModuleList, router: Router, data: torch.Tensor, local_rank: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Get expert probabilities and indices from the router."""
     
-    out = text_embeds(data)
-    expert_probs, expert_indices = router(out)
+    if local_rank == 0:
+        out = model[0](data)  # Pass through the first layer to get activations for routing
+        expert_probs, expert_indices = router(out)
+    else:
+        expert_probs, expert_indices = router(data)
+    
     return expert_probs, expert_indices
     
 
@@ -321,30 +326,48 @@ def accept_workers(
 
     logger.info("All workers connected. Starting training...")
 
-def route_tokens(expert_probs: torch.Tensor, expert_indices: torch.Tensor, num_experts: int, expert_shard: list) -> torch.Tensor:
-    """Route tokens to experts based on router output."""
+def route_tokens(expert_probs: torch.Tensor, expert_indices: torch.Tensor, num_experts: int, expert_shard: list, data: torch.Tensor) -> Tuple[Dict[int, torch.Tensor], Dict[int, int]]:
+    """Route tokens to experts based on router output.
+    
+    Args:
+        expert_probs: Probabilities for each expert [batch_size, seq_len, top_k]
+        expert_indices: Indices of selected experts [batch_size, seq_len, top_k]
+        num_experts: Total number of experts
+        expert_shard: List of expert indices assigned to this node
+        data: Input token data [batch_size, seq_len, ...]
+    
+    Returns:
+        Tuple of (selected_tokens dict, usage_counts dict)
+        - selected_tokens: {expert_idx: tokens} for experts in expert_shard
+        - usage_counts: {expert_idx: num_tokens} for all experts (0 if not selected)
+    """
+
+    selected_tokens = {}
+    usage_counts = {i: 0 for i in range(num_experts)}
 
     # Route to experts
     for expert_idx in range(num_experts):
+        # Create mask for current expert across all top_k positions
+        expert_mask = expert_indices == expert_idx
 
-            if expert_idx in expert_shard:
+        # Sum probabilities for current expert
+        expert_weights = (expert_probs * expert_mask).sum(dim=-1)  # [batch_size, seq_len]
+
+        # Get inputs where expert is used
+        selected = expert_weights > 0
+        num_selected = selected.sum().item()
+        
+        # Track usage for all experts (for global statistics)
+        usage_counts[expert_idx] = num_selected
+        
+        # Only store tokens for experts assigned to this node's shard
+        if expert_idx in expert_shard and num_selected > 0:
+            selected_tokens[expert_idx] = data[selected]
                 
-                # Create mask for current expert across all top_k positions
-                expert_mask = expert_indices == expert_idx
-
-                # Sum probabilities for current expert
-                expert_weights = (expert_probs * expert_mask).sum(dim=-1)  # [batch_size, seq_len]
-
-                # Get inputs where expert is used
-                selected = expert_weights > 0
-                if not selected.any():
-                    continue
-            
-    return selected
-    
+    return selected_tokens, usage_counts
 
 
-def run_fsdp_worker(
+def run_ep_worker(
     model,
     train_loader,
     val_loader,
@@ -397,14 +420,9 @@ def run_fsdp_worker(
     learning_rate = config["learning_rate"]
     embedding_dims = config["embedding_dims"]
     grad_clip_norm = config.get("grad_clip_norm", 0.0)
-    no_of_heads = config["no_of_heads"]
-    no_of_decoder_layers = config["no_of_decoder_layers"]
     top_k = config["top_k"]
-    max_seq_len = config["max_seq_len"]
-    attn_dropout = config.get("attn_dropout", 0.0)
-    dropout = config.get("dropout", 0.0)
+    num_layers = config["num_layers"]
     noisy_topk = config.get("noisy_topk", False)
-    use_checkpointing = config.get("use_checkpointing", False)
     vocab_size = config["vocab_size"]
     
     staleness_bound = cluster_config.get("staleness_bound", 0)  # 0 = strict sync, >0 = bounded async
@@ -455,15 +473,8 @@ def run_fsdp_worker(
     weights_received = defaultdict(dict)  # Buffer for broadcast weights
     num_nodes = cluster_config["num_nodes"]
     
-    # Staleness tracking (only if staleness_bound > 0)
-    staleness_stats = {
-        "all_gather_step_diffs": [],  # Track step differences for all_gather gradients
-        "all_reduce_step_diffs": [],  # Track step differences for all_reduce gradients
-        "stale_gradient_count": 0,  # Count of gradients with step_diff > 0
-        "max_step_diff": 0,  # Maximum step difference observed
-        "broadcast_weights_step_diffs": [],  # Track step differences for broadcast weights
-        "stale_weight_count": 0,  # Count of weights with step_diff > 0
-    }
+    # Expert usage tracking
+    expert_usage_counts = {i: 0 for i in range(num_experts)}  # Track how many tokens each expert processes
 
     # Gradient clipping
     if grad_clip_norm > 0.0:
@@ -477,39 +488,43 @@ def run_fsdp_worker(
     
     #Get the expert for this node
     
-    expert_shard = get_expert_per_node(worker_rank, num_nodes, num_experts)
+    expert_shard_indices = get_expert_per_node(worker_rank, num_nodes, num_experts)
     
-    text_embedding = TextEmbeddings(vocab_size=vocab_size, embeddings_dims=embedding_dims, device=device)
+    logger.info(f"Worker rank {worker_rank} assigned experts: {expert_shard_indices}")
+    logger.info(f"Expert partitioning across all {num_nodes} nodes:")
+    for rank in range(num_nodes):
+        rank_experts = get_expert_per_node(rank, num_nodes, num_experts)
+        logger.info(f"  Rank {rank}: experts {rank_experts}")
     
     router = Router(
         embeddings_dims=embedding_dims,
-        num_experts=len(expert_shard),
+        num_experts=num_experts,
         top_k=top_k,
         device=device,
         noisy_topk=noisy_topk
     )
     
 
-    model = Mixtral(
-        vocab_size=vocab_size,
-        embeddings_dims=embedding_dims,
-        no_of_heads=no_of_heads,
-        no_of_decoder_layers=no_of_decoder_layers,
-        num_experts=len(expert_shard),
-        top_k=top_k,
-        max_seq_len=max_seq_len,
-        device=device,
-        attn_dropout=attn_dropout,
-        dropout=dropout,
-        noisy_topk=noisy_topk,
-        use_checkpointing=use_checkpointing,
-        router=router
-    )
+    # Load model
+    model = model.to(device)
+    logger.info(f"Model initialized on device: {device}")
     
-    logger.info(f"Worker rank {worker_rank} loaded {len(expert_shard)} experts for this node")
+    sharded_model, out_layers  = get_model_per_node(
+        model=model,
+        num_nodes=num_nodes,
+        local_rank=worker_rank,
+        total_layers=num_layers,
+        model_type='causal_mixtral'
+            
+    )
+
+    model_layers = out_layers
+    
+    
+    logger.info(f"Worker rank {worker_rank} loaded {len(model_layers)} experts for this node")
    
     
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(out_layers.values(), lr=learning_rate)
     logger.info(
         f"Created optimizer for worker rank {worker_rank} with lr={learning_rate}"
     )
@@ -663,17 +678,23 @@ def run_fsdp_worker(
 
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
-        # Create batch progress bar for this epoch (only for rank 0)
-        batch_pbar = tqdm(
-            enumerate(train_loader),
-            total=len(train_loader),
-            desc=f"Epoch {epoch + 1}/{num_epochs}",
-            leave=True,
-            ncols=120,
-            disable=(worker_rank != 0),
-        )
+        # Only rank 0 has the dataloader and processes batches
+        if worker_rank == 0:
+            # Create batch progress bar for this epoch (only for rank 0)
+            batch_pbar = tqdm(
+                enumerate(train_loader),
+                total=len(train_loader),
+                desc=f"Epoch {epoch + 1}/{num_epochs}",
+                leave=True,
+                ncols=120,
+            )
+            batch_iterator = batch_pbar
+        else:
+            # Other workers wait for tokens from rank 0
+            batch_iterator = enumerate(range(len(train_loader)))
+            logger.info(f"Worker {worker_rank} waiting for tokens from rank 0")
 
-        for batch_idx, (data, target) in batch_pbar:
+        for batch_idx, batch_data in batch_iterator:
             step = epoch * len(train_loader) + batch_idx
 
             # Skip batches if resuming mid-epoch
@@ -681,8 +702,7 @@ def run_fsdp_worker(
                 continue
 
             batch_start_time = time.time()
-            data = data.to(device)
-            target = target.to(device)
+            
             # Update learning rate if scheduler enabled
             if scheduler is not None:
                 current_lr = scheduler.get_last_lr()[0]
@@ -691,115 +711,141 @@ def run_fsdp_worker(
 
             activations = None
 
-            # Each worker computes its own gradients on its local data
-            logger.info(
-                f"[Step {step}/{num_epochs * len(train_loader)}] Worker rank {worker_rank} computing local gradients"
-            )
-
-            expert_probs, expert_indices = get_expert_probs_and_indices(router, data, text_embedding)
-            
-            routed_tokens = route_tokens(expert_probs, expert_indices, num_experts, expert_shard)
-            
-            # Store local routed tokens
-            with lock:
-                tokens_received[step][worker_rank] = {
-                    'tokens': data,
-                    'routed_mask': routed_tokens,
-                    'expert_probs': expert_probs,
-                    'expert_indices': expert_indices
-                }
-
-            # Phase 1: Route tokens - send routed tokens to all peers for expert processing
-            logger.info(
-                f"[Step {step}] Phase 1: Broadcasting routed tokens to all peers for expert processing"
-            )
-
-            for peer_rank, peer_socket in outbound_worker_sockets.items():
-                send_message(
-                    peer_socket,
-                    (
-                        "route_tokens",
-                        step,
-                        worker_rank,
-                        {
-                            'tokens': data,
-                            'routed_mask': routed_tokens,
-                            'expert_probs': expert_probs,
-                            'expert_indices': expert_indices
-                        },
-                    ),
-                )
+            # Only rank 0 loads data and runs router
+            if worker_rank == 0:
+                data, target = batch_data
+                data = data.to(device)
+                target = target.to(device)
+                
                 logger.info(
-                    f"[Step {step}] Worker {worker_rank} sent routed tokens to worker {peer_rank}"
+                    f"[Step {step}/{num_epochs * len(train_loader)}] Rank 0 running router to determine token routing"
                 )
-            # Wait for all workers to send their routed tokens for this step
-            logger.info(f"[Step {step}] Waiting for routed tokens from all peers...")
+
+                # Run router to determine which tokens go to which experts
+                expert_probs, expert_indices = get_expert_probs_and_indices(sharded_model, router, data, worker_rank)
+                
+                # Phase 1: Route tokens - send tokens to appropriate workers based on expert assignment
+                logger.info(
+                    f"[Step {step}] Phase 1: Rank 0 routing tokens to workers based on expert assignments"
+                )
+                
+                # Track global expert usage (from rank 0's perspective)
+                global_usage_counts = {i: 0 for i in range(num_experts)}
+                
+                # Determine which tokens go to which worker's experts
+                for peer_rank in range(NUM_WORKERS):
+                    peer_expert_indices = get_expert_per_node(peer_rank, NUM_WORKERS, num_experts)
+                    peer_routed_tokens, usage_counts = route_tokens(expert_probs, expert_indices, num_experts, peer_expert_indices, data)
+                    
+                    # Accumulate usage counts for this step
+                    for expert_idx, count in usage_counts.items():
+                        global_usage_counts[expert_idx] += count
+                        expert_usage_counts[expert_idx] += count
+                    
+                    if len(peer_routed_tokens) == 0:
+                        logger.warning(f"[Step {step}] No tokens routed to worker {peer_rank} (experts {peer_expert_indices})")
+                        continue
+                        # Store local tokens
+                    elif peer_rank == 0:
+                        with lock:
+                            tokens_received[step][worker_rank] = {
+                                'tokens': peer_routed_tokens,
+                                'expert_probs': expert_probs,
+                                'expert_indices': expert_indices,
+                                'target': target
+                            }
+                    else:
+                        # Send to peer worker
+                        peer_socket = outbound_worker_sockets[peer_rank]
+                        send_message(
+                            peer_socket,
+                            (
+                                "route_tokens",
+                                step,
+                                worker_rank,
+                                {
+                                    'tokens': peer_routed_tokens,
+                                    'expert_probs': expert_probs,
+                                    'expert_indices': expert_indices,
+                                    'target': target
+                                },
+                            ),
+                        )
+                        logger.info(
+                            f"[Step {step}] Rank 0 sent tokens for experts {peer_expert_indices} to worker {peer_rank}"
+                        )
+                
+                # Log expert usage for this step (only rank 0 has full view)
+                logger.info(f"[Step {step}] Expert usage this step: {global_usage_counts}")
+                
+                # Log to wandb periodically
+                if step % metrics_log_interval == 0:
+                    # Create bar chart data for wandb
+                    expert_usage_data = [[expert_idx, count] for expert_idx, count in sorted(expert_usage_counts.items())]
+                    expert_usage_table = wandb.Table(data=expert_usage_data, columns=["Expert ID", "Token Count"])
+                    
+                    wandb.log({
+                        "expert_usage/cumulative_bar_chart": wandb.plot.bar(
+                            expert_usage_table, 
+                            "Expert ID", 
+                            "Token Count",
+                            title=f"Cumulative Expert Usage (Step {step})"
+                        ),
+                        "step": step,
+                        "epoch": epoch + 1,
+                    })
+                    
+                    # Also log individual expert usage counts
+                    expert_metrics = {f"expert_usage/expert_{i}_tokens": count for i, count in expert_usage_counts.items()}
+                    wandb.log(expert_metrics)
+            # Wait for tokens from rank 0
+            elif worker_rank != 0:
+                logger.info(f"[Step {step}] Worker {worker_rank} waiting for tokens from rank 0...")
+            
             while True:
                 with lock:
-                    # Clean up old tokens beyond staleness window FIRST
-                    if staleness_bound > 0:
-                        for old_step in list(tokens_received.keys()):
-                            if old_step < step - staleness_bound:
-                                logger.info(f"[Step {step}] Cleaning up stale tokens from step {old_step}")
-                                tokens_received.pop(old_step, None)
-                    
-                    # Only check staleness if bounded async is enabled
-                    if staleness_bound > 0:
-                        for recv_step in list(tokens_received.keys()):
-                            # Only check steps within the staleness window
-                            if recv_step >= step - staleness_bound:
-                                step_diff = abs(recv_step - step)
-                                
-                                # Track staleness statistics
-                                staleness_stats["all_gather_step_diffs"].append(step_diff)
-                                staleness_stats["max_step_diff"] = max(
-                                    staleness_stats["max_step_diff"], step_diff
-                                )
-                                if step_diff > 0:
-                                    staleness_stats["stale_gradient_count"] += 1
-                                
-                                if step_diff > staleness_bound:
-                                    logger.error(
-                                        f"[Step {step}] STALENESS VIOLATION: Received tokens from step {recv_step} "
-                                        f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
-                                    )
-                                    raise RuntimeError(
-                                        f"Staleness bound violated: step difference {step_diff} exceeds bound {staleness_bound}"
-                                    )
-                    
                     curr_tokens_len = len(tokens_received[step])
-
-                logger.info(
-                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received routed tokens from {curr_tokens_len - 1}/{NUM_WORKERS - 1} peers (total: {curr_tokens_len}/{NUM_WORKERS})."
-                )
-                if curr_tokens_len < NUM_WORKERS:
-                    logger.info(f"Waiting for more routed tokens for step {step}...")
-                    step_event.wait(timeout=1.0)
-                    step_event.clear()
+                
+                if worker_rank == 0:
+                    # Rank 0 has already stored its tokens
+                    if curr_tokens_len >= 1:
+                        break
                 else:
-                    break
+                    # Other workers wait for tokens from rank 0
+                    if curr_tokens_len >= 1:
+                        logger.info(f"[Step {step}] Worker {worker_rank} received tokens from rank 0")
+                        break
+                
+                step_event.wait(timeout=1.0)
+                step_event.clear()
 
             # Process routed tokens through local experts and compute gradients
-            logger.info(f"[Step {step}] Processing tokens through local experts and computing gradients")
+            logger.info(f"[Step {step}] Worker {worker_rank} processing tokens through local experts")
             
-            # Gather all routed tokens for this worker's experts
-            all_routed_data = []
-            for peer_rank, token_data in tokens_received[step].items():
-                peer_tokens = token_data['tokens']
-                peer_mask = token_data['routed_mask']
-                if peer_mask.any():
-                    all_routed_data.append(peer_tokens[peer_mask])
+            # Get tokens and target for this worker
+            token_data = tokens_received[step][worker_rank]  
+            peer_tokens = token_data['tokens']  # Dict[expert_idx -> tokens]
+            target = token_data['target'].to(device)
+            
+            # Log which experts this worker is processing
+            logger.info(f"[Step {step}] Worker {worker_rank} processing experts: {list(peer_tokens.keys())}")
+            logger.info(f"[Step {step}] Worker {worker_rank} expert shard assignment: {expert_shard_indices}")
             
             # Compute gradients on routed tokens
-            if all_routed_data:
-                combined_tokens = torch.cat(all_routed_data, dim=0)
+            if peer_tokens and len(peer_tokens) > 0:
+                # Concatenate tokens from all assigned experts in sorted order by expert index
+                sorted_expert_tokens = [peer_tokens[expert_idx] for expert_idx in sorted(peer_tokens.keys())]
+                combined_tokens = torch.cat(sorted_expert_tokens, dim=0)  # Stack tokens along batch dimension
+                
+                logger.info(f"[Step {step}] Worker {worker_rank} combined {len(sorted_expert_tokens)} expert token sets into shape {combined_tokens.shape}")
+                
                 local_loss, local_grads = compute_leader_gradients(
-                    device, model, combined_tokens, target, criterion, optimizer, config
+                    device, sharded_model, combined_tokens, target, criterion, optimizer, config
                 )
             else:
                 # No tokens routed to this worker's experts
                 logger.warning(f"[Step {step}] Worker {worker_rank} received no tokens for its experts")
-                local_grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
+                local_grads = {name: torch.zeros_like(param) for name, param in sharded_model.named_parameters()}
                 local_loss = torch.tensor(0.0, device=device)
             
             with lock:
@@ -826,14 +872,16 @@ def run_fsdp_worker(
                 }
             )
             
-            # Phase 2: Share gradients - send local gradients to all peers for averaging
+            # Phase 2: Share gradients - send local gradients to rank 0 for averaging
             logger.info(
-                f"[Step {step}] Phase 2: Broadcasting local gradients to all peers for averaging"
+                f"[Step {step}] Phase 2: Sending local gradients to rank 0 for averaging"
             )
 
-            for peer_rank, peer_socket in outbound_worker_sockets.items():
+            if worker_rank != 0:
+                # Other workers send gradients to rank 0
+                rank0_socket = outbound_worker_sockets[0]
                 send_message(
-                    peer_socket,
+                    rank0_socket,
                     (
                         "share_gradients",
                         step,
@@ -842,112 +890,88 @@ def run_fsdp_worker(
                     ),
                 )
                 logger.info(
-                    f"[Step {step}] Worker {worker_rank} sent gradients to worker {peer_rank}"
+                    f"[Step {step}] Worker {worker_rank} sent gradients to rank 0"
                 )
             
-            # Wait for all workers to share their gradients
-            logger.info(f"[Step {step}] Waiting for gradients from all peers...")
-            while True:
-                with lock:
-                    # Clean up old gradients beyond staleness window FIRST
-                    if staleness_bound > 0:
-                        for old_step in list(grads_received.keys()):
-                            if old_step < step - staleness_bound:
-                                logger.info(f"[Step {step}] Cleaning up stale gradients from step {old_step}")
-                                grads_received.pop(old_step, None)
-                    
-                    curr_grads_len = len(grads_received[step])
-
-                logger.info(
-                    f"Worker {worker_rank} - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received gradients from {curr_grads_len - 1}/{NUM_WORKERS - 1} peers (total: {curr_grads_len}/{NUM_WORKERS})."
-                )
-                if curr_grads_len < NUM_WORKERS:
-                    logger.info(f"Waiting for more gradients for step {step}...")
-                    step_event.wait(timeout=1.0)
-                    step_event.clear()
-                else:
-                    break
-
-            # Average gradients and update model
-            if len(grads_received[step]) != 0:
-                logger.info(
-                    f"[Step {step}  / {num_epochs * len(train_loader)}] Averaging gradients from {len(grads_received[step])} participants"
-                )
-
-                # Reduce the grads
-                grads_reduced = reduce(grads_received[step], len(grads_received[step]))
-
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} averaged gradients successfully"
-                )
-
-                # Scatter-reduce: broadcast averaged gradients to all peers via outbound connections
-                for peer_rank, peer_socket in outbound_worker_sockets.items():
-                    send_message(
-                        peer_socket,
-                        (
-                            "all_reduce",
-                            step,
-                            worker_rank,
-                            grads_reduced,
-                        ),
-                    )
-                    logger.info(
-                        f"[Step {step}] Worker {worker_rank} sent averaged gradients to worker {peer_rank}"
-                    )
-
-                logger.info(
-                    f"[Step {step}] Worker {worker_rank} scatter-reduce complete"
-                )
-
-                # Wait for reduced gradients from all peers (for learning - shows full all-reduce flow)
-                logger.info(f"[Step {step}] Worker {worker_rank} waiting for reduced gradients from peers...")
+            # Wait for all workers to share their gradients (only rank 0 does this)
+            if worker_rank == 0:
+                logger.info(f"[Step {step}] Rank 0 waiting for gradients from all workers...")
                 while True:
                     with lock:
-                        # Clean up old reduced gradients beyond staleness window FIRST
-                        if staleness_bound > 0:
-                            for old_step in list(reduced_grads_received.keys()):
-                                if old_step < step - staleness_bound:
-                                    logger.info(f"[Step {step}] Cleaning up stale reduced gradients from step {old_step}")
-                                    reduced_grads_received.pop(old_step, None)
-                        
-                        # Only check staleness if bounded async is enabled
-                        if staleness_bound > 0:
-                            for recv_step in list(reduced_grads_received.keys()):
-                                # Only check steps within the staleness window
-                                if recv_step >= step - staleness_bound:
-                                    step_diff = abs(recv_step - step)
-                                    
-                                    # Track staleness statistics
-                                    staleness_stats["all_reduce_step_diffs"].append(step_diff)
-                                    staleness_stats["max_step_diff"] = max(
-                                        staleness_stats["max_step_diff"], step_diff
-                                    )
-                                    if step_diff > 0:
-                                        staleness_stats["stale_gradient_count"] += 1
-                                    
-                                    if step_diff > staleness_bound:
-                                        logger.error(
-                                            f"[Step {step}] STALENESS VIOLATION in scatter-reduce: Received gradient from step {recv_step} "
-                                            f"(diff={step_diff} > bound={staleness_bound}). Training stopped."
-                                        )
-                                        raise RuntimeError(
-                                            f"Staleness bound violated in scatter-reduce: step difference {step_diff} exceeds bound {staleness_bound}"
-                                        )
-                        
-                        curr_reduced_len = len(reduced_grads_received[step])
-                    
+                        curr_grads_len = len(grads_received[step])
+
                     logger.info(
-                        f"[Step {step}] Worker {worker_rank} received {curr_reduced_len}/{NUM_WORKERS - 1} reduced gradient sets"
+                        f"Rank 0 - Epoch {epoch + 1}/{num_epochs}, Step {step}/{num_epochs * len(train_loader)}: Received gradients from {curr_grads_len}/{NUM_WORKERS} workers."
+                    )
+                    if curr_grads_len < NUM_WORKERS:
+                        logger.info(f"Rank 0 waiting for more gradients for step {step}...")
+                        step_event.wait(timeout=1.0)
+                        step_event.clear()
+                    else:
+                        break
+
+            # Rank 0: Average gradients and broadcast to all workers
+            if worker_rank == 0:
+                if len(grads_received[step]) != 0:
+                    logger.info(
+                        f"[Step {step} / {num_epochs * len(train_loader)}] Rank 0 averaging gradients from {len(grads_received[step])} workers"
+                    )
+
+                    # Reduce the grads
+                    grads_reduced = reduce(grads_received[step], len(grads_received[step]))
+
+                    logger.info(
+                        f"[Step {step}] Rank 0 averaged gradients successfully"
+                    )
+
+                    # Broadcast averaged gradients to all workers
+                    for peer_rank, peer_socket in outbound_worker_sockets.items():
+                        send_message(
+                            peer_socket,
+                            (
+                                "all_reduce",
+                                step,
+                                worker_rank,
+                                grads_reduced,
+                            ),
+                        )
+                        logger.info(
+                            f"[Step {step}] Rank 0 sent averaged gradients to worker {peer_rank}"
+                        )
+
+                    logger.info(
+                        f"[Step {step}] Rank 0 gradient broadcast complete"
                     )
                     
-                    if curr_reduced_len >= NUM_WORKERS - 1:
-                        logger.info(f"[Step {step}] Worker {worker_rank} received all reduced gradients")
-                        break
-                    
-                    step_event.wait()
-                    step_event.clear()
+                    # Rank 0 uses the averaged gradients directly
+                    with lock:
+                        reduced_grads_received[step][0] = grads_reduced
+                else:
+                    logger.warning(
+                        f"[Step {step}] Rank 0: No gradients received. Skipping grad update."
+                    )
+            
+            # All workers: Wait for reduced gradients from rank 0
+            logger.info(f"[Step {step}] Worker {worker_rank} waiting for averaged gradients from rank 0...")
+            while True:
+                with lock:
+                    curr_reduced_len = len(reduced_grads_received[step])
+                
+                logger.info(
+                    f"[Step {step}] Worker {worker_rank} has {curr_reduced_len} reduced gradient set(s)"
+                )
+                
+                if curr_reduced_len >= 1:
+                    logger.info(f"[Step {step}] Worker {worker_rank} received averaged gradients")
+                    break
+                
+                step_event.wait(timeout=1.0)
+                step_event.clear()
 
+            # Apply averaged gradients to local model
+            if len(reduced_grads_received[step]) > 0:
+                grads_reduced = reduced_grads_received[step][0]  # Get from rank 0
+                
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} applying averaged gradients to local model"
                 )
@@ -960,31 +984,7 @@ def run_fsdp_worker(
                 )
                 
                 
-               
-                # Cleanup old gradients beyond staleness window to free memory (only if staleness_bound > 0)
-                if staleness_bound > 0:
-                    with lock:
-                        for old_step in list(reduced_grads_received.keys()):
-                            if old_step < step - staleness_bound:
-                                logger.info(f"[Step {step}] Cleaning up stale reduced gradients from step {old_step}")
-                                reduced_grads_received.pop(old_step, None)
-                        
-                        for old_step in list(grads_received.keys()):
-                            if old_step < step - staleness_bound:
-                                logger.info(f"[Step {step}] Cleaning up stale all-gather gradients from step {old_step}")
-                                grads_received.pop(old_step, None)
-                                
-                        for old_step in list(weights_received.keys()):
-                            if old_step < step - staleness_bound:
-                                logger.info(f"[Step {step}] Cleaning up stale weights from step {old_step}")
-                                weights_received.pop(old_step, None)
-                        
-                        for old_step in list(tokens_received.keys()):
-                            if old_step < step - staleness_bound:
-                                logger.info(f"[Step {step}] Cleaning up stale tokens from step {old_step}")
-                                tokens_received.pop(old_step, None)
-                
-                # Cleanup current step data
+                # Cleanup step data
                 reduced_grads_received.pop(step, None)
                 grads_received.pop(step, None)
                 tokens_received.pop(step, None)
@@ -992,7 +992,7 @@ def run_fsdp_worker(
                 gc.collect()
             else:
                 logger.warning(
-                    f"[Step {step}] Worker {worker_rank}: No gradients received. Skipping grad update."
+                    f"[Step {step}] Worker {worker_rank}: No averaged gradients received. Skipping grad update."
                 )
                 del local_grads
 
@@ -1015,11 +1015,17 @@ def run_fsdp_worker(
 
             # Calculate tokens/sec
             batch_time = time.time() - batch_start_time
-            tokens_processed = data.size(0) * data.size(1)
+            if worker_rank == 0 and 'data' in locals():
+                tokens_processed = data.size(0) * data.size(1)
+            elif 'combined_tokens' in locals() and combined_tokens is not None:
+                tokens_processed = combined_tokens.size(0) * (combined_tokens.size(1) if combined_tokens.dim() > 1 else 1)
+            else:
+                tokens_processed = 0
             tok_per_sec = tokens_processed / batch_time if batch_time > 0 else 0
 
-            # Update batch progress bar with current metrics
-            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step, "tok/s": f"{tok_per_sec:.0f}"})
+            # Update batch progress bar with current metrics (only for rank 0)
+            if worker_rank == 0:
+                batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step, "tok/s": f"{tok_per_sec:.0f}"})
 
             # Log training metrics
             wandb_metrics = {
@@ -1029,46 +1035,6 @@ def run_fsdp_worker(
                 "batch_size": batch_size,
                 f"throughput/worker_{worker_rank}_tok_per_sec": tok_per_sec,
             }
-            
-            # Log staleness metrics if bounded async is enabled and we have data
-            if staleness_bound > 0 and step % metrics_log_interval == 0:
-                with lock:
-                    if staleness_stats["all_gather_step_diffs"]:
-                        avg_all_gather_diff = sum(staleness_stats["all_gather_step_diffs"]) / len(
-                            staleness_stats["all_gather_step_diffs"]
-                        )
-                        wandb_metrics[f"staleness/worker_{worker_rank}_all_gather_avg_step_diff"] = avg_all_gather_diff
-                    
-                    if staleness_stats["all_reduce_step_diffs"]:
-                        avg_scatter_diff = sum(staleness_stats["all_reduce_step_diffs"]) / len(
-                            staleness_stats["all_reduce_step_diffs"]
-                        )
-                        wandb_metrics[f"staleness/worker_{worker_rank}_all_reduce_avg_step_diff"] = avg_scatter_diff
-                    
-                    if staleness_stats["broadcast_weights_step_diffs"]:
-                        avg_weights_diff = sum(staleness_stats["broadcast_weights_step_diffs"]) / len(
-                            staleness_stats["broadcast_weights_step_diffs"]
-                        )
-                        wandb_metrics[f"staleness/worker_{worker_rank}_broadcast_weights_avg_step_diff"] = avg_weights_diff
-                    
-                    wandb_metrics[f"staleness/worker_{worker_rank}_max_step_diff"] = staleness_stats["max_step_diff"]
-                    wandb_metrics[f"staleness/worker_{worker_rank}_stale_gradient_count"] = staleness_stats["stale_gradient_count"]
-                    wandb_metrics[f"staleness/worker_{worker_rank}_stale_weight_count"] = staleness_stats["stale_weight_count"]
-                    wandb_metrics[f"staleness/worker_{worker_rank}_staleness_bound"] = staleness_bound
-                    
-                    # Reset stats for next interval
-                    staleness_stats["all_gather_step_diffs"] = []
-                    staleness_stats["all_reduce_step_diffs"] = []
-                    staleness_stats["broadcast_weights_step_diffs"] = []
-                    staleness_stats["stale_gradient_count"] = 0
-                    staleness_stats["stale_weight_count"] = 0
-                    # Keep max_step_diff as cumulative max
-                    
-                    logger.info(
-                        f"[Step {step}] Staleness stats - Max diff: {staleness_stats['max_step_diff']}, "
-                        f"Stale grads in interval: {staleness_stats['stale_gradient_count']}, "
-                        f"Stale weights in interval: {staleness_stats['stale_weight_count']}"
-                    )
             
             wandb.log(wandb_metrics)
 
@@ -1118,8 +1084,8 @@ def run_fsdp_worker(
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
                     )
 
-            # Evaluation
-            if step % eval_steps == 0:
+            # Evaluation (only rank 0 since it has val_loader)
+            if worker_rank == 0 and step % eval_steps == 0:
                 val_loss, val_ppl = evaluate(
                     device,
                     model,
@@ -1187,8 +1153,33 @@ def run_fsdp_worker(
             gc.collect()
             activations = None
 
-        # Close batch progress bar for this epoch
-        batch_pbar.close()
+        # Log epoch summary of expert usage (only rank 0 has complete view)
+        if worker_rank == 0:
+            logger.info(f"=== Epoch {epoch + 1} Expert Usage Summary ===")
+            total_tokens = sum(expert_usage_counts.values())
+            for expert_idx in sorted(expert_usage_counts.keys()):
+                count = expert_usage_counts[expert_idx]
+                percentage = (count / total_tokens * 100) if total_tokens > 0 else 0
+                logger.info(f"  Expert {expert_idx}: {count:,} tokens ({percentage:.2f}%)")
+            logger.info(f"  Total tokens processed: {total_tokens:,}")
+            
+            # Log final bar chart for this epoch
+            expert_usage_data = [[expert_idx, count] for expert_idx, count in sorted(expert_usage_counts.items())]
+            expert_usage_table = wandb.Table(data=expert_usage_data, columns=["Expert ID", "Token Count"])
+            
+            wandb.log({
+                "expert_usage/epoch_bar_chart": wandb.plot.bar(
+                    expert_usage_table, 
+                    "Expert ID", 
+                    "Token Count",
+                    title=f"Expert Usage - Epoch {epoch + 1}"
+                ),
+                "epoch": epoch + 1,
+            })
+
+        # Close batch progress bar for this epoch (only for rank 0)
+        if worker_rank == 0:
+            batch_pbar.close()
 
     for worker_addr, worker_socket in workers.items():
         send_message(worker_socket, ("down", step, worker_rank, None))

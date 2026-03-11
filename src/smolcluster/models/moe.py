@@ -657,7 +657,9 @@ class Mixtral(nn.Module):
         self.max_seq_len = max_seq_len
         self.use_checkpointing = use_checkpointing
 
-      
+        self.text_embds = TextEmbeddings(
+            vocab_size=vocab_size, embeddings_dims=embeddings_dims, device=device
+        )
         self.linear_layer = nn.Linear(
             in_features=embeddings_dims, out_features=vocab_size, device=device, bias=False
         )
@@ -705,6 +707,7 @@ class Mixtral(nn.Module):
         Returns:
             Logits of shape (batch_size, seq_len, vocab_size).
         """
+        x = self.text_embds(x)
        
         for layer in self.decoder_layers:
             x = layer(x)

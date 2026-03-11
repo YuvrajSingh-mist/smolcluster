@@ -4,14 +4,17 @@
 # Model Architecture
 
 vocab_size: null  # Will be set from tokenizer
-embeddings_dims: 768    # Model dimension (embedding size)
-no_of_heads: 12         # Number of attention heads
-no_of_decoder_layers: 12  # Number of decoder layers
+embedding_dims: 768     # Model dimension (embedding size)
+num_heads: 12           # Number of attention heads (alias: no_of_heads)
+no_of_heads: 12         # Alternative name for compatibility
+num_layers: 4           # Number of decoder layers (no_of_decoder_layers)
+no_of_decoder_layers: 4  # Alternative name for compatibility
 num_experts: 8          # Number of experts in each MoE layer
 top_k: 2                # Number of experts to route to per token
 max_seq_len: 1024       # Maximum sequence length
 dropout: 0.1            # General dropout rate
 attn_dropout: 0.1       # Attention dropout rate
+use_flash_attention: false  # Enable flash attention
 
 # MoE-specific Settings
 
@@ -47,6 +50,18 @@ tokenizer: "openai-community/gpt2"    # HuggingFace tokenizer
 project_name: "smolcluster-mixtral-wikitext2"
 log_interval: 50        # Steps between logging
 track_gradients: true   # Whether to track gradient norms
+
+# Decoder-specific metrics
+decoder_type:
+  ppl: true             # If true, log Perplexity (PPL) metrics
+
+# Checkpoint Settings
+save_checkpoints: true     # Whether to save model checkpoints
+checkpoint_dir: "checkpoints"  # Directory to save checkpoints (relative to project root)
+checkpoint_steps: 1000      # Save checkpoint every N steps
+max_checkpoints_to_keep: 3  # Keep only N most recent checkpoints
+save_optimizer_state: true  # Save optimizer state in checkpoints
+resume_from_checkpoint: null  # Path to checkpoint to resume from (null = start fresh)
 
 # Decoder-specific metrics
 decoder_type:
