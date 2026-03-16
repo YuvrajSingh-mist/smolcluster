@@ -42,20 +42,6 @@ def reduce(
     return grads_reduced
 
 
-def compute_leader_activations(
-    device: torch.device,
-    model: torch.nn.Module,
-    activations: torch.Tensor,
-    
-    
-) -> torch.Tensor:
-    """Compute gradients for worker rank 0 (leader node)."""
-
-    activations = activations.to(device)
-    out = model(activations)
-    
-    return out
-
 def get_expert_probs_and_indices(model: torch.nn.ModuleList, router: torch.nn.Module, data: torch.Tensor, local_rank: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Get expert probabilities and indices from the router."""
     
@@ -330,6 +316,20 @@ def route_tokens(
     return selected_tokens, usage_counts
 
 
+def compute_router_usage_counts(
+    expert_probs: torch.Tensor,
+    expert_indices: torch.Tensor,
+    num_experts: int,
+) -> Dict[int, int]:
+    """Count how many tokens were routed to each expert for the current step."""
+    usage_counts = {i: 0 for i in range(num_experts)}
+    for expert_idx in range(num_experts):
+        expert_mask = expert_indices == expert_idx
+        expert_weights = (expert_probs * expert_mask).sum(dim=-1)  # [batch, seq]
+        usage_counts[expert_idx] = int((expert_weights > 0).sum().item())
+    return usage_counts
+
+
 def compute_expert_contributions(
     peer_tokens: Dict[int, torch.Tensor],
     expert_probs: torch.Tensor,
@@ -401,9 +401,7 @@ def run_distributed_eval_step(
     step_event: threading.Event,
 ) -> Tuple[Optional[float], Any]:
     """Run one distributed EP validation step and return (val_loss, val_iter)."""
-    if val_loader is None:
-        return None, val_iter
-
+   
     eval_step = ("eval", step)
 
     if worker_rank == 0:
@@ -441,7 +439,7 @@ def run_distributed_eval_step(
 
             if peer_rank == 0:
                 with lock:
-                    tokens_received[eval_step][worker_rank] = payload
+                    tokens_received[eval_step][peer_rank] = payload
             else:
                 peer_socket = outbound_worker_sockets[peer_rank]
                 send_message(
@@ -594,13 +592,7 @@ def run_ep_worker(
     num_layers = config["num_layers"]
     noisy_topk = config.get("noisy_topk", False)
     
-    staleness_bound = cluster_config.get("staleness_bound", 0)  # 0 = strict sync, >0 = bounded async
     NUM_WORKERS = cluster_config["num_workers"]
-    
-    if staleness_bound > 0:
-        logger.info(f"Bounded staleness enabled: staleness_bound={staleness_bound}")
-    else:
-        logger.info("Strict synchronous training enabled (staleness_bound=0)")
 
     # Checkpoint configuration
     save_checkpoints = config.get("save_checkpoints", True)
@@ -646,6 +638,7 @@ def run_ep_worker(
     
     # Expert usage tracking
     expert_usage_counts = {i: 0 for i in range(num_experts)}  # Track how many tokens each expert processes
+    last_router_step_usage = {i: 0 for i in range(num_experts)}
 
     # Gradient clipping
     if grad_clip_norm > 0.0:
@@ -900,23 +893,25 @@ def run_ep_worker(
                 )
 
                 # Track global expert usage (from rank 0's perspective)
-                global_usage_counts = {i: 0 for i in range(num_experts)}
+                global_usage_counts = compute_router_usage_counts(
+                    expert_probs=expert_probs,
+                    expert_indices=expert_indices,
+                    num_experts=num_experts,
+                )
+                for expert_idx, count in global_usage_counts.items():
+                    expert_usage_counts[expert_idx] += count
+                last_router_step_usage = global_usage_counts
+
                 routing_summary = []
 
                 # Determine which activations go to which worker's experts
                 for peer_rank in range(NUM_WORKERS):
                     peer_expert_indices = get_expert_per_node(peer_rank, num_nodes, num_experts)
-                    peer_routed_tokens, usage_counts = route_tokens(expert_probs, expert_indices, num_experts, peer_expert_indices, token_activations)
+                    peer_routed_tokens, _ = route_tokens(expert_probs, expert_indices, num_experts, peer_expert_indices, token_activations)
                     
-                    # Accumulate usage counts for this step
-                    for expert_idx, count in usage_counts.items():
-                        global_usage_counts[expert_idx] += count
-                        expert_usage_counts[expert_idx] += count
-                    
-                    # Log warning if no tokens routed, but still send message to avoid deadlock
+                    # Even with empty token dicts, send/store payloads so peers do not block waiting.
                     if len(peer_routed_tokens) == 0:
                         logger.warning(f"[Step {step}] No tokens routed to worker {peer_rank} (experts {peer_expert_indices})")
-                        continue
                     
                     # Store local tokens
                     if peer_rank == 0:
@@ -966,9 +961,32 @@ def run_ep_worker(
                 
                 # Log to wandb periodically
                 if step % metrics_log_interval == 0:
+                    step_total_tokens = sum(last_router_step_usage.values())
+                    cumulative_total_tokens = sum(expert_usage_counts.values())
+
                     # Create bar chart data for wandb
                     expert_usage_data = [[expert_idx, count] for expert_idx, count in sorted(expert_usage_counts.items())]
                     expert_usage_table = wandb.Table(data=expert_usage_data, columns=["Expert ID", "Token Count"])
+
+                    router_step_freq = {
+                        f"router/step_expert_{expert_idx}_freq": (
+                            (count / step_total_tokens) if step_total_tokens > 0 else 0.0
+                        )
+                        for expert_idx, count in last_router_step_usage.items()
+                    }
+                    router_step_tokens = {
+                        f"router/step_expert_{expert_idx}_tokens": count
+                        for expert_idx, count in last_router_step_usage.items()
+                    }
+
+                    cumulative_router_freq = {
+                        f"router/cumulative_expert_{expert_idx}_freq": (
+                            (count / cumulative_total_tokens) if cumulative_total_tokens > 0 else 0.0
+                        )
+                        for expert_idx, count in expert_usage_counts.items()
+                    }
+
+                  
                     
                     wandb.log({
                         "expert_usage/cumulative_bar_chart": wandb.plot.bar(
@@ -979,10 +997,20 @@ def run_ep_worker(
                         ),
                         "step": step,
                         "epoch": epoch + 1,
+                        "router/step_total_tokens": step_total_tokens,
+                        "router/cumulative_total_tokens": cumulative_total_tokens,
+                        **router_step_tokens,
+                        **router_step_freq,
+                        **cumulative_router_freq,
                     })
                     
                     # Also log individual expert usage counts
-                    expert_metrics = {f"expert_usage/expert_{i}_tokens": count for i, count in expert_usage_counts.items()}
+                    expert_metrics = {
+                        f"expert_usage/expert_{i}_tokens": count
+                        for i, count in expert_usage_counts.items()
+                    }
+                    expert_metrics["step"] = step
+                    expert_metrics["epoch"] = epoch + 1
                     wandb.log(expert_metrics)
             # Wait for tokens from rank 0
             elif worker_rank != 0:
@@ -1278,7 +1306,11 @@ def run_ep_worker(
                     )
 
             # Minimal distributed validation: use one val batch routed through EP pipeline.
-            if step !=0 and eval_steps > 0 and step % eval_steps == 0:
+        
+            if eval_steps > 0 and step % eval_steps == 0:
+                logger.info(f"Step {step}: Starting distributed evaluation...")
+                
+                
                 val_loss, val_iter = run_distributed_eval_step(
                     step=step,
                     worker_rank=worker_rank,

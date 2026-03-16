@@ -2,10 +2,7 @@
 Training with EDP, SyncPS, or ModelParallelism for GPT
 
 This script provides both server and worker entry points for distributed
-GPT training using EDP, SyncPS, or ModelParallelism algorithms.
-
-Usage:
-    Server: python train.py server <hostname> --algorithm <edp|syncps|mp>
+GPT training using EDP, SyncPS, or ModelParallelism algorithmsr: python train.py server <hostname> --algorithm <edp|syncps|mp>
     Worker: python train.py worker <rank> <hostname> --algorithm <edp|syncps|mp>
 
 Examples:

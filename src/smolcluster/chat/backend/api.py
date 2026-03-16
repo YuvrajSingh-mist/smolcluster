@@ -29,11 +29,11 @@ logger = logging.getLogger(__name__)
 
 # Load model config
 CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
-with open(CONFIG_DIR / "model_parallelism" / "model_config_inference.yaml") as f:
+with open(CONFIG_DIR / "inference" / "model_parallelism" / "model_config_inference.yaml") as f:
     model_configs = yaml.safe_load(f)
 
 # Load cluster config for web interface ports and server connection
-with open(CONFIG_DIR / "model_parallelism" / "cluster_config_inference.yaml") as f:
+with open(CONFIG_DIR / "inference" / "model_parallelism" / "cluster_config_inference.yaml") as f:
     cluster_config = yaml.safe_load(f)
 
 # Get active model config (default to causal_gpt2)

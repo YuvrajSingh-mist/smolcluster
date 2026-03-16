@@ -6,7 +6,7 @@ A distributed deep learning library for training neural networks across heteroge
 
 ## Features
 
-- **Distributed Training Algorithms**: FSDP (ZeRO-optimized), Classic Data Parallelism (All-Reduce), Elastic Distributed Parallelism (EDP), Synchronous Parameter Server (SyncPS), and Model Parallelism
+- **Distributed Training Algorithms**: Fully Sharded Data Parallel (ZeRO-optimized), Classic Data Parallelism (All-Reduce), Elastic Distributed Parallelism, Synchronous Parameter Server (SyncPS), Expert Parallelism (EP), and Model Parallelism
 - **Heterogeneous Hardware**: Mac minis, Raspberry Pis, MacBooks, and Windows machines
 - **Model Support**: MNIST, GPT-2, and custom neural networks
 - **Distributed Inference**: Model parallelism with streaming token generation
@@ -44,7 +44,7 @@ bash scripts/launch_edp_train_gpt.sh
 
 ## Training Algorithms
 
-### FSDP (Fully Sharded Data Parallel)
+### Fully Sharded Data Parallel
 ZeRO-optimized data parallelism with configurable optimizer state partitioning. Best for memory-constrained setups and large models.
 
 ```bash
@@ -71,7 +71,7 @@ bash scripts/launch_dp_train_gpt.sh
 - Real-time staleness monitoring via WandB
 - Automatic stale gradient cleanup
 
-### Elastic Distributed Parallelism (EDP)
+### Elastic Distributed Parallelism
 Asynchronous data parallelism with stale gradient tolerance. Best for heterogeneous clusters.
 
 ```bash
@@ -83,6 +83,13 @@ Synchronous data parallelism with barrier coordination. Best for homogeneous clu
 
 ```bash
 bash scripts/launch_syncps_train_gpt.sh
+```
+
+### Expert Parallelism (EP)
+Mixture-of-Experts training with experts sharded across nodes. Best for scaling MoE models efficiently across heterogeneous hardware.
+
+```bash
+bash scripts/training/launch_ep_train_moe.sh
 ```
 
 ### Model Parallelism (MP)
@@ -123,11 +130,12 @@ smolcluster/
 │   └── setup_cluster.md            # Hardware setup
 ├── src/smolcluster/
 │   ├── algorithms/
-│   │   ├── EDP/                    # Elastic Distributed Parallelism
+│   │   ├── Elastic Distributed Parallelism/                    # Elastic Distributed Parallelism
 │   │   ├── DataParallelism/        # Data Parallelism implementations
 │   │   │   ├── ClassicDP/          # Classic All-Reduce Data Parallelism
 │   │   │   └── SynchronousPS/      # Synchronous Parameter Server
-│   │   ├── FSDP/                   # Fully Sharded Data Parallelism
+│   │   ├── ExpertParallelism/      # Expert Parallelism (MoE)
+│   │   ├── Fully Sharded Data Parallel/                   # Fully Sharded Data Parallelism
 │   │   ├── ModelParallelism/       # Model Parallelism
 │   │   └── ModelParallelismPipeline/  # Pipeline Model Parallelism
 │   ├── models/                     # Neural network models

@@ -7,10 +7,11 @@ Smolcluster uses YAML configuration files to manage cluster topology, model arch
 ## Table of Contents
 
 - [Cluster Configuration](#cluster-configuration)
-  - [FSDP (Fully Sharded Data Parallel)](#cluster_config_fsdpyaml-fully-sharded-data-parallel)
+  - [Fully Sharded Data Parallel](#cluster_config_fsdpyaml-fully-sharded-data-parallel)
   - [Classic Data Parallelism (ClassicDP)](#cluster_config_classicdpyaml-classic-data-parallelism)
-  - [Elastic Distributed Parallelism (EDP)](#cluster_config_edpyaml-elastic-distributed-parallelism)
+  - [Elastic Distributed Parallelism](#cluster_config_edpyaml-elastic-distributed-parallelism)
   - [Synchronous Parameter Server (SyncPS)](#cluster_config_syncpsyaml-synchronous-parameter-server)
+  - [Expert Parallelism (EP)](#cluster_config_epyaml-expert-parallelism)
   - [Model Parallelism (MP)](#cluster_config_mpyaml-model-parallelism)
 - [Model Configuration](#model-configuration)
   - [Simple Neural Network](#nn_configyaml-simple-neural-network)
@@ -31,7 +32,7 @@ Smolcluster uses YAML configuration files to manage cluster topology, model arch
 ZeRO-optimized data parallelism with configurable optimizer state partitioning, ideal for memory-constrained setups and large models.
 
 ```yaml
-# FSDP stage selection
+# Fully Sharded Data Parallel stage selection
 fsdp_stage: 0                  # 0: Optimizer partitioning, 1: +Gradient, 2: +Parameter
 
 # Bounded staleness for gradient synchronization
@@ -93,7 +94,7 @@ seed: 42                       # Random seed
 | `model_name` | str | Model architecture identifier |
 | `seed` | int | Random seed for reproducibility |
 
-**FSDP Stage Details:**
+**Fully Sharded Data Parallel Stage Details:**
 - **Stage 0 (ZeRO-0: Optimizer Partitioning)**: Each worker owns a partition of optimizer states. Memory savings: ~1/N optimizer states per worker. Full model and gradients replicated.
 - **Stage 1 (ZeRO-1: Optimizer + Gradient Partitioning)**: Extends Stage 0 by partitioning gradients during communication. Each worker only sends/receives gradient chunks it owns. Memory savings: ~1/N optimizer states + ~1/N gradients. Communication optimization: reduced all-reduce bandwidth.
 - **Stage 2 (ZeRO-2: Optimizer + Gradient + Parameter Partitioning)**: Extends Stage 1 by partitioning parameters. Workers only keep parameters they own in memory, fetching others during forward/backward pass. Memory savings: ~1/N optimizer states + ~1/N gradients + ~1/N parameters. Maximum memory efficiency.
@@ -106,7 +107,7 @@ All-Reduce based data parallelism with bounded staleness, ideal for balanced clu
 # Bounded staleness for gradient synchronization
 staleness_bound: 5             # Allow workers to be 5 steps apart (0 = strict sync)
 
-# Network buffer sizes and metrics (same as FSDP)
+# Network buffer sizes and metrics (same as Fully Sharded Data Parallel)
 buffer_size:
   mini1: 8
   mini2: 8
@@ -202,12 +203,55 @@ seed: 42                       # Random seed
 
 #### Parameters
 
-Inherits all parameters from EDP configuration, with the following differences:
+Inherits all parameters from Elastic Distributed Parallelism configuration, with the following differences:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `worker_update_interval` | int | Steps between Polyak-averaged weight updates |
 | `timeout` | float | Server timeout for gradient collection (handles stragglers) |
+
+### cluster_config_ep.yaml (Expert Parallelism)
+
+Expert-parallel training for Mixture-of-Experts models, with experts sharded across nodes and all-to-all token routing.
+
+```yaml
+staleness_bound: 0             # Typically strict sync for EP training
+timeout: 0.1                   # Communication timeout (seconds)
+num_workers: 3                 # Number of workers in the cluster
+
+allToAllTopology:
+  workers:
+    regular:
+      - hostname: jetson
+        rank: 0
+        port: 65432
+        ip: "10.10.1.1"
+      - hostname: jetson2
+        rank: 1
+        port: 65433
+        ip: "10.10.1.2"
+      - hostname: jetson3
+        rank: 2
+        port: 65434
+        ip: "10.10.1.3"
+
+# Expert Parallelism specific configs
+num_nodes: 3                   # Total nodes participating in EP
+num_layers: 4                  # Number of decoder layers in Mixtral
+model_name: causal_mixtral     # MoE model type
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `staleness_bound` | int | Maximum step difference (usually `0` for strict sync EP) |
+| `timeout` | float | Communication timeout for distributed collectives |
+| `num_workers` | int | Number of workers in cluster |
+| `allToAllTopology` | dict | Worker topology with rank, port, and IP mapping |
+| `num_nodes` | int | Number of participating nodes for expert sharding |
+| `num_layers` | int | Number of MoE decoder layers |
+| `model_name` | str | MoE model architecture identifier |
 
 ### cluster_config_mp.yaml (Model Parallelism)
 

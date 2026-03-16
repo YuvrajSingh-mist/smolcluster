@@ -9,7 +9,7 @@ num_heads: 4            # Number of attention heads
 num_layers: 6           # Number of decoder layers (no_of_decoder_layers)
 num_experts: 8          # Number of experts in each MoE layer
 top_k: 2                # Number of experts to route to per token
-max_seq_len: 1024       # Maximum sequence length
+max_seq_len: 256        # Maximum sequence length
 dropout: 0.1            # General dropout rate
 attn_dropout: 0.1       # Attention dropout rate
 

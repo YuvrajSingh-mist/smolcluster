@@ -3,21 +3,24 @@
 ## Table of Contents
 
 - [Training Algorithms](#training-algorithms)
-  - [FSDP (Fully Sharded Data Parallel)](#fsdp-fully-sharded-data-parallel)
+  - [Fully Sharded Data Parallel](#fsdp-fully-sharded-data-parallel)
   - [Classic Data Parallelism (ClassicDP)](#classic-data-parallelism-classicdp)
-  - [Elastic Distributed Parallelism (EDP)](#elastic-distributed-parallelism-edp)
+  - [Elastic Distributed Parallelism](#elastic-distributed-parallelism-edp)
   - [Synchronous Parameter Server (SyncPS)](#synchronous-parameter-server-syncps)
+  - [Expert Parallelism (EP)](#expert-parallelism-ep)
   - [Model Parallelism (MP)](#model-parallelism-mp)
 - [Algorithm Comparison](#algorithm-comparison)
 - [How Each Algorithm Works](#how-each-algorithm-works)
-  - [FSDP (Fully Sharded Data Parallel)](#fsdp-fully-sharded-data-parallel-1)
+  - [Fully Sharded Data Parallel](#fsdp-fully-sharded-data-parallel-1)
   - [ClassicDP (Classic Data Parallelism)](#classicdp-classic-data-parallelism)
-  - [EDP (Elastic Distributed Parallelism)](#edp-elastic-distributed-parallelism)
+  - [Elastic Distributed Parallelism](#edp-elastic-distributed-parallelism)
   - [SyncPS (Synchronous Parameter Server)](#syncps-synchronous-parameter-server)
+  - [EP (Expert Parallelism)](#ep-expert-parallelism)
   - [Model Parallelism](#model-parallelism)
 - [Usage Examples](#usage-examples)
   - [MNIST Training (Simple NN)](#mnist-training-simple-nn)
   - [GPT Training (Language Model)](#gpt-training-language-model)
+  - [MoE Training (Expert Parallelism)](#moe-training-expert-parallelism)
   - [GPT Inference (Model Parallelism)](#gpt-inference-model-parallelism)
 - [Monitoring Training](#monitoring-training)
   - [Console Logs](#console-logs)
@@ -30,7 +33,7 @@
 
 SmolCluster implements multiple distributed training paradigms:
 
-### FSDP (Fully Sharded Data Parallel)
+### Fully Sharded Data Parallel
 
 **ZeRO-optimized data parallelism with optimizer state partitioning**
 
@@ -55,7 +58,7 @@ fsdp_stage: 0  # 0=Optimizer, 1=+Gradient, 2=+Parameter partitioning
 staleness_bound: 5  # Allow workers to be 5 steps apart (0 = strict sync)
 ```
 
-**FSDP Stages:**
+**Fully Sharded Data Parallel Stages:**
 - `fsdp_stage: 0` - ZeRO-0 (optimizer state partitioning, ~1/N optimizer memory)
 - `fsdp_stage: 1` - ZeRO-1 (optimizer + gradient partitioning, ~1/N optimizer + gradient memory)
 - `fsdp_stage: 2` - ZeRO-2 (optimizer + gradient + parameter partitioning, ~1/N total memory)
@@ -87,7 +90,7 @@ staleness_bound: 5  # Allow workers to be 5 steps apart (0 = strict sync)
 - `staleness_bound: 0` - Strict synchronous (all workers at same step)
 - `staleness_bound: K` - Bounded async (workers can drift up to K steps)
 
-### Elastic Distributed Parallelism (EDP)
+### Elastic Distributed Parallelism
 
 **Asynchronous data parallelism with stale gradient handling**
 
@@ -119,6 +122,22 @@ bash scripts/launch_edp_train_gpt.sh
 bash scripts/launch_syncps_train_gpt.sh
 ```
 
+### Expert Parallelism (EP)
+
+**Mixture-of-Experts training with experts sharded across nodes**
+
+- Routes tokens to top-k experts for sparse activation
+- Each node hosts a subset of experts (expert sharding)
+- Collective all-to-all communication for token dispatch and combine
+- Scales expert capacity with lower per-token compute than dense models
+
+**Best for:** MoE models (e.g., Mixtral-style), scaling parameter count efficiently, heterogeneous clusters with expert placement control
+
+**Launch:**
+```bash
+bash scripts/training/launch_ep_train_moe.sh
+```
+
 ### Model Parallelism (MP)
 
 **Layer-wise model distribution across nodes**
@@ -140,25 +159,9 @@ bash scripts/inference/launch_mp_inference.sh
 bash scripts/inference/launch_api.sh
 ```
 
-## Algorithm Comparison
-
-| Feature | FSDP | ClassicDP | EDP | SyncPS | Model Parallelism |
-|---------|------|-----------|-----|--------|-------------------|
-| **Synchronization** | Configurable | Configurable | Asynchronous | Synchronous | Sequential |
-| **Gradient Staleness** | Bounded (0 to K) | Bounded (0 to K) | Tolerates stale | Fresh only | N/A |
-| **Barrier Points** | Optional | Optional | None | Every step | Per layer |
-| **Throughput** | High | High | Highest | Medium | Lowest |
-| **Convergence** | Fast | Fast | Slower | Fastest | N/A (inference) |
-| **Fault Tolerance** | Good | Good | Best | Good | Poor |
-| **Memory Efficiency** | High (ZeRO-1) | Low | Low | Low | High |
-| **Network Efficiency** | Optimized (owned params) | Direct all-reduce | Quantization supported | Raw gradients | Activations only |
-| **Communication** | All-to-all | All-to-all | Parameter server | Parameter server | Sequential |
-| **Optimizer Sharding** | Yes (Stage 1) | No | No | No | No |
-| **Staleness Monitoring** | WandB metrics | WandB metrics | None | None | N/A |
-
 ## How Each Algorithm Works
 
-### FSDP (Fully Sharded Data Parallel)
+### Fully Sharded Data Parallel
 
 **Stage 0: All-Reduce Mode**
 1. **All-to-All Topology Setup**: Workers form a fully connected graph
@@ -212,7 +215,7 @@ bash scripts/inference/launch_api.sh
 - `staleness_bound = K`: Workers can be up to K steps apart (bounded async)
 - Training stops if any gradient exceeds the bound
 
-### EDP (Elastic Distributed Parallelism)
+### Elastic Distributed Parallelism
 
 1. **Server Initialization**: Parameter server starts and waits for workers
 2. **Worker Registration**: Each worker connects and receives initial weights
@@ -237,6 +240,15 @@ bash scripts/inference/launch_api.sh
 4. **Barrier Synchronization**: Step N+1 starts only after all workers finish step N
 5. **Polyak Averaging**: Smooth weight updates using exponential moving average
 
+### EP (Expert Parallelism)
+
+1. **Expert Partitioning**: Experts are distributed across nodes based on configured ranks
+2. **Token Routing**: Router selects top-k experts for each token
+3. **All-to-All Dispatch**: Tokens are exchanged so each expert receives its assigned tokens
+4. **Local Expert Compute**: Each node computes only for its local experts
+5. **All-to-All Combine**: Expert outputs are returned and merged in original token order
+6. **Backpropagation**: Gradients flow through router and expert paths, then optimizer updates local expert weights
+
 ### Model Parallelism
 
 1. **Layer Distribution**: Model split across nodes (e.g., layers 0-3 on node 0, 4-7 on node 1)
@@ -255,8 +267,8 @@ bash scripts/inference/launch_api.sh
 ### MNIST Training (Simple NN)
 
 ```bash
-# EDP
-cd src/smolcluster/algorithms/EDP
+# Elastic Distributed Parallelism
+cd src/smolcluster/algorithms/Elastic Distributed Parallelism
 uv run server.py  # On server node
 uv run worker.py 1 macbook  # On worker node
 
@@ -276,6 +288,16 @@ bash scripts/launch_edp_train_gpt.sh
 uv run python src/smolcluster/train.py \
   --override training.batch_size=16 \
   --override training.learning_rate=3e-4
+```
+
+### MoE Training (Expert Parallelism)
+
+```bash
+# Automated launch (recommended)
+bash scripts/training/launch_ep_train_moe.sh
+
+# Optional: resume from checkpoint
+bash scripts/training/launch_ep_train_moe.sh --resume-checkpoint checkpoints/latest.pt
 ```
 
 ### GPT Inference (Model Parallelism)
@@ -323,7 +345,7 @@ Automatic experiment tracking with detailed metrics:
 
 **Run Naming:**  
 Format: `{Algorithm}-{role}-{hostname}_rank{X}_lr{Y}_bs{Z}`  
-Example: `EDP-worker-macbook_rank1_lr0.001_bs32`
+Example: `Elastic Distributed Parallelism-worker-macbook_rank1_lr0.001_bs32`
 
 ### Grafana (Centralized Logging)
 

@@ -243,7 +243,7 @@ Launch distributed training using the provided scripts:
 ```bash
 cd /path/to/smolcluster/scripts/training
 
-# FSDP (ZeRO-optimized, recommended for large models)
+# Fully Sharded Data Parallel (ZeRO-optimized, recommended for large models)
 bash launch_fsdp_train_gpt.sh
 
 # Classic Data Parallelism
@@ -251,6 +251,9 @@ bash launch_dp_train_gpt.sh
 
 # Elastic Distributed Parallelism
 bash launch_edp_train_gpt.sh
+
+# Expert Parallelism (MoE)
+bash launch_ep_train_moe.sh
 
 # Model Parallelism
 bash launch_mp_train_gpt.sh
