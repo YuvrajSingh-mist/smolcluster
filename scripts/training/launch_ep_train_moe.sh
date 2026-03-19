@@ -66,7 +66,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)
             DRY_RUN=true
-            echo "🏃 Dry run mode - will show commands without executing"
+            echo "🏃 Dry run mode - running commands without executing"
             shift
             ;;
         --resume-checkpoint)
@@ -139,13 +139,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check if tmux is installed on remote node
         if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && which tmux"; then
-            echo "❌ Error: tmux is not installed on $node. Install with: ssh $node 'brew install tmux' (macOS) or ssh $node 'sudo apt install tmux' (Linux)"
+            echo "❌ Error: tmux is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
         # Check if uv is installed on remote node
         if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && uv --version"; then
-            echo "❌ Error: uv is not installed on $node. Install with: ssh $node 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
+            echo "❌ Error: uv is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
@@ -420,7 +420,7 @@ launch_on_node "$WORKER_0_HOSTNAME" "$WORKER_0_CMD" "ep_worker0"
 echo "   ✅ Rank 0: $WORKER_0_HOSTNAME (ep_worker0)"
 
 if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
-    echo "ℹ️  Tablets should run manually: "
+    echo "ℹ️  Tabletsould run manually: "
     for worker_entry in "${TABLET_WORKERS[@]}"; do
         hostname="${worker_entry%%:*}"
         rank="${worker_entry##*:}"
@@ -451,7 +451,7 @@ done
 # Launch tablet workers (manual reminder only - they're already in the list above)
 if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
     echo ""
-    echo "⚠️  Remember to manually start tablet workers as shown above"
+    echo "⚠️  Remember to manually start tablet workers asown above"
 fi
 
 echo ""

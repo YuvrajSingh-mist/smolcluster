@@ -228,7 +228,8 @@ def main():
         tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids
         original_prompt_length = tokenized_prompt.shape[1]  # Track prompt length
 
-        max_new_tokens = payload.get("max_tokens")
+        # Get max_new_tokens from request or fall back to model config
+        max_new_tokens = payload.get("max_tokens") or model_config.get("max_new_tokens", 128)
         decoding_strategy = payload.get("decoding_strategy")
         temperature = payload.get("temperature")
         top_p = payload.get("top_p")

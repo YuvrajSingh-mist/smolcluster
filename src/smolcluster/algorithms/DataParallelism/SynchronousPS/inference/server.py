@@ -2,17 +2,23 @@ import logging
 import os
 import socket
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
 import torch
 import yaml
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from smolcluster.utils.common_utils import receive_message, send_message
+from smolcluster.utils.common_utils import (
+    get_effective_decoding_strategies,
+    load_model_and_tokenizer,
+    receive_message,
+    resolve_generation_request_params,
+    send_message,
+)
 from smolcluster.utils.decoding import sample_next_token
 from smolcluster.utils.device import get_device
-
-CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
+from smolcluster.utils.decoding import sample_next_token
+                
+CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "configs"
 
 with open(CONFIG_DIR / "inference" / "model_config_inference.yaml") as f:
     inference_config = yaml.safe_load(f)
@@ -53,44 +59,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("[SYNCPS-INF-SERVER]")
 
-
-def get_defaults(payload: dict) -> tuple[int, str, float, float, int]:
-    strategies = MODEL_CFG.get("decoding_strategies", {})
-    active = payload.get("decoding_strategy") or MODEL_CFG.get(
-        "active_decoding_strategy", "greedy"
-    )
-    active_cfg = strategies.get(active, {})
-
-    max_tokens = payload.get("max_tokens") or MODEL_CFG.get("max_new_tokens", 128)
-    temperature = payload.get("temperature")
-    if temperature is None:
-        temperature = active_cfg.get("temperature", 1.0)
-
-    top_p = payload.get("top_p")
-    if top_p is None:
-        top_p = active_cfg.get("p", 0.9)
-
-    top_k = payload.get("top_k")
-    if top_k is None:
-        top_k = active_cfg.get("k", 50)
-
-    return max_tokens, active, temperature, top_p, top_k
+EFFECTIVE_STRATEGIES = get_effective_decoding_strategies(
+    MODEL_CFG,
+    hf_token=HF_TOKEN,
+    logger=logger,
+)
 
 
-def load_model_and_tokenizer() -> tuple[Any, Any]:
-    device = get_device()
-    hf_model_name = MODEL_CFG["hf_model_name"]
-    tokenizer_cfg = MODEL_CFG.get("tokenizer", {})
-    logger.info(f"Loading model '{MODEL_NAME}' from {hf_model_name} on {device}")
-    model = AutoModelForCausalLM.from_pretrained(hf_model_name, token=HF_TOKEN)  # type: ignore[call-arg]
-    model = cast(Any, model).to(device)
-    model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(hf_model_name, token=HF_TOKEN, **tokenizer_cfg)
-    return model, tokenizer
 
 
 def main() -> None:
-    model, tokenizer = load_model_and_tokenizer()
+    # Load model and tokenizer for server-side generation (rank 0)
+    model, tokenizer = load_model_and_tokenizer(
+        hf_model_name=MODEL_CFG["hf_model_name"],
+        device=get_device(),
+        hf_token=HF_TOKEN,
+        tokenizer_cfg=MODEL_CFG.get("tokenizer", {}),
+        load_model=True,
+        load_tokenizer=True,
+        logger=logger,
+    )
+    if tokenizer is None:
+        raise RuntimeError("Tokenizer is required for SyncPS inference server")
+    if model is None:
+        logger.warning("Model not loaded - server rank 0 generation will not be available")
+    
     device = get_device()
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -132,95 +125,241 @@ def main() -> None:
     logger.info("Ready to process inference requests")
 
     while True:
+        if client_socket is None:
+            logger.info("Waiting for chat backend client connection...")
+            while client_socket is None:
+                conn, addr = server_socket.accept()
+                logger.info(f"Accepted connection from {addr}")
+
+                message = receive_message(conn)
+                if message is None:
+                    conn.close()
+                    continue
+
+                command, payload = message
+                if command == "register_client":
+                    client_socket = conn
+                    send_message(client_socket, ("client_registered", None))
+                    logger.info("Registered chat backend client")
+                elif command == "register":
+                    rank = int(payload)
+                    worker_sockets[rank] = conn
+                    logger.info(f"Registered worker rank {rank}")
+                    send_message(conn, "start_inference")
+                else:
+                    logger.warning(f"Unexpected registration command: {command}")
+                    conn.close()
+
         request = receive_message(client_socket)
         if request is None:
-            logger.warning("Client disconnected")
-            break
+            logger.warning("Client disconnected; waiting for reconnection")
+            try:
+                client_socket.close()
+            except Exception:
+                pass
+            client_socket = None
+            continue
 
         command, payload = request
         if command == "disconnect":
-            logger.info("Client requested disconnect")
-            break
+            logger.info("Client requested disconnect; waiting for reconnection")
+            try:
+                client_socket.close()
+            except Exception:
+                pass
+            client_socket = None
+            continue
         if command != "inference":
             send_message(client_socket, ("error", {"message": f"Unknown command: {command}"}))
             continue
 
         prompt = (payload.get("prompt") or "").strip()
-        if not prompt:
-            send_message(client_socket, ("error", {"message": "Empty prompt"}))
+        messages = payload.get("messages")  # For instruction-based models
+        worker_rank = payload.get("worker_rank")
+        if worker_rank is None:
+            worker_rank = min(worker_sockets.keys()) if worker_sockets else 0
+        
+        if not prompt and not messages:
+            send_message(client_socket, ("error", {"message": "Empty prompt or messages"}))
+            continue
+        
+        # Check if requesting rank 0 (server) or a worker - do this BEFORE worker socket validation
+        if worker_rank == 0:
+            # Server-side generation will be handled below after tokenization
+            pass
+        elif worker_rank not in worker_sockets:
+            # Validate worker rank only if not rank 0
+            send_message(client_socket, ("error", {"message": f"Worker {worker_rank} not available"}))
             continue
 
-        max_tokens, decoding_strategy, temperature, top_p, top_k = get_defaults(payload)
-        tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids
+        # Check if using instruction-based model
+        is_instruction_based = MODEL_CFG.get("is_instruction_based", False)
+
+        # Handle instruction-based models with messages format
+        if is_instruction_based and messages:
+            # Format messages using chat template
+            try:
+                tokenizer_cfg = MODEL_CFG.get("tokenizer", {}) or {}
+                tokenizer_overrides = tokenizer_cfg.get("overrides", {})
+                add_generation_prompt = tokenizer_overrides.get(
+                    "add_generation_prompt",
+                    tokenizer_cfg.get("add_generation_prompt", True),
+                )
+                tokenized_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    return_tensors="pt",
+                    add_generation_prompt=add_generation_prompt,
+                )
+                if logger:
+                    logger.info(f"Applied chat template for instruction-based model")
+            except Exception as e:
+                logger.error(f"Failed to apply chat template: {e}")
+                send_message(client_socket, ("error", {"message": f"Chat template error: {str(e)}"}))
+                continue
+        else:
+            # Use plain text prompt (base models or instruction models with plain text)
+            tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids
+
         original_prompt_length = tokenized_prompt.shape[1]
+        try:
+            max_tokens, decoding_strategy, temperature, top_p, top_k = resolve_generation_request_params(payload, MODEL_CFG, EFFECTIVE_STRATEGIES)
 
-        for token_idx in range(max_tokens):
-            with torch.no_grad():
-                server_logits = model(tokenized_prompt.to(device)).logits.cpu()
+        except ValueError as exc:
+            send_message(client_socket, ("error", {"message": str(exc)}))
+            continue
 
-            all_logits = [server_logits]
-            for rank, worker_socket in sorted(worker_sockets.items()):
+        # Check if requesting rank 0 (server) or a worker
+        if worker_rank == 0:
+            # Server-side generation on rank 0
+            if model is None:
+                send_message(client_socket, ("error", {"message": "Server rank 0 model not loaded"}))
+                continue
+            
+            logger.info(f"Generating locally on server rank 0")
+            try:
+                
+                generated_ids = tokenized_prompt.clone().to(device)
+                current_ids = generated_ids
+                
+                for token_idx in range(max_tokens):
+                    with torch.inference_mode():
+                        outputs = model(input_ids=current_ids, return_dict=True)
+
+                    prev_len = current_ids.shape[1]
+                    current_ids, should_stop = sample_next_token(
+                        activations=outputs.logits,
+                        tokenized_prompt=current_ids,
+                        decoding_strategy=decoding_strategy,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        tokenizer=tokenizer,
+                    )
+
+                    next_token = current_ids[:, -1]
+                    
+                    token_text = tokenizer.decode([int(next_token)], skip_special_tokens=True)
+                    send_message(
+                        client_socket,
+                        (
+                            "token",
+                            {
+                                "text": token_text,
+                                "token_idx": token_idx,
+                            },
+                        ),
+                    )
+                    generated_ids = current_ids
+
+                    if should_stop or current_ids.shape[1] == prev_len:
+                        break
+                
+                total_tokens = generated_ids.shape[1] - original_prompt_length
+                logger.info(f"Server rank 0 generated {total_tokens} tokens")
+                send_message(client_socket, ("inference_complete", {"worker_rank": 0}))
+                continue
+            except Exception as e:
+                logger.error(f"Error during server-side generation: {e}")
+                send_message(client_socket, ("error", {"message": f"Generation error: {str(e)}"}))
+                continue
+        
+        # Send request to specific worker
+        logger.info(f"Sending generation request to worker {worker_rank}")
+        
+        # Validate worker rank
+        if worker_rank not in worker_sockets:
+            send_message(client_socket, ("error", {"message": f"Worker {worker_rank} not available"}))
+            continue
+
+        worker_socket = worker_sockets[worker_rank]
+        send_message(
+            worker_socket,
+            (
+                "generate_stream",
+                {
+                    "input_ids": tokenized_prompt.cpu(),
+                    "max_new_tokens": max_tokens,
+                    "decoding_strategy": decoding_strategy,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                    "tokenizer_config": {
+                        "eos_token_id": tokenizer.eos_token_id,
+                        "pad_token_id": tokenizer.pad_token_id,
+                    },
+                },
+            ),
+        )
+
+        streamed_tokens = 0
+        while True:
+            response = receive_message(worker_socket)
+            if response is None:
+                send_message(client_socket, ("error", {"message": f"Worker {worker_rank} disconnected"}))
+                streamed_tokens = 0
+                break
+
+            resp_command, resp_payload = response
+
+            if resp_command == "token":
+                token_id = resp_payload.get("token_id")
+                token_idx = resp_payload.get("token_idx", streamed_tokens)
+                if token_id is None:
+                    continue
+
+                token_text = tokenizer.decode([int(token_id)], skip_special_tokens=True)
                 send_message(
-                    worker_socket,
+                    client_socket,
                     (
-                        "generate_activations",
+                        "token",
                         {
-                            "activations": None,
-                            "input_ids": tokenized_prompt.cpu(),
-                            "max_new_tokens": 1,
-                            "decoding_strategy": decoding_strategy,
+                            "text": token_text,
+                            "token_idx": token_idx,
                         },
                     ),
                 )
-                response = receive_message(worker_socket)
-                if response is None:
-                    raise RuntimeError(f"Worker {rank} disconnected during inference")
-                resp_command, resp_payload = response
-                if resp_command != "forward_activations":
-                    raise RuntimeError(
-                        f"Unexpected response from worker {rank}: {resp_command}"
-                    )
-                all_logits.append(resp_payload["activations"])
+                streamed_tokens += 1
+                continue
 
-            averaged_logits = torch.stack(all_logits, dim=0).mean(dim=0)
-            tokenized_prompt, should_stop = sample_next_token(
-                averaged_logits,
-                tokenized_prompt,
-                temperature,
-                tokenizer,
-                decoding_strategy=decoding_strategy,
-                top_p=top_p,
-                top_k=top_k,
-            )
-
-            new_token_id = tokenized_prompt[0, -1].item()
-            new_token_text = tokenizer.decode([new_token_id], skip_special_tokens=True)
-            send_message(
-                client_socket,
-                ("token", {"text": new_token_text, "token_idx": token_idx}),
-            )
-
-            if should_stop:
+            if resp_command == "stream_complete":
+                total_tokens = int(resp_payload.get("num_tokens", streamed_tokens))
+                logger.info(f"Worker {worker_rank} generated {total_tokens} tokens")
                 break
 
-        generated_tokens = tokenized_prompt[0, original_prompt_length:]
-        generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        send_message(client_socket, ("inference_complete", {"text": generated_text}))
+            if resp_command == "error":
+                send_message(client_socket, ("error", {"message": resp_payload.get("message", "Worker error")}))
+                streamed_tokens = 0
+                break
 
-    for rank, worker_socket in sorted(worker_sockets.items()):
-        try:
-            send_message(worker_socket, "down")
-            worker_socket.close()
-            logger.info(f"Closed worker connection {rank}")
-        except Exception:
-            pass
+            logger.warning(f"Unexpected response from worker {worker_rank}: {resp_command}")
+            break
 
-    try:
-        client_socket.close()
-    except Exception:
-        pass
-
-    server_socket.close()
+        if streamed_tokens == 0:
+            continue
+        
+        # Send final completion
+        send_message(client_socket, ("inference_complete", {"worker_rank": worker_rank}))
 
 
 if __name__ == "__main__":

@@ -118,8 +118,7 @@ def sample_next_token(
     else:
         raise ValueError(f"Unknown decoding strategy: {decoding_strategy}")
 
-    # Move next_token_id to CPU to concatenate with tokenized_prompt
-    tokenized_prompt = torch.cat((tokenized_prompt, next_token_id.cpu()), dim=1)
+    tokenized_prompt = torch.cat((tokenized_prompt, next_token_id.to(tokenized_prompt.device)), dim=1)
 
     # Check if EOS token
     should_stop = next_token_id.item() == tokenizer.eos_token_id

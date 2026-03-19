@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)
             DRY_RUN=true
-            echo "🏃 Dry run mode - will show commands without executing"
+            echo "🏃 Dry run mode - running commands without executing"
             shift
             ;;
         --resume-checkpoint)
@@ -98,13 +98,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check if tmux is installed on remote node
         if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && which tmux"; then
-            echo "❌ Error: tmux is not installed on $node. Install with: ssh $node 'brew install tmux' (macOS) or ssh $node 'sudo apt install tmux' (Linux)"
+            echo "❌ Error: tmux is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
         # Check if uv is installed on remote node
         if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && uv --version"; then
-            echo "❌ Error: uv is not installed on $node. Install with: ssh $node 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
+            echo "❌ Error: uv is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
@@ -277,10 +277,6 @@ echo "👷 Launching workers..."
 for ((i=1; i<=NUM_WORKERS; i++)); do
     node="${WORKERS[$((i-1))]}"  # Get worker hostname by index
     if [[ -n "$RESUME_CHECKPOINT" ]]; then
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm edp --resume-checkpoint '$RESUME_CHECKPOINT'"
-    else
-        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm edp"
-    fi
         WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm edp --resume-checkpoint '$RESUME_CHECKPOINT'"
     else
         WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && cd src/smolcluster && ../../.venv/bin/python train.py worker $i $node --algorithm edp"

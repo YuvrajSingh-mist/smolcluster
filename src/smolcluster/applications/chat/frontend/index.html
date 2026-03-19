@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmolCluster Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-0: #f9f6ef;
+            --bg-1: #eef4f1;
+            --bg-2: #fff6ea;
+            --ink: #102a28;
+            --ink-soft: #31524f;
+            --accent: #d06a2f;
+            --accent-2: #177e89;
+            --panel: rgba(255, 255, 255, 0.82);
+            --line: rgba(16, 42, 40, 0.12);
+            --shadow: 0 24px 60px rgba(22, 41, 39, 0.18);
+        }
+
+        body {
+            font-family: 'Space Grotesk', sans-serif;
+            background:
+                radial-gradient(1200px 600px at 10% 10%, rgba(23, 126, 137, 0.14), transparent 60%),
+                radial-gradient(900px 500px at 90% 0%, rgba(208, 106, 47, 0.18), transparent 55%),
+                linear-gradient(150deg, var(--bg-0), var(--bg-1) 50%, var(--bg-2));
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: var(--ink);
+        }
+
+        .chat-container {
+            width: 90%;
+            max-width: 920px;
+            height: 90vh;
+            background: var(--panel);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            border-radius: 24px;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: reveal 420ms ease-out;
+        }
+
+        @keyframes reveal {
+            from { opacity: 0; transform: translateY(14px) scale(0.99); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .chat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 18px 22px;
+            background: linear-gradient(90deg, rgba(23, 126, 137, 0.14), rgba(208, 106, 47, 0.12));
+            border-bottom: 1px solid var(--line);
+        }
+
+        .header-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .title {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.72));
+        }
+
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message-content {
+            padding: 12px 18px;
+            border-radius: 16px;
+            word-wrap: break-word;
+            line-height: 1.5;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(145deg, var(--accent-2), #125e66);
+            color: white;
+            max-width: 70%;
+        }
+
+        .message.assistant .message-content {
+            background: rgba(255, 255, 255, 0.94);
+            color: var(--ink);
+            border: 1px solid var(--line);
+            box-shadow: 0 6px 16px rgba(16, 42, 40, 0.08);
+        }
+
+        .message-content p {
+            margin: 0 0 8px;
+        }
+
+        .message-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message-content ul,
+        .message-content ol {
+            margin: 0 0 8px 20px;
+            padding: 0;
+        }
+
+        .message-content li {
+            margin: 2px 0;
+        }
+
+        .message-content code {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.95em;
+            background: rgba(16, 42, 40, 0.08);
+            border-radius: 6px;
+            padding: 1px 5px;
+        }
+
+        .message.error .message-content {
+            background: #cf3d3d;
+            color: white;
+        }
+
+        .message-wrapper {
+            max-width: 70%;
+        }
+
+        .params-info {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+
+        .param-badge {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 10px;
+            padding: 3px 8px;
+            background: rgba(16, 42, 40, 0.08);
+            color: var(--ink-soft);
+            border-radius: 10px;
+            font-weight: 500;
+        }
+
+        .param-badge strong {
+            color: var(--accent-2);
+        }
+
+        .chat-input-container {
+            padding: 16px 20px 20px;
+            background: rgba(255, 255, 255, 0.88);
+            border-top: 1px solid var(--line);
+            display: flex;
+            gap: 10px;
+        }
+
+        #chatInput {
+            flex: 1;
+            padding: 12px 18px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            background: rgba(255, 255, 255, 0.95);
+        }
+
+        #chatInput:focus {
+            border-color: var(--accent-2);
+            box-shadow: 0 0 0 3px rgba(23, 126, 137, 0.18);
+        }
+
+        #sendButton {
+            padding: 12px 22px;
+            background: linear-gradient(145deg, var(--accent), #bb5f2b);
+            color: white;
+            border: none;
+            border-radius: 14px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.16s, filter 0.16s;
+        }
+
+        #sendButton:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.03);
+        }
+
+        #sendButton:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-2);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
+        .status {
+            padding: 6px 10px;
+            text-align: center;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 11px;
+            color: var(--ink-soft);
+            background: rgba(255, 255, 255, 0.5);
+            border: 1px solid var(--line);
+            border-radius: 999px;
+        }
+
+        .status.connected { color: #147d3f; }
+        .status.disconnected { color: #b53939; }
+
+        .worker-selector-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+            background: rgba(255, 255, 255, 0.7);
+            border-bottom: 1px solid var(--line);
+        }
+
+        #workerSelect {
+            min-width: 136px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            font-family: 'IBM Plex Mono', monospace;
+            padding: 8px 10px;
+            background: white;
+        }
+
+        #workerSelect:hover {
+            border-color: var(--accent-2);
+        }
+
+        #workerInfo {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 12px;
+            color: var(--ink-soft);
+        }
+
+        #clearChatsButton {
+            padding: 6px 10px;
+            text-align: center;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 11px;
+            color: #b53939;
+            background: rgba(255, 255, 255, 0.5);
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            cursor: pointer;
+            transition: filter 0.16s, transform 0.16s;
+        }
+
+        #clearChatsButton:hover {
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        #clearChatsButton:disabled {
+            opacity: 0.65;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        @media (max-width: 760px) {
+            .chat-container {
+                width: 96%;
+                height: 94vh;
+                border-radius: 18px;
+            }
+
+            .message-wrapper,
+            .message.user .message-content {
+                max-width: 85%;
+            }
+
+            .chat-header {
+                padding: 14px;
+            }
+
+            .title {
+                font-size: 18px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <div class="title">SmolCluster Worker Chat</div>
+            <div class="header-status">
+                <div class="status" id="status">Connecting...</div>
+                <div class="status" id="redisStatus">Redis: checking...</div>
+                <button id="clearChatsButton" type="button">Clear Chats</button>
+            </div>
+        </div>
+
+        <div class="worker-selector-container">
+            <label for="workerSelect" style="font-weight: 700;">Worker:</label>
+            <select id="workerSelect">
+            </select>
+            <span id="workerInfo">Select a worker to chat independently</span>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+            <div class="message assistant">
+                <div class="message-content">Hi! Select a worker and ask me anything!</div>
+            </div>
+        </div>
+
+        <div class="chat-input-container">
+            <input 
+                type="text" 
+                id="chatInput" 
+                placeholder="Type your message..." 
+                autocomplete="off"
+            />
+            <button id="sendButton">Send</button>
+        </div>
+    </div>
+
+    <script>
+        // API URL is dynamically injected by launch script via sed
+        let API_URL = 'http://localhost:8080';  // Will be replaced by launch_api.sh
+        const chatMessages = document.getElementById('chatMessages');
+        const chatInput = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendButton');
+        const statusDiv = document.getElementById('status');
+        const redisStatusDiv = document.getElementById('redisStatus');
+        const workerSelect = document.getElementById('workerSelect');
+        const workerInfo = document.getElementById('workerInfo');
+        const clearChatsButton = document.getElementById('clearChatsButton');
+        const browserSessionId = localStorage.getItem('smolcluster_session_id') || `session-${Date.now()}`;
+        localStorage.setItem('smolcluster_session_id', browserSessionId);
+        
+        let isProcessing = false;
+        let modelConfig = {
+            max_new_tokens: 50,
+            temperature: 0.9,
+            top_p: 0.9,
+            top_k: 50,
+            decoding_strategy: 'top_p',
+            available_worker_ranks: [0],
+            inference_algorithm: 'unknown',
+            inference_architecture: 'unknown',
+            model_architecture: 'unknown',
+            memory_enabled: false
+        };
+
+        function escapeHtml(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function formatInlineMarkdown(text) {
+            let formatted = text;
+            formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+            formatted = formatted.replace(/\*\*([^*][\s\S]*?)\*\*/g, '<strong>$1</strong>');
+            formatted = formatted.replace(/\*([^*][\s\S]*?)\*/g, '<em>$1</em>');
+            return formatted;
+        }
+
+        function formatAssistantMessage(rawText) {
+            const escaped = escapeHtml(rawText || '');
+            const lines = escaped.split(/\r?\n/);
+            const htmlParts = [];
+            let listMode = null; // 'ul' | 'ol' | null
+
+            for (const line of lines) {
+                const ulMatch = line.match(/^\s*[-*]\s+(.+)$/);
+                const olMatch = line.match(/^\s*\d+\.\s+(.+)$/);
+                const isBlank = line.trim() === '';
+
+                if (ulMatch) {
+                    if (listMode !== 'ul') {
+                        if (listMode === 'ol') htmlParts.push('</ol>');
+                        htmlParts.push('<ul>');
+                        listMode = 'ul';
+                    }
+                    htmlParts.push(`<li>${formatInlineMarkdown(ulMatch[1])}</li>`);
+                    continue;
+                }
+
+                if (olMatch) {
+                    if (listMode !== 'ol') {
+                        if (listMode === 'ul') htmlParts.push('</ul>');
+                        htmlParts.push('<ol>');
+                        listMode = 'ol';
+                    }
+                    htmlParts.push(`<li>${formatInlineMarkdown(olMatch[1])}</li>`);
+                    continue;
+                }
+
+                if (listMode === 'ul') {
+                    htmlParts.push('</ul>');
+                    listMode = null;
+                } else if (listMode === 'ol') {
+                    htmlParts.push('</ol>');
+                    listMode = null;
+                }
+
+                if (isBlank) {
+                    continue;
+                }
+
+                htmlParts.push(`<p>${formatInlineMarkdown(line)}</p>`);
+            }
+
+            if (listMode === 'ul') {
+                htmlParts.push('</ul>');
+            } else if (listMode === 'ol') {
+                htmlParts.push('</ol>');
+            }
+
+            return htmlParts.join('');
+        }
+
+        function setMessageContent(contentDiv, text, type) {
+            if (type === 'assistant') {
+                contentDiv.innerHTML = formatAssistantMessage(text);
+            } else {
+                contentDiv.textContent = text;
+            }
+        }
+
+        function populateWorkerOptions(workerRanks) {
+            const unique = [...new Set(workerRanks)].sort((a, b) => a - b);
+            workerSelect.innerHTML = '';
+            unique.forEach((rank) => {
+                const option = document.createElement('option');
+                option.value = String(rank);
+                const isSyncPSOrMP = ['syncps', 'mp'].includes(modelConfig.inference_architecture);
+                option.textContent = rank === 0 && isSyncPSOrMP ? 'Server Rank 0' : `Worker ${rank}`;
+                workerSelect.appendChild(option);
+            });
+
+            const count = unique.length;
+            if (count > 0) {
+                const algo = modelConfig.inference_algorithm || 'unknown';
+                const arch = modelConfig.inference_architecture || 'unknown';
+                const model = modelConfig.model_architecture || modelConfig.model_name || 'unknown';
+                workerInfo.textContent = `${count} target${count === 1 ? '' : 's'} available • algo: ${algo} • arch: ${arch} • model: ${model}`;
+            } else {
+                workerInfo.textContent = 'No targets available';
+            }
+        }
+
+        async function checkMemoryStatus() {
+            try {
+                const response = await fetch(`${API_URL}/memory/status`);
+                const data = await response.json();
+
+                if (response.ok && data.enabled) {
+                    redisStatusDiv.textContent = '● redis:on';
+                    redisStatusDiv.className = 'status connected';
+                } else {
+                    redisStatusDiv.textContent = '● redis:off';
+                    redisStatusDiv.className = 'status disconnected';
+                }
+            } catch (error) {
+                redisStatusDiv.textContent = '● redis:off';
+                redisStatusDiv.className = 'status disconnected';
+            }
+        }
+        
+        // Fetch model config from API
+        async function fetchConfig() {
+            try {
+                const response = await fetch(`${API_URL}/config`);
+                if (response.ok) {
+                    const config = await response.json();
+                    modelConfig = config;
+                    populateWorkerOptions(config.available_worker_ranks || [0]);
+                    console.log('Loaded model config:', config);
+                }
+            } catch (error) {
+                console.warn('Failed to fetch config, using defaults');
+                populateWorkerOptions([0]);
+            }
+        }
+        
+        // Check server health on load
+        async function checkHealth() {
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                
+                if (data.healthy) {
+                    statusDiv.textContent = '● Connected';
+                    statusDiv.className = 'status connected';
+                } else {
+                    statusDiv.textContent = '● Disconnected';
+                    statusDiv.className = 'status disconnected';
+                }
+            } catch (error) {
+                statusDiv.textContent = '● Server Offline';
+                statusDiv.className = 'status disconnected';
+            }
+        }
+        
+        function addMessage(text, type = 'user', params = null) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            if (type === 'user') {
+                // User messages: just add message-content directly
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                contentDiv.textContent = text;
+                messageDiv.appendChild(contentDiv);
+            } else {
+                // Assistant messages: use wrapper for params
+                const wrapperDiv = document.createElement('div');
+                wrapperDiv.className = 'message-wrapper';
+                
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                setMessageContent(contentDiv, text, 'assistant');
+                
+                wrapperDiv.appendChild(contentDiv);
+                
+                // Add parameter badges for assistant messages
+                if (params) {
+                    const paramsDiv = document.createElement('div');
+                    paramsDiv.className = 'params-info';
+                    
+                    if (params.max_tokens !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Tokens:</strong> ${params.max_tokens}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.temperature !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Temp:</strong> ${params.temperature}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.top_p !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Top-p:</strong> ${params.top_p}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.top_k !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Top-k:</strong> ${params.top_k}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.decoding_strategy !== undefined) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Strategy:</strong> ${params.decoding_strategy}`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    // Add performance metrics in seconds
+                    if (params.time_to_first_token_ms !== undefined && params.time_to_first_token_ms > 0) {
+                        const ttftSec = (params.time_to_first_token_ms / 1000).toFixed(3);
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>TTFT:</strong> ${ttftSec}s`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.tokens_per_second !== undefined && params.tokens_per_second > 0) {
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Speed:</strong> ${params.tokens_per_second} tok/s`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    if (params.total_time_ms !== undefined && params.total_time_ms > 0) {
+                        const totalSec = (params.total_time_ms / 1000).toFixed(3);
+                        const badge = document.createElement('span');
+                        badge.className = 'param-badge';
+                        badge.innerHTML = `<strong>Total:</strong> ${totalSec}s`;
+                        paramsDiv.appendChild(badge);
+                    }
+                    
+                    wrapperDiv.appendChild(paramsDiv);
+                }
+                
+                messageDiv.appendChild(wrapperDiv);
+            }
+            
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        async function loadHistoryForWorker(selectedWorker) {
+            const algo = modelConfig.inference_architecture || 'unknown';
+            const sessionId = `${algo}-${browserSessionId}-worker-${selectedWorker}`;
+            chatMessages.innerHTML = '';
+
+            try {
+                const response = await fetch(`${API_URL}/memory/history?session_id=${encodeURIComponent(sessionId)}&limit=100`);
+                if (!response.ok) {
+                    throw new Error(`history http ${response.status}`);
+                }
+
+                const data = await response.json();
+                const messages = Array.isArray(data.messages) ? data.messages : [];
+
+                if (messages.length === 0) {
+                    const welcomeDiv = document.createElement('div');
+                    welcomeDiv.className = 'message assistant';
+                    const contentDiv = document.createElement('div');
+                    contentDiv.className = 'message-content';
+                    contentDiv.textContent = `Now chatting with Worker ${selectedWorker}. Ask me anything!`;
+                    welcomeDiv.appendChild(contentDiv);
+                    chatMessages.appendChild(welcomeDiv);
+                    return;
+                }
+
+                for (const msg of messages) {
+                    const role = msg.role === 'user' ? 'user' : 'assistant';
+                    addMessage(msg.content || '', role);
+                }
+            } catch (error) {
+                const welcomeDiv = document.createElement('div');
+                welcomeDiv.className = 'message assistant';
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                contentDiv.textContent = `Now chatting with Worker ${selectedWorker}. Ask me anything!`;
+                welcomeDiv.appendChild(contentDiv);
+                chatMessages.appendChild(welcomeDiv);
+            }
+        }
+        
+        async function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text || isProcessing) return;
+            
+            isProcessing = true;
+            sendButton.disabled = true;
+            chatInput.disabled = true;
+            
+            // Get selected worker
+            const workerSelect = document.getElementById('workerSelect');
+            const selectedWorker = parseInt(workerSelect.value);
+            
+            // Add user message
+            addMessage(text, 'user');
+            chatInput.value = '';
+            
+            // Create assistant message placeholder for streaming
+            let messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            messageDiv.id = 'streamingMessage';
+            
+            let wrapperDiv = document.createElement('div');
+            wrapperDiv.className = 'message-wrapper';
+            
+            let contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = '';
+            
+            wrapperDiv.appendChild(contentDiv);
+            messageDiv.appendChild(wrapperDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            
+            let fullText = '';
+            let metrics = {};
+            
+            try {
+                // Build request payload
+                const payload = {
+                    max_tokens: modelConfig.max_new_tokens,
+                    decoding_strategy: modelConfig.decoding_strategy,
+                    worker_rank: selectedWorker,
+                    session_id: `${modelConfig.inference_architecture || 'unknown'}-${browserSessionId}-worker-${selectedWorker}`,
+                    use_memory: true,
+                };
+                
+                // Check if model is instruction-based
+                const isInstructionModel = modelConfig.is_instruction_based || 
+                                         (modelConfig.model_name && modelConfig.model_name.includes('Instruct'));
+                
+                if (isInstructionModel) {
+                    payload.messages = [{"role": "user", "content": text}];
+                } else {
+                    payload.text = text;
+                }
+                
+                // Extract strategy-specific parameters
+                const strategy = modelConfig.decoding_strategy;
+                const strategyParams = modelConfig[strategy] || {};
+                
+                payload.temperature = strategyParams.temperature || modelConfig.temperature;
+                
+                if (strategy === 'top_p') {
+                    payload.top_p = strategyParams.p;
+                } else if (strategy === 'top_k') {
+                    payload.top_k = strategyParams.k;
+                }
+                
+                const response = await fetch(`${API_URL}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                // Read streaming response
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const {value, done} = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const jsonStr = line.slice(6);
+                                if (!jsonStr.trim()) continue;
+                                
+                                const data = JSON.parse(jsonStr);
+                                
+                                if (data.error) {
+                                    contentDiv.textContent = `Error: ${data.error}`;
+                                    messageDiv.className = 'message error';
+                                    break;
+                                }
+                                
+                                // Handle token streaming
+                                if (data.token) {
+                                    fullText += data.token;
+                                    setMessageContent(contentDiv, fullText, 'assistant');
+                                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                                }
+                                
+                                // Handle completion
+                                if (data.done) {
+                                    metrics = {
+                                        time_to_first_token_ms: data.time_to_first_token_ms,
+                                        tokens_per_second: data.tokens_per_second,
+                                        total_time_ms: data.total_time_ms,
+                                        num_tokens: data.num_tokens
+                                    };
+                                    
+                                    // Add metrics below message
+                                    const paramsDiv = document.createElement('div');
+                                    paramsDiv.className = 'params-info';
+                                    
+                                    // Performance metrics
+                                    if (metrics.time_to_first_token_ms) {
+                                        const ttftSec = (metrics.time_to_first_token_ms / 1000).toFixed(3);
+                                        const badge = document.createElement('span');
+                                        badge.className = 'param-badge';
+                                        badge.innerHTML = `<strong>TTFT:</strong> ${ttftSec}s`;
+                                        paramsDiv.appendChild(badge);
+                                    }
+                                    
+                                    if (metrics.tokens_per_second) {
+                                        const badge = document.createElement('span');
+                                        badge.className = 'param-badge';
+                                        badge.innerHTML = `<strong>Speed:</strong> ${metrics.tokens_per_second} tok/s`;
+                                        paramsDiv.appendChild(badge);
+                                    }
+                                    
+                                    if (metrics.total_time_ms) {
+                                        const totalSec = (metrics.total_time_ms / 1000).toFixed(3);
+                                        const badge = document.createElement('span');
+                                        badge.className = 'param-badge';
+                                        badge.innerHTML = `<strong>Total:</strong> ${totalSec}s`;
+                                        paramsDiv.appendChild(badge);
+                                    }
+                                    
+                                    // Worker info
+                                    const workerBadge = document.createElement('span');
+                                    workerBadge.className = 'param-badge';
+                                    workerBadge.innerHTML = `<strong>Worker:</strong> ${selectedWorker}`;
+                                    paramsDiv.appendChild(workerBadge);
+                                    
+                                    wrapperDiv.appendChild(paramsDiv);
+                                    messageDiv.id = '';
+                                    break;
+                                }
+                            } catch (parseError) {
+                                console.warn('Failed to parse SSE data:', line, parseError);
+                            }
+                        }
+                    }
+                }
+                
+            } catch (error) {
+                const streamingMsg = document.getElementById('streamingMessage');
+                if (streamingMsg) {
+                    streamingMsg.remove();
+                }
+                addMessage(`Failed to get response: ${error.message}`, 'error');
+                console.error('Error:', error);
+            } finally {
+                isProcessing = false;
+                sendButton.disabled = false;
+                chatInput.disabled = false;
+                chatInput.focus();
+            }
+        }
+
+        async function clearAllChats() {
+            if (isProcessing) return;
+
+            const algo = modelConfig.inference_architecture || 'unknown';
+            const workerRanks = Array.isArray(modelConfig.available_worker_ranks) && modelConfig.available_worker_ranks.length > 0
+                ? modelConfig.available_worker_ranks
+                : [parseInt(workerSelect.value || '0', 10)];
+
+            const uniqueRanks = [...new Set(workerRanks.map((r) => parseInt(r, 10)).filter((r) => !Number.isNaN(r)))];
+            const sessionIds = uniqueRanks.map((rank) => `${algo}-${browserSessionId}-worker-${rank}`);
+
+            const confirmMsg = `Clear all chats for ${algo} across ${uniqueRanks.length} target(s)?`;
+            if (!window.confirm(confirmMsg)) {
+                return;
+            }
+
+            clearChatsButton.disabled = true;
+            const originalText = clearChatsButton.textContent;
+            clearChatsButton.textContent = 'Clearing...';
+
+            try {
+                const response = await fetch(`${API_URL}/memory/clear`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ session_ids: sessionIds }),
+                });
+
+                if (!response.ok) {
+                    let detail = `HTTP ${response.status}`;
+                    try {
+                        const err = await response.json();
+                        detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail || err);
+                    } catch (_) {
+                        // Keep status-based detail if parsing error response fails.
+                    }
+                    throw new Error(detail);
+                }
+
+                await loadHistoryForWorker(workerSelect.value || 0);
+            } catch (error) {
+                addMessage(`Failed to clear chats: ${error.message}`, 'error');
+            } finally {
+                clearChatsButton.disabled = false;
+                clearChatsButton.textContent = originalText;
+            }
+        }
+        
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        clearChatsButton.addEventListener('click', clearAllChats);
+        
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        // Worker selection change - clear chat history
+        workerSelect.addEventListener('change', (e) => {
+            const selectedWorker = e.target.value;
+            loadHistoryForWorker(selectedWorker);
+        });
+        
+        // Initialize on load
+        (async () => {
+            await fetchConfig();
+            await checkHealth();
+            await checkMemoryStatus();
+            await loadHistoryForWorker(workerSelect.value || 0);
+            setInterval(checkHealth, 5000);
+            setInterval(checkMemoryStatus, 5000);
+            chatInput.focus();
+        })();
+    </script>
+</body>
+</html>

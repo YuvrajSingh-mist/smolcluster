@@ -606,7 +606,7 @@ cd ~/Desktop/smolcluster/scripts/inference
 
 #### React Frontend
 
-**Location:** `src/smolcluster/chat/frontend/`
+**Location:** `src/smolcluster/applications/chat/frontend/`
 
 **Features:**
 - Real-time chat interface with streaming token display
@@ -616,7 +616,7 @@ cd ~/Desktop/smolcluster/scripts/inference
 
 #### FastAPI Backend
 
-**Location:** `src/smolcluster/chat/backend/api.py`
+**Location:** `src/smolcluster/applications/chat/backend/api.py`
 
 **Features:**
 - RESTful API for inference requests

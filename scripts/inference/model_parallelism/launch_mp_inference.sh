@@ -53,7 +53,7 @@ fi
 DRY_RUN=false
 if [[ "$1" == "--dry-run" ]]; then
     DRY_RUN=true
-    echo "🏃 Dry run mode - will show commands without executing"
+    echo "🏃 Dry run mode - willow commands without executing"
 fi
 
 echo "🚀 SmolCluster Inference Launch Script - Model Parallelism Using SyncPS "
@@ -93,13 +93,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check if tmux is installed on remote node
         if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && which tmux"; then
-            echo "❌ Error: tmux is not installed on $node. Install with: ssh $node 'brew install tmux' (macOS) or ssh $node 'sudo apt install tmux' (Linux)"
+            echo "❌ Error: tmux is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
         # Check if uv is installed on remote node
         if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && uv --version"; then
-            echo "❌ Error: uv is not installed on $node. Install with: ssh $node 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
+            echo "❌ Error: uv is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
@@ -148,8 +148,18 @@ if [[ "$DRY_RUN" != "true" ]]; then
             echo "✅ Venv exists on $node. Running uv sync..."
             ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"
         fi
+
+        echo "🧪 Verifying smolcluster import on $node..."
+        if ! ssh "$node" "cd $REMOTE_PROJECT_DIR && PYTHONPATH=$REMOTE_PROJECT_DIR/src:\$PYTHONPATH .venv/bin/python -c 'import smolcluster'"; then
+            echo "⚠️  Import failed on $node after sync. Reinstalling editable package..."
+            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv pip install -e ."
+            if ! ssh "$node" "cd $REMOTE_PROJECT_DIR && PYTHONPATH=$REMOTE_PROJECT_DIR/src:\$PYTHONPATH .venv/bin/python -c 'import smolcluster'"; then
+                echo "❌ Error: smolcluster is not importable on $node after reinstall"
+                exit 1
+            fi
+        fi
         
-        echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
+        echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK, smolcluster import OK"
     done
     
     # Check local requirements for tablet workers
@@ -159,13 +169,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check tmux locally
         if ! command -v tmux &>/dev/null; then
-            echo "❌ Error: tmux is not installed locally. Install with: brew install tmux (macOS)"
+            echo "❌ Error: tmux is not installed locally. Install with: bash $PROJECT_DIR/scripts/installations/installation.sh"
             exit 1
         fi
         
         # Check uv locally
         if ! command -v uv &>/dev/null; then
-            echo "❌ Error: uv is not installed locally. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+            echo "❌ Error: uv is not installed locally. Install with: bash $PROJECT_DIR/scripts/installations/installation.sh"
             exit 1
         fi
         
@@ -200,8 +210,21 @@ if [[ "$DRY_RUN" != "true" ]]; then
             echo "✅ Venv exists locally. Running uv sync..."
             cd "$PROJECT_DIR" && uv sync
         fi
+
+        echo "🧪 Verifying smolcluster import locally..."
+        if ! (cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH}" .venv/bin/python -c "import smolcluster"); then
+            echo "⚠️  Local import failed after sync. Reinstalling editable package..."
+            (
+                cd "$PROJECT_DIR"
+                uv pip install -e .
+            )
+            if ! (cd "$PROJECT_DIR" && PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH}" .venv/bin/python -c "import smolcluster"); then
+                echo "❌ Error: smolcluster is not importable in local .venv after reinstall"
+                exit 1
+            fi
+        fi
         
-        echo "✅ LOCAL: tmux OK, uv OK, venv OK"
+        echo "✅ LOCAL: tmux OK, uv OK, venv OK, smolcluster import OK"
     fi
 else
     echo "✅ SSH and remote checks skipped (dry run)"
@@ -262,7 +285,9 @@ launch_on_node() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_file="\$HOME/${session_name}.log"
-        echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \\\"bash -c '$command 2>&1 | tee $log_file; exec bash'\\\"\""
+        local safe_command="$command"
+        safe_command=$(echo "$safe_command" | sed -E "s/WANDB_API_KEY='[^']*'/WANDB_API_KEY='***REDACTED***'/g; s/HF_TOKEN='[^']*'/HF_TOKEN='***REDACTED***'/g")
+        echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \\\"bash -c '$safe_command 2>&1 | tee $log_file; exec bash'\\\"\""
         return 0
     fi
 
@@ -302,7 +327,7 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching Model Parallelism inference server on $SERVER..."
-SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/server.py"
+SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/server.py"
 launch_on_node "$SERVER" "$SERVER_CMD" "mp_inference_server"
 
 # Wait a moment for server to start
@@ -327,7 +352,7 @@ if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
         tmux kill-session -t "$session_name" 2>/dev/null || true
         
         # Launch locally in tmux
-        TABLET_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker_tablets.py $rank $hostname"
+        TABLET_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$PROJECT_DIR/src':\$PYTHONPATH && cd $PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker_tablets.py $rank $hostname"
         
         if [[ "$DRY_RUN" == "true" ]]; then
             echo "   [DRY RUN] Would execute: tmux new -d -s $session_name \"bash -c '$TABLET_CMD 2>&1 | tee $log_file; exec bash'\""
@@ -344,7 +369,7 @@ for worker_entry in "${REGULAR_WORKERS[@]}"; do
     rank="${worker_entry##*:}"
     
     # Launch regular worker via SSH
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $hostname"
+    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $hostname"
     launch_on_node "$hostname" "$WORKER_CMD" "mp_inference_worker$rank"
     echo "   ✅ Rank $rank: $hostname (mp_inference_worker$rank)"
 done
@@ -372,9 +397,9 @@ echo ""
 echo "🌐 Launching API and Frontend..."
 if [[ -f "$SCRIPT_DIR/../launch_api.sh" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
-        bash "$SCRIPT_DIR/../launch_api.sh" --dry-run --backend model_parallelism --session-prefix mp
+        bash "$SCRIPT_DIR/../launch_api.sh" --dry-run --backend model_parallelism --algorithm mp --session-prefix mp --no-inference
     else
-        bash "$SCRIPT_DIR/../launch_api.sh" --backend model_parallelism --session-prefix mp
+        bash "$SCRIPT_DIR/../launch_api.sh" --backend model_parallelism --algorithm mp --session-prefix mp --no-inference
     fi
 else
     echo "⚠️  Warning: launch_api.sh not found at $SCRIPT_DIR/../launch_api.sh"

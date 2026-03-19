@@ -26,6 +26,7 @@ dependencies = [
     "uvicorn>=0.39.0",
     "coremltools>=9.0",
     "python-dotenv>=1.2.1",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]

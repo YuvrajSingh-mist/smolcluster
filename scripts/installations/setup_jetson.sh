@@ -60,7 +60,7 @@ echo "  LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
 # Check if uv is installed
 if ! command -v uv &> /dev/null; then
     echo "❌ uv is not installed. Please install uv first:"
-    echo "   curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "   bash $PROJECT_DIR/scripts/installations/installation.sh"
     exit 1
 fi
 
@@ -134,7 +134,7 @@ uv pip install "numpy<2"
 echo ""
 echo "=== Installation done! Verifying PyTorch CUDA ==="
 echo "Checking installed wheel info..."
-uv pip show torch | grep -E "(Name|Version|Location|Summary)"
+uv pipow torch | grep -E "(Name|Version|Location|Summary)"
 echo ""
 
 $PROJECT_DIR/.venv/bin/python3 - << 'EOF'

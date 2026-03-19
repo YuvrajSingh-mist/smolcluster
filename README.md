@@ -40,6 +40,7 @@ bash scripts/launch_edp_train_gpt.sh
 - **[Training Guide](docs/training.md)** - Training algorithms and usage
 - **[Configuration Guide](docs/configuration.md)** - Cluster and model configuration
 - **[Inference Guide](docs/inference.md)** - Model parallelism inference
+- **[Inference API Reference](docs/api.md)** - HTTP + SSE endpoints for MP and DP
 - **[Logging Setup](docs/logging.md)** - Grafana + Loki distributed logging
 
 ## Training Algorithms
@@ -127,6 +128,7 @@ smolcluster/
 │   ├── training.md                 # Training guide
 │   ├── logging.md                  # Logging setup
 │   ├── inference.md                # Inference guide
+│   ├── api.md                      # Inference API reference
 │   └── setup_cluster.md            # Hardware setup
 ├── src/smolcluster/
 │   ├── algorithms/

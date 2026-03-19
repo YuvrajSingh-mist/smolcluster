@@ -3,9 +3,12 @@ import socket
 import struct
 import time
 import logging
+from copy import deepcopy
 from typing import Any, Optional
 import torch
-
+from transformers import GenerationConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
+        
 # Module logger
 logger = logging.getLogger(__name__)
 
@@ -317,6 +320,263 @@ def receive_message(
     _network_metrics.record_recv(msglen, duration)
 
     return result
+
+
+def load_model_and_tokenizer(
+    hf_model_name: str,
+    device: Any,
+    hf_token: Optional[str] = None,
+    tokenizer_cfg: Optional[dict[str, Any]] = None,
+    load_model: bool = True,
+    load_tokenizer: bool = True,
+    logger: Optional[logging.Logger] = None,
+) -> tuple[Optional[Any], Optional[Any]]:
+    """Load a causal LM on target device, and optionally its tokenizer.
+
+    Args:
+        hf_model_name: HuggingFace model identifier.
+        device: Target torch device.
+        hf_token: Optional HuggingFace token.
+        tokenizer_cfg: Optional kwargs for tokenizer loading.
+        load_model: Whether to load model. If False, only tokenizer is loaded.
+        load_tokenizer: Whether to also load tokenizer.
+        logger: Optional logger for status messages.
+
+    Returns:
+        Tuple of (model or None, tokenizer or None).
+    """
+  
+    model = None
+    if load_model:
+        if logger:
+            logger.info(f"Loading model from {hf_model_name} on {device}")
+
+        model = AutoModelForCausalLM.from_pretrained(hf_model_name, token=hf_token)  # type: ignore[call-arg]
+        model = model.to(device)
+        model.eval()
+
+    tokenizer = None
+    if load_tokenizer:
+        if logger:
+            logger.info(f"Loading tokenizer from {hf_model_name}")
+
+        use_hf_defaults, tokenizer_kwargs = parse_tokenizer_config(tokenizer_cfg)
+
+        if logger and use_hf_defaults:
+            logger.info("Tokenizer loading with HuggingFace defaults enabled")
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            hf_model_name,
+            token=hf_token,
+            **tokenizer_kwargs,
+        )
+
+    return model, tokenizer
+
+
+def parse_tokenizer_config(
+    tokenizer_cfg: Optional[dict[str, Any]],
+) -> tuple[bool, dict[str, Any]]:
+    """Return tokenizer mode and kwargs from config.
+
+    Supports both:
+    - tokenizer.overrides.{...}
+    - legacy flat tokenizer keys
+    """
+    cfg = tokenizer_cfg or {}
+    use_hf_defaults = bool(cfg.get("use_hf_defaults", True))
+
+    overrides = cfg.get("overrides")
+    if isinstance(overrides, dict):
+        return use_hf_defaults, dict(overrides)
+
+    tokenizer_kwargs = {
+        key: value
+        for key, value in cfg.items()
+        if key not in {"use_hf_defaults", "overrides", "decoding_overrides"}
+    }
+    return use_hf_defaults, tokenizer_kwargs
+
+
+def get_generation_config_defaults(
+    hf_model_name: str,
+    hf_token: Optional[str] = None,
+    logger: Optional[logging.Logger] = None,
+) -> dict[str, Any]:
+    """Extract generation config defaults from HuggingFace model.
+    
+    This function retrieves the model's generation_config which contains
+    default parameters like top_p, top_k, temperature, etc. These are the
+    model author's recommended generation parameters.
+    
+    Args:
+        hf_model_name: HuggingFace model identifier.
+        hf_token: Optional HuggingFace token.
+        logger: Optional logger for status messages.
+    
+    Returns:
+        Dictionary with keys like 'top_p', 'top_k', 'temperature', etc.
+        Returns empty dict if generation_config not available.
+
+    """
+    try:
+      
+        gen_cfg = GenerationConfig.from_pretrained(hf_model_name, token=hf_token)
+        
+        # Extract relevant generation parameters
+        result = {}
+        for param in ['top_p', 'top_k', 'temperature', 'repetition_penalty', 'do_sample']:
+            if hasattr(gen_cfg, param):
+                value = getattr(gen_cfg, param)
+                if value is not None:
+                    result[param] = value
+        
+        if logger and result:
+            logger.info(f"Loaded generation config from {hf_model_name}: {result}")
+        
+        return result
+    except Exception as e:
+        if logger:
+            logger.warning(f"Could not load generation_config for {hf_model_name}: {e}")
+        
+        return {}
+
+
+def get_effective_decoding_strategies(
+    model_cfg: dict[str, Any],
+    hf_token: Optional[str] = None,
+    logger: Optional[logging.Logger] = None,
+) -> dict[str, dict[str, Any]]:
+    """Build effective decoding strategy defaults for inference.
+
+    Rules:
+    - If tokenizer.use_hf_defaults=true, base values come from HF generation_config.
+    - decoding_strategies acts as overrides.
+    - tokenizer.decoding_overrides can override globally or per strategy.
+    """
+    strategies = deepcopy(model_cfg.get("decoding_strategies", {}))
+    if not isinstance(strategies, dict):
+        strategies = {}
+
+    for name in ("greedy", "sampling", "top_p", "top_k"):
+        if name not in strategies or not isinstance(strategies[name], dict):
+            strategies[name] = {}
+
+    tokenizer_cfg = model_cfg.get("tokenizer", {}) or {}
+    use_hf_defaults = bool(tokenizer_cfg.get("use_hf_defaults", True))
+
+    hf_defaults: dict[str, Any] = {}
+    if use_hf_defaults:
+        hf_defaults = get_generation_config_defaults(
+            model_cfg.get("hf_model_name", ""),
+            hf_token=hf_token,
+            logger=logger,
+        )
+
+    if use_hf_defaults and hf_defaults:
+        hf_temp = hf_defaults.get("temperature")
+        if hf_temp is not None:
+            for name in ("greedy", "sampling", "top_p", "top_k"):
+                strategies[name]["temperature"] = hf_temp
+
+        hf_top_p = hf_defaults.get("top_p")
+        if hf_top_p is not None:
+            strategies["top_p"]["p"] = hf_top_p
+
+        hf_top_k = hf_defaults.get("top_k")
+        if hf_top_k is not None:
+            strategies["top_k"]["k"] = hf_top_k
+
+    decoding_overrides = tokenizer_cfg.get("decoding_overrides", {})
+    if isinstance(decoding_overrides, dict):
+        global_temp = decoding_overrides.get("temperature")
+        if global_temp is not None:
+            for name in ("greedy", "sampling", "top_p", "top_k"):
+                strategies[name]["temperature"] = global_temp
+
+        override_top_p = decoding_overrides.get("top_p")
+        if override_top_p is not None:
+            strategies["top_p"]["p"] = override_top_p
+
+        override_top_k = decoding_overrides.get("top_k")
+        if override_top_k is not None:
+            strategies["top_k"]["k"] = override_top_k
+
+        per_strategy = decoding_overrides.get("strategies", {})
+        if isinstance(per_strategy, dict):
+            for name, values in per_strategy.items():
+                if isinstance(values, dict):
+                    strategies.setdefault(name, {}).update(values)
+
+    if logger:
+        active_raw = model_cfg.get("active_decoding_strategy", "greedy")
+        if isinstance(active_raw, str):
+            logger.info(
+                "Effective decoding defaults (active=%s): %s",
+                active_raw,
+                strategies.get(active_raw, {}),
+            )
+        else:
+            logger.warning(
+                "Invalid active_decoding_strategy type: %s (value=%r)",
+                type(active_raw).__name__,
+                active_raw,
+            )
+
+    return strategies
+
+
+def resolve_generation_request_params(
+    payload: dict[str, Any],
+    model_cfg: dict[str, Any],
+    effective_strategies: dict[str, dict[str, Any]],
+) -> tuple[int, str, float, float, int]:
+    """Resolve generation params from request with model/HF defaults fallback.
+
+    Raises ValueError when required values are missing or invalid.
+    """
+    active = payload.get("decoding_strategy")
+    if not isinstance(active, str) or not active:
+        active = model_cfg.get("active_decoding_strategy")
+
+    if not isinstance(active, str) or not active:
+        raise ValueError(
+            "Missing decoding_strategy (request decoding_strategy or model config active_decoding_strategy)."
+        )
+
+    active_cfg = effective_strategies.get(active)
+    if not isinstance(active_cfg, dict):
+        raise ValueError(f"Unknown decoding strategy '{active}'.")
+
+    max_tokens = payload.get("max_tokens")
+    if max_tokens is None:
+        max_tokens = model_cfg.get("max_new_tokens")
+    if not isinstance(max_tokens, int) or max_tokens <= 0:
+        raise ValueError("max_new_tokens must be a positive integer (request max_tokens or model config max_new_tokens).")
+
+    temperature = payload.get("temperature")
+    if temperature is None:
+        temperature = active_cfg.get("temperature")
+    if not isinstance(temperature, (int, float)):
+        raise ValueError(f"Missing temperature for strategy '{active}'.")
+
+    top_p = payload.get("top_p")
+    if top_p is None:
+        top_p = active_cfg.get("p")
+    if active == "top_p" and not isinstance(top_p, (int, float)):
+        raise ValueError("Missing top_p for top_p decoding strategy.")
+    if top_p is None:
+        top_p = 0.0
+
+    top_k = payload.get("top_k")
+    if top_k is None:
+        top_k = active_cfg.get("k")
+    if active == "top_k" and not isinstance(top_k, int):
+        raise ValueError("Missing top_k for top_k decoding strategy.")
+    if top_k is None:
+        top_k = 0
+
+    return int(max_tokens), active, float(temperature), float(top_p), int(top_k)
 
 
 def get_gradients(model: torch.nn.Module) -> dict[str, torch.Tensor]:

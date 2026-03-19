@@ -5,17 +5,22 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
 import torch
 import yaml
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from smolcluster.utils.common_utils import receive_message, send_message
+from smolcluster.utils.common_utils import (
+    get_effective_decoding_strategies,
+    load_model_and_tokenizer,
+    receive_message,
+    resolve_generation_request_params,
+    send_message,
+)
 from smolcluster.utils.decoding import sample_next_token
 from smolcluster.utils.device import get_device
 
-CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
+CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "configs"
 
 with open(CONFIG_DIR / "inference" / "model_config_inference.yaml") as f:
     inference_config = yaml.safe_load(f)
@@ -61,6 +66,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(f"[CLASSICDP-INF-WORKER-{WORKER_RANK}]")
 
+EFFECTIVE_STRATEGIES = get_effective_decoding_strategies(
+    MODEL_CFG,
+    hf_token=HF_TOKEN,
+    logger=logger,
+)
+
 
 def connect_with_retry(
     host: str, port: int, max_retries: int = 60, retry_delay: float = 2.0
@@ -94,39 +105,6 @@ def connect_with_retry(
     raise RuntimeError(f"Failed to connect to {host}:{port}")
 
 
-def get_defaults(payload: dict) -> tuple[int, str, float, float, int]:
-    strategies = MODEL_CFG.get("decoding_strategies", {})
-    active = payload.get("decoding_strategy") or MODEL_CFG.get(
-        "active_decoding_strategy", "greedy"
-    )
-    active_cfg = strategies.get(active, {})
-
-    max_tokens = payload.get("max_tokens") or MODEL_CFG.get("max_new_tokens", 128)
-    temperature = payload.get("temperature")
-    if temperature is None:
-        temperature = active_cfg.get("temperature", 1.0)
-
-    top_p = payload.get("top_p")
-    if top_p is None:
-        top_p = active_cfg.get("p", 0.9)
-
-    top_k = payload.get("top_k")
-    if top_k is None:
-        top_k = active_cfg.get("k", 50)
-
-    return max_tokens, active, temperature, top_p, top_k
-
-
-def load_model_and_tokenizer() -> tuple[Any, Any]:
-    device = get_device()
-    hf_model_name = MODEL_CFG["hf_model_name"]
-    tokenizer_cfg = MODEL_CFG.get("tokenizer", {})
-    logger.info(f"Loading model '{MODEL_NAME}' from {hf_model_name} on {device}")
-    model = AutoModelForCausalLM.from_pretrained(hf_model_name, token=HF_TOKEN)  # type: ignore[call-arg]
-    model = cast(Any, model).to(device)
-    model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(hf_model_name, token=HF_TOKEN, **tokenizer_cfg)
-    return model, tokenizer
 
 
 def get_worker_cfg(rank: int) -> dict:
@@ -183,12 +161,15 @@ def run_rank_zero(
             send_message(client_socket, ("error", {"message": "Empty prompt"}))
             continue
 
-        max_tokens, decoding_strategy, temperature, top_p, top_k = get_defaults(payload)
+        try:
+            max_tokens, decoding_strategy, temperature, top_p, top_k = resolve_generation_request_params(payload, MODEL_CFG, EFFECTIVE_STRATEGIES)
+        except ValueError as exc:
+            send_message(client_socket, ("error", {"message": str(exc)}))
+            continue
         tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids
-        original_prompt_length = tokenized_prompt.shape[1]
-
+        
         for token_idx in range(max_tokens):
-            with torch.no_grad():
+            with torch.inference_mode():
                 local_logits = model(tokenized_prompt.to(device)).logits.cpu()
 
             gathered_logits = [local_logits]
@@ -275,7 +256,7 @@ def run_peer(model: Any, leader_socket: socket.socket) -> None:
             continue
 
         input_ids = payload["input_ids"].to(device)
-        with torch.no_grad():
+        with torch.inference_mode():
             logits = model(input_ids).logits.cpu()
 
         send_message(
@@ -294,7 +275,16 @@ def run_peer(model: Any, leader_socket: socket.socket) -> None:
 
 
 def main() -> None:
-    model, tokenizer = load_model_and_tokenizer()
+    model, tokenizer = load_model_and_tokenizer(
+        hf_model_name=MODEL_CFG["hf_model_name"],
+        device=get_device(),
+        hf_token=HF_TOKEN,
+        tokenizer_cfg=MODEL_CFG.get("tokenizer", {}),
+        load_tokenizer=True,
+        logger=logger,
+    )
+    if tokenizer is None:
+        raise RuntimeError("Tokenizer is required for ClassicDP inference worker")
 
     my_cfg = get_worker_cfg(WORKER_RANK)
     my_port = int(my_cfg["port"])

@@ -29,28 +29,41 @@ mp:
 
 dp:
   hf_model_name: meta-llama/Llama-3.2-1B-Instruct
+
+  # Max tokens to generate per inference request.
   max_new_tokens: 256
+
+  # CoreML-only context length (not used as generation length in PyTorch inference).
   ctx_length: 1024
 
-  # DP-only tokenizer options for HF tokenizer loading
+  # Set true for chat/instruction models.
+  is_instruction_based: true
+
+  # Tokenizer config.
   tokenizer:
-    use_fast: true
+    # When true: use HF tokenizer defaults and HF generation_config defaults.
+    # When false: use local decoding defaults unless overrides are provided.
+    use_hf_defaults: true
+    # Tokenizer-specific overrides.
+    overrides:
+      add_generation_prompt: true
+      use_fast: true
 
-  # Active decoding strategy to use
-  active_decoding_strategy: top_k
+    # Optional decoding overrides.
+    # Leave unset to use HF generation defaults when use_hf_defaults=true.
+    # decoding_overrides:
+    #   temperature: 0.6
+    #   top_p: 0.9
+    #   top_k: 50
 
-  # Decoding strategies with their hyperparameters
+  # UI/default decoding strategy label.
+  # Runtime inference falls back to this when request decoding_strategy is omitted.
+  active_decoding_strategy: top_p
+
+  # Decoding strategy overrides/fallbacks.
+  # When use_hf_defaults=true, HF generation_config values are used unless explicitly overridden here.
   decoding_strategies:
-    greedy:
-      temperature: 1.0
-
-    sampling:
-      temperature: 1.0
-
-    top_p:
-      temperature: 1.0
-      p: 0.9
-
-    top_k:
-      temperature: 1.0
-      k: 40
+    greedy: {}
+    sampling: {}
+    top_p: {}
+    top_k: {}

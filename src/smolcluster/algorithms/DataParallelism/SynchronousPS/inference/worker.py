@@ -5,16 +5,20 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
 import torch
 import yaml
-from transformers import AutoModelForCausalLM
 
-from smolcluster.utils.common_utils import receive_message, send_message
+from smolcluster.utils.common_utils import (
+    load_model_and_tokenizer,
+    receive_message,
+    send_message,
+)
+from smolcluster.utils.decoding import sample_next_token
 from smolcluster.utils.device import get_device
 
-CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "configs"
+CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "configs"
 
 with open(CONFIG_DIR / "inference" / "model_config_inference.yaml") as f:
     inference_config = yaml.safe_load(f)
@@ -106,11 +110,22 @@ def main() -> None:
 
     device = get_device()
     hf_model_name = MODEL_CFG["hf_model_name"]
+    tokenizer_cfg = MODEL_CFG.get("tokenizer", {})
 
     logger.info(f"Loading model '{MODEL_NAME}' from {hf_model_name} on {device}")
-    model = AutoModelForCausalLM.from_pretrained(hf_model_name, token=HF_TOKEN)  # type: ignore[call-arg]
-    model = cast(Any, model).to(device)
-    model.eval()
+    model, tokenizer = load_model_and_tokenizer(
+        hf_model_name=hf_model_name,
+        device=device,
+        hf_token=HF_TOKEN,
+        tokenizer_cfg=tokenizer_cfg,
+        load_tokenizer=True,
+        logger=logger,
+    )
+    
+    if model is None:
+        raise RuntimeError("Failed to load model")
+    if tokenizer is None:
+        raise RuntimeError("Failed to load tokenizer")
 
     sock = connect_to_server(server_ip, server_port)
     send_message(sock, ("register", WORKER_RANK))
@@ -122,7 +137,7 @@ def main() -> None:
             logger.info("Received start_inference")
             break
 
-    logger.info("Ready for activation generation requests")
+    logger.info("Ready for generation requests")
     while True:
         message = receive_message(sock)
         if message is None:
@@ -134,25 +149,73 @@ def main() -> None:
             break
 
         command, payload = message
-        if command != "generate_activations":
+        
+        if command == "generate_stream":
+            # Generate and stream tokens incrementally.
+            logger.info(f"Generating independent response for worker {WORKER_RANK}")
+            
+            input_ids = payload["input_ids"].to(device)
+            max_new_tokens = payload.get("max_new_tokens", 128)
+            decoding_strategy = payload.get("decoding_strategy", "greedy")
+            temperature = payload.get("temperature", 1.0)
+            top_p = payload.get("top_p", 0.9)
+            top_k = payload.get("top_k", 50)
+            tokenizer_config = payload.get("tokenizer_config", {})
+            eos_token_id = tokenizer_config.get("eos_token_id", tokenizer.eos_token_id if tokenizer else None)
+            
+            generated_token_ids = []
+            
+            # Generate tokens one by one
+            for token_idx in range(max_new_tokens):
+                with torch.inference_mode():
+                    logits = model(input_ids).logits
+                
+                # Sample next token
+                input_ids, should_stop = sample_next_token(
+                    logits,
+                    input_ids,
+                    temperature,
+                    tokenizer,
+                    decoding_strategy=decoding_strategy,
+                    top_p=top_p,
+                    top_k=top_k,
+                )
+                
+                new_token_id = input_ids[0, -1].item()
+                generated_token_ids.append(new_token_id)
+
+                send_message(
+                    sock,
+                    (
+                        "token",
+                        {
+                            "worker_rank": WORKER_RANK,
+                            "token_id": new_token_id,
+                            "token_idx": token_idx,
+                        },
+                    ),
+                )
+                
+                # Check if we should stop
+                if should_stop or (eos_token_id and new_token_id == eos_token_id):
+                    break
+            
+            logger.info(f"Worker {WORKER_RANK} generated {len(generated_token_ids)} tokens")
+
+            send_message(
+                sock,
+                (
+                    "stream_complete",
+                    {
+                        "worker_rank": WORKER_RANK,
+                        "num_tokens": len(generated_token_ids),
+                    },
+                ),
+            )
+        
+        else:
             logger.warning(f"Unknown command: {command}")
             continue
-
-        input_ids = payload["input_ids"].to(device)
-        with torch.no_grad():
-            logits = model(input_ids).logits.cpu()
-
-        send_message(
-            sock,
-            (
-                "forward_activations",
-                {
-                    "from_rank": WORKER_RANK,
-                    "to_rank": WORKER_RANK + 1,
-                    "activations": logits,
-                },
-            ),
-        )
 
     sock.close()
 

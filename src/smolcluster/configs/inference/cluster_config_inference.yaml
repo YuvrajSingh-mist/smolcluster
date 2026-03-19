@@ -39,19 +39,18 @@ track_network_metrics: true  # Enable bandwidth, latency, buffer usage tracking
 metrics_log_interval: 50  # Log network metrics every N steps
 
 
-# Timeout for gradient collection
-timeout: 0.1  # How long server waits for gradients (seconds)
-
-# Randomness seed
-seed: 42
-
 # Cluster configuration
-num_workers: 1
-server: mini1  # Server hostname
+num_workers: 2
+# Cluster configuration
+num_workers: 2
+server: mini1  # Server hostname (rank 0 for SyncPS inference)
 workers:
   regular:
     - hostname: mini2
       rank: 1
+
+    - hostname: mini3
+      rank: 2
 
 #-------------------------------------------------------------------------
 #Model parallelism specific configs
