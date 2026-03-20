@@ -157,6 +157,9 @@ def run_rank_zero(
             continue
 
         prompt = (payload.get("prompt") or "").strip()
+        
+        original_prompt_length = len(tokenizer(prompt, return_tensors="pt").input_ids[0])
+        
         if not prompt:
             send_message(client_socket, ("error", {"message": "Empty prompt"}))
             continue

@@ -20,6 +20,7 @@ Complete API reference for the chat/inference backend used by Model Parallelism 
 - [Examples](#examples)
   - [MP Request (plain prompt)](#mp-request-plain-prompt)
   - [DP Request (instruction messages + worker rank)](#dp-request-instruction-messages--worker-rank)
+  - [ClassicDP Inference (curl Cookbook)](#classicdp-inference-curl-cookbook)
   - [Restore Session History](#restore-session-history)
 - [Errors and Notes](#errors-and-notes)
 
@@ -235,6 +236,82 @@ Error event:
 ```
 
 ## Examples
+
+### ClassicDP Inference (curl Cookbook)
+
+Use these commands when `inference_backend=data_parallelism` and
+`inference_algorithm=classicdp`.
+
+Get API health:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Inspect active backend/algorithm and available workers:
+
+```bash
+curl http://localhost:8080/config
+```
+
+Stream generation from a specific ClassicDP worker (SSE):
+
+```bash
+curl -N -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Explain data parallelism in one paragraph",
+    "worker_rank": 1,
+    "max_tokens": 128,
+    "session_id": "classicdp-demo-worker-1",
+    "use_memory": true
+  }'
+```
+
+Instruction/chat format request for instruction-tuned models:
+
+```bash
+curl -N -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "system", "content": "You are a concise ML tutor."},
+      {"role": "user", "content": "Compare SyncPS and ClassicDP briefly."}
+    ],
+    "worker_rank": 2,
+    "max_tokens": 140,
+    "session_id": "classicdp-demo-worker-2",
+    "use_memory": true
+  }'
+```
+
+Non-streaming JSON response (no SSE, no memory read/write):
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Give 3 points on gradient synchronization",
+    "worker_rank": 1,
+    "max_tokens": 96,
+    "decoding_strategy": "top_p",
+    "top_p": 0.9
+  }'
+```
+
+Restore chat history for a worker session:
+
+```bash
+curl "http://localhost:8080/memory/history?session_id=classicdp-demo-worker-1&limit=50"
+```
+
+Clear one ClassicDP chat session:
+
+```bash
+curl -X POST http://localhost:8080/memory/clear \
+  -H "Content-Type: application/json" \
+  -d '{"session_ids": ["classicdp-demo-worker-1"]}'
+```
 
 ### MP Request (plain prompt)
 

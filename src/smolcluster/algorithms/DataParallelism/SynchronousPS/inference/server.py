@@ -229,137 +229,88 @@ def main() -> None:
             send_message(client_socket, ("error", {"message": str(exc)}))
             continue
 
-        # Check if requesting rank 0 (server) or a worker
-        if worker_rank == 0:
-            # Server-side generation on rank 0
-            if model is None:
-                send_message(client_socket, ("error", {"message": "Server rank 0 model not loaded"}))
-                continue
+        # SyncPS with logit averaging: aggregate logits from all workers
+        logger.info(f"Generating with logit averaging across all {len(worker_sockets)} workers + server")
+        
+        # Include server rank 0 in ensemble if model is loaded
+        current_ids = tokenized_prompt.clone()
+        
+        for token_idx in range(max_tokens):
+            gathered_logits = []
             
-            logger.info(f"Generating locally on server rank 0")
-            try:
-                
-                generated_ids = tokenized_prompt.clone().to(device)
-                current_ids = generated_ids
-                
-                for token_idx in range(max_tokens):
-                    with torch.inference_mode():
-                        outputs = model(input_ids=current_ids, return_dict=True)
-
-                    prev_len = current_ids.shape[1]
-                    current_ids, should_stop = sample_next_token(
-                        activations=outputs.logits,
-                        tokenized_prompt=current_ids,
-                        decoding_strategy=decoding_strategy,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        tokenizer=tokenizer,
-                    )
-
-                    next_token = current_ids[:, -1]
-                    
-                    token_text = tokenizer.decode([int(next_token)], skip_special_tokens=True)
-                    send_message(
-                        client_socket,
-                        (
-                            "token",
-                            {
-                                "text": token_text,
-                                "token_idx": token_idx,
-                            },
-                        ),
-                    )
-                    generated_ids = current_ids
-
-                    if should_stop or current_ids.shape[1] == prev_len:
-                        break
-                
-                total_tokens = generated_ids.shape[1] - original_prompt_length
-                logger.info(f"Server rank 0 generated {total_tokens} tokens")
-                send_message(client_socket, ("inference_complete", {"worker_rank": 0}))
-                continue
-            except Exception as e:
-                logger.error(f"Error during server-side generation: {e}")
-                send_message(client_socket, ("error", {"message": f"Generation error: {str(e)}"}))
-                continue
-        
-        # Send request to specific worker
-        logger.info(f"Sending generation request to worker {worker_rank}")
-        
-        # Validate worker rank
-        if worker_rank not in worker_sockets:
-            send_message(client_socket, ("error", {"message": f"Worker {worker_rank} not available"}))
-            continue
-
-        worker_socket = worker_sockets[worker_rank]
-        send_message(
-            worker_socket,
-            (
-                "generate_stream",
-                {
-                    "input_ids": tokenized_prompt.cpu(),
-                    "max_new_tokens": max_tokens,
-                    "decoding_strategy": decoding_strategy,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "top_k": top_k,
-                    "tokenizer_config": {
-                        "eos_token_id": tokenizer.eos_token_id,
-                        "pad_token_id": tokenizer.pad_token_id,
-                    },
-                },
-            ),
-        )
-
-        streamed_tokens = 0
-        while True:
-            response = receive_message(worker_socket)
-            if response is None:
-                send_message(client_socket, ("error", {"message": f"Worker {worker_rank} disconnected"}))
-                streamed_tokens = 0
-                break
-
-            resp_command, resp_payload = response
-
-            if resp_command == "token":
-                token_id = resp_payload.get("token_id")
-                token_idx = resp_payload.get("token_idx", streamed_tokens)
-                if token_id is None:
-                    continue
-
-                token_text = tokenizer.decode([int(token_id)], skip_special_tokens=True)
+            # Get server (rank 0) logits if model is loaded
+            if model is not None:
+                with torch.inference_mode():
+                    server_logits = model(current_ids.to(device)).logits.cpu()
+                gathered_logits.append(server_logits)
+            
+            # Request logits from all workers
+            for rank, worker_socket in sorted(worker_sockets.items()):
                 send_message(
-                    client_socket,
+                    worker_socket,
                     (
-                        "token",
+                        "generate_logits",
                         {
-                            "text": token_text,
-                            "token_idx": token_idx,
+                            "input_ids": current_ids.cpu(),
                         },
                     ),
                 )
-                streamed_tokens += 1
-                continue
-
-            if resp_command == "stream_complete":
-                total_tokens = int(resp_payload.get("num_tokens", streamed_tokens))
-                logger.info(f"Worker {worker_rank} generated {total_tokens} tokens")
+            
+            # Gather logits from all workers
+            for rank, worker_socket in sorted(worker_sockets.items()):
+                response = receive_message(worker_socket)
+                if response is None:
+                    logger.error(f"Worker {rank} disconnected during logit generation")
+                    send_message(client_socket, ("error", {"message": f"Worker {rank} disconnected"}))
+                    break
+                
+                resp_command, resp_payload = response
+                if resp_command != "logits_ready":
+                    logger.error(f"Unexpected response from worker {rank}: {resp_command}")
+                    send_message(client_socket, ("error", {"message": f"Worker {rank} error: {resp_command}"}))
+                    break
+                
+                gathered_logits.append(resp_payload["logits"])
+            
+            # Check if we had errors during gathering
+            if len(gathered_logits) != len(worker_sockets) + (1 if model is not None else 0):
+                logger.error("Failed to gather logits from all workers")
                 break
-
-            if resp_command == "error":
-                send_message(client_socket, ("error", {"message": resp_payload.get("message", "Worker error")}))
-                streamed_tokens = 0
+            
+            # Average logits across all workers + server
+            averaged_logits = torch.stack(gathered_logits, dim=0).mean(dim=0)
+            
+            # Sample next token
+            current_ids, should_stop = sample_next_token(
+                averaged_logits,
+                current_ids,
+                temperature,
+                tokenizer,
+                decoding_strategy=decoding_strategy,
+                top_p=top_p,
+                top_k=top_k,
+            )
+            
+            new_token_id = current_ids[0, -1].item()
+            token_text = tokenizer.decode([new_token_id], skip_special_tokens=True)
+            
+            send_message(
+                client_socket,
+                (
+                    "token",
+                    {
+                        "text": token_text,
+                        "token_idx": token_idx,
+                    },
+                ),
+            )
+            
+            if should_stop:
                 break
-
-            logger.warning(f"Unexpected response from worker {worker_rank}: {resp_command}")
-            break
-
-        if streamed_tokens == 0:
-            continue
         
-        # Send final completion
-        send_message(client_socket, ("inference_complete", {"worker_rank": worker_rank}))
+        total_tokens = current_ids.shape[1] - original_prompt_length
+        logger.info(f"Generated {total_tokens} tokens with ensemble averaging")
+        send_message(client_socket, ("inference_complete", {"worker_rank": 0}))
 
 
 if __name__ == "__main__":

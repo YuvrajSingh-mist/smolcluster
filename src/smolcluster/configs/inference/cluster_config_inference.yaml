@@ -41,8 +41,8 @@ metrics_log_interval: 50  # Log network metrics every N steps
 
 # Cluster configuration
 num_workers: 2
-# Cluster configuration
-num_workers: 2
+total_num_nodes: 3
+
 server: mini1  # Server hostname (rank 0 for SyncPS inference)
 workers:
   regular:

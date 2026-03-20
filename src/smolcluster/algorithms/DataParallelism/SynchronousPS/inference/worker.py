@@ -150,8 +150,26 @@ def main() -> None:
 
         command, payload = message
         
-        if command == "generate_stream":
-            # Generate and stream tokens incrementally.
+        if command == "generate_logits":
+            # Compute logits for ensemble averaging (similar to ClassicDP)
+            input_ids = payload["input_ids"].to(device)
+            
+            with torch.inference_mode():
+                logits = model(input_ids).logits.cpu()
+            
+            send_message(
+                sock,
+                (
+                    "logits_ready",
+                    {
+                        "worker_rank": WORKER_RANK,
+                        "logits": logits,
+                    },
+                ),
+            )
+        
+        elif command == "generate_stream":
+            # Legacy: Generate and stream tokens independently (no averaging)
             logger.info(f"Generating independent response for worker {WORKER_RANK}")
             
             input_ids = payload["input_ids"].to(device)
