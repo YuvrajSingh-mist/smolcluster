@@ -24,10 +24,16 @@ def extract_answer_from_gsm8k(gsm8k_answer: str) -> str:
     raise ValueError(f"Could not extract final answer from GSM8K answer: {gsm8k_answer}")
 
 
-def build_train_val_dataloaders(batch_size: int) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
-    dataset = load_dataset("gsm8k", "main")
-    train_split = dataset["train"]
-    val_split = dataset["test"]
+def build_train_val_dataloaders(
+    batch_size: int,
+    data_config: dict,
+) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+    dataset = load_dataset(
+        data_config["dataset_name"],
+        data_config.get("subset"),
+    )
+    train_split = dataset[data_config["train_split"]]
+    val_split = dataset[data_config["val_split"]]
 
     train_questions: List[str] = list(train_split["question"])
     train_answers: List[str] = [extract_answer_from_gsm8k(ans) for ans in train_split["answer"]]

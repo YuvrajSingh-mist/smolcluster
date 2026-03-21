@@ -1,9 +1,12 @@
+import logging
 import re
 from copy import deepcopy
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import wandb
 import yaml
+from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from smolcluster.applications.reasoning.grpo.data.grpo_data import build_train_val_dataloaders
@@ -11,7 +14,10 @@ from smolcluster.applications.reasoning.grpo.rewards import (
     calculate_answer_reward,
     calculate_formatted_reward,
 )
-from smolcluster.applications.reasoning.grpo.rollouts import generate_rollouts
+from smolcluster.applications.reasoning.grpo.rollouts import generate_rollouts_vllm
+
+
+logger = logging.getLogger(__name__)
 
 
 with open("configs/inference/reasoning/grpo/config.yaml") as f:
@@ -25,10 +31,11 @@ PROMPT = (
     "A conversation between User and Assistant. The user asks a question, and the "
     "Assistant solves it. The assistant first thinks about the reasoning process "
     "in the mind and then provides the user with the answer. The reasoning process "
-    "and answer are enclosed within <think>...</think> and '### ''"
-    "tags, respectively, i.e., <think> reasoning process here </think>"
-    "### answer here. User: {question}. Assistant:"
+    "is enclosed within <think>...</think> and the final answer must be written as "
+    "### <answer>. User: {question}. Assistant:"
 )
+
+
 
 
 def compute_advantages(rewards: torch.Tensor) -> torch.Tensor:
@@ -59,10 +66,10 @@ def compute_logprobs(model: Any, input_ids: torch.Tensor, attention_mask: torch.
 
 
 def parse_numeric_answer(text: str) -> float:
-    number_matches = re.findall(r"[-+]?\d*\.?\d+", text)
-    if not number_matches:
+    matches = re.findall(r"###\s*([-+]?\d*\.?\d+)", text)
+    if not matches:
         return float("nan")
-    return float(number_matches[-1])
+    return float(matches[-1])
 
 
 def compute_grpo_loss(
@@ -103,7 +110,7 @@ def build_batched_rollout_texts(
 
     for question, true_answer in zip(questions, true_answers):
         prompt = PROMPT.format(question=question)
-        worker_rollouts = generate_rollouts(
+        worker_rollouts = generate_rollouts_vllm(
             prompt,
             config["num_workers"],
             config["decoding_strategy"],
@@ -147,6 +154,44 @@ def compute_rewards(
     return torch.tensor(reward_values, dtype=torch.float32, device=device)
 
 
+def compute_grad_norm(model: Any) -> float:
+    total = 0.0
+    for parameter in model.parameters():
+        if parameter.grad is None:
+            continue
+        grad_norm = parameter.grad.detach().data.norm(2).item()
+        total += grad_norm * grad_norm
+    return total ** 0.5
+
+
+def evaluate_batch(
+    model: Any,
+    ref_model: Any,
+    tokenizer: Any,
+    config: Dict[str, Any],
+    questions: List[str],
+    true_answers: List[str],
+) -> Optional[Dict[str, float]]:
+    rollout_texts, rollout_targets = build_batched_rollout_texts(questions, true_answers, config)
+    if not rollout_texts:
+        return None
+
+    device = next(model.parameters()).device
+    input_ids, attention_mask = tokenize_rollouts(tokenizer, rollout_texts, device)
+
+    curr_logprobs = compute_logprobs(model, input_ids, attention_mask)
+    ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask)
+    rewards = compute_rewards(rollout_texts, rollout_targets, device)
+    advantages = compute_advantages(rewards)
+    loss = compute_grpo_loss(ref_logprobs, curr_logprobs, advantages, config)
+
+    return {
+        "loss": float(loss.detach().item()),
+        "reward": float(rewards.mean().detach().item()),
+        "num_rollouts": float(len(rollout_texts)),
+    }
+
+
 def train_step(
     model: Any,
     ref_model: Any,
@@ -155,10 +200,10 @@ def train_step(
     config: Dict[str, Any],
     questions: List[str],
     true_answers: List[str],
-) -> None:
+) -> Optional[Dict[str, float]]:
     rollout_texts, rollout_targets = build_batched_rollout_texts(questions, true_answers, config)
     if not rollout_texts:
-        return
+        return None
 
     device = next(model.parameters()).device
     input_ids, attention_mask = tokenize_rollouts(tokenizer, rollout_texts, device)
@@ -173,7 +218,58 @@ def train_step(
 
     optimizer.zero_grad()
     loss.backward()
+    grad_norm = compute_grad_norm(model)
     optimizer.step()
+
+    return {
+        "loss": float(loss.detach().item()),
+        "reward": float(rewards.mean().detach().item()),
+        "grad_norm": float(grad_norm),
+        "num_rollouts": float(len(rollout_texts)),
+    }
+
+
+def validate(
+    model: Any,
+    ref_model: Any,
+    config: Dict[str, Any],
+    val_dataloader: torch.utils.data.DataLoader,
+    tokenizer: Any,
+    global_step: int,
+) -> Dict[str, float]:
+
+    model.eval()
+
+    loss_values: List[float] = []
+    reward_values: List[float] = []
+    rollout_counts: List[float] = []
+
+    logger.info("Running evaluation at step %s", global_step)
+    with torch.no_grad():
+        for questions, true_answers in val_dataloader:
+            metrics = evaluate_batch(
+                model=model,
+                ref_model=ref_model,
+                tokenizer=tokenizer,
+                config=config,
+                questions=list(questions),
+                true_answers=list(true_answers),
+            )
+            if metrics is None:
+                logger.warning("No metrics were returned. Skipping logging of metrics for this batch.")
+                continue
+            loss_values.append(metrics["loss"])
+            reward_values.append(metrics["reward"])
+            rollout_counts.append(metrics["num_rollouts"])
+
+    
+    model.train()
+
+    return {
+        "val/loss": sum(loss_values) / len(loss_values),
+        "val/reward": sum(reward_values) / len(reward_values),
+        "val/num_rollouts": sum(rollout_counts) / len(rollout_counts),
+    }
 
 
 def train(
@@ -181,14 +277,27 @@ def train(
     ref_model: Any,
     config: Dict[str, Any],
     train_dataloader: torch.utils.data.DataLoader,
+    val_dataloader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     tokenizer: Any,
 ) -> None:
     model.train()
+    global_step = 0
+    total_epochs = config["num_epochs"]
+    val_steps = config["val_steps"]
 
-    for _epoch in range(config["num_epochs"]):
-        for questions, true_answers in train_dataloader:
-            train_step(
+    logger.info("kicking off training for %s epochs", total_epochs)
+
+    for epoch in range(total_epochs):
+        epoch_bar = tqdm(
+            train_dataloader,
+            desc=f"epoch {epoch + 1}/{total_epochs}",
+            leave=True,
+        )
+
+        for questions, true_answers in epoch_bar:
+            global_step += 1
+            metrics = train_step(
                 model=model,
                 ref_model=ref_model,
                 tokenizer=tokenizer,
@@ -198,21 +307,85 @@ def train(
                 true_answers=list(true_answers),
             )
 
+            if metrics is None:
+                logger.info("step %s had no usable rollouts, skipping it", global_step)
+                continue
+
+            epoch_bar.set_postfix(
+                epoch=epoch + 1,
+                step=global_step,
+                loss=f"{metrics['loss']:.4f}",
+                grad_norm=f"{metrics['grad_norm']:.4f}",
+            )
+            wandb.log(
+                {
+                    "train/loss": metrics["loss"],
+                    "train/reward": metrics["reward"],
+                    "train/grad_norm": metrics["grad_norm"],
+                    "train/epoch": epoch + 1,
+                    "train/step": global_step,
+                    "train/num_rollouts": metrics["num_rollouts"],
+                },
+                step=global_step,
+            )
+
+            if global_step % val_steps == 0:
+                val_metrics = validate(
+                    model=model,
+                    ref_model=ref_model,
+                    config=config,
+                    val_dataloader=val_dataloader,
+                    tokenizer=tokenizer,
+                    global_step=global_step,
+                )
+               
+                wandb.log(val_metrics, step=global_step)
+
+        epoch_bar.close()
+
 
 def main() -> None:
-    train_dataloader, _val_dataloader = build_train_val_dataloaders(grpo_config["batch_size"])
+    
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    model = AutoModelForCausalLM.from_pretrained(model_config["hf_model_name"])
-    ref_model = deepcopy(model)
+    train_dataloader, val_dataloader = build_train_val_dataloaders(
+        grpo_config["batch_size"],
+        grpo_config["data"],
+    )
+
+    device = torch.device(grpo_config["device"])
+
+    model: Any = AutoModelForCausalLM.from_pretrained(model_config["dp"]["hf_model_name"])
+    model = model.to(device)
+    ref_model: Any = deepcopy(model)
+    ref_model = ref_model.to(device)
     ref_model.eval()
     for parameter in ref_model.parameters():
         parameter.requires_grad = False
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=grpo_config["learning_rate"])
-    tokenizer = AutoTokenizer.from_pretrained(model_config["hf_model_name"])
+    tokenizer = AutoTokenizer.from_pretrained(model_config["dp"]["hf_model_name"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
+    wandb.init(
+        project=grpo_config.get("wandb_project", "smolcluster-grpo"),
+        config=grpo_config,
+    )
 
-    train(model, ref_model, grpo_config, train_dataloader, optimizer, tokenizer)
+    
+    train(
+            model=model,
+            ref_model=ref_model,
+            config=grpo_config,
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
+            optimizer=optimizer,
+            tokenizer=tokenizer,
+        )
+    
+    wandb.finish()
 
 
 if __name__ == "__main__":

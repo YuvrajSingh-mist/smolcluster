@@ -1,13 +1,23 @@
 # GRPO (Group Relative Policy Optimization) Configuration
 
 # Training hyperparameters
+device: "cpu"
 kl_beta: 0.0001
 clip_ratio: 0.2
 learning_rate: 5e-5
 num_epochs: 3
 batch_size: 4
+val_steps: 50
+
+# Dataset
+data:
+  dataset_name: "gsm8k"
+  subset: "main"
+  train_split: "train"
+  val_split: "test"
 
 # Rollout generation
 api_url: "http://localhost:8080/query"  # Inference API endpoint
+vllm_completion_url: "http://localhost:8000/v1/completions"  # vLLM OpenAI-compatible completion endpoint
 num_rollouts: 4  # Number of rollouts per prompt per worker
 vllm: true  # Whether to use vLLM for rollout generation (if false, uses HF Transformers)
