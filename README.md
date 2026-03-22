@@ -16,18 +16,7 @@ A distributed deep learning library for training neural networks across heteroge
 
 ## Quick Start
 
-```bash
-# Install uv package manager
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone and install
-git clone https://github.com/YuvrajSingh-mist/smolcluster.git
-cd smolcluster
-uv sync
-
-# Launch training (example)
-bash scripts/launch_edp_train_gpt.sh
-```
+Refer to [QUICKSTART.md](docs/quickstart.md) for a step-by-step guide to set up and run your first distributed training job with SmolCluster.
 
 ## Cluster Topology
 

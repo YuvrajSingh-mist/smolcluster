@@ -74,17 +74,21 @@ fi
 
 require_cmd() {
     local cmd="$1"
+    echo -n "Checking for required command: $cmd ... "
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "Error: required command not found: $cmd"
         exit 1
     fi
+    echo "OK"
 }
 
+echo "Verifying required commands:"
 require_cmd yq
 require_cmd curl
 require_cmd tmux
 require_cmd ssh
 require_cmd uv
+echo "All required commands found."
 
 if [[ ! -f "$GRPO_CONFIG" ]]; then
     echo "Error: GRPO config not found: $GRPO_CONFIG"
