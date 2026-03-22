@@ -9,7 +9,26 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Find project root by searching upward for pyproject.toml or .git
+find_project_root() {
+    local dir="$1"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/pyproject.toml" ]] || [[ -d "$dir/.git" ]]; then
+            echo "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+
+PROJECT_DIR=$(find_project_root "$SCRIPT_DIR")
+if [[ -z "$PROJECT_DIR" ]]; then
+    echo "Error: could not find project root (looking for pyproject.toml or .git)"
+    exit 1
+fi
+
 GRPO_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/reasoning/grpo/config.yaml"
 SESSION_NAME="grpo_train"
 
