@@ -205,7 +205,7 @@ def generate_rollouts_vllm(
     prompt: str,
     max_tokens: int,
     num_rollouts: Optional[int] = None,
-) -> Dict[int, List[Tuple[str, float]]]:
+) -> Dict[int, List[str]]:
     """
     Generate rollouts using worker-node vLLM OpenAI-compatible completion endpoints.
 
@@ -213,9 +213,7 @@ def generate_rollouts_vllm(
     KV cache across all completions (much more efficient than N separate requests).
 
     Returns:
-        Dict mapping worker rank -> list of (text, mean_token_logprob) pairs.
-        The logprob is log π_θ_old(response | prompt), averaged per token,
-        returned for free since vLLM computed it during sampling.
+        Dict mapping worker rank -> list of generated text strings.
     """
     effective_n: int = int(NUM_ROLLOUTS if num_rollouts is None else num_rollouts)
 
@@ -226,7 +224,7 @@ def generate_rollouts_vllm(
     )
     logger.info("[generate_rollouts_vllm] Prompt (first 120 chars): %.120s", prompt.replace('\n', ' '))
 
-    rollouts: Dict[int, List[Tuple[str, float]]] = {}
+    rollouts: Dict[int, List[str]] = {}
     vllm_lock = threading.Lock()
 
     # One thread per worker — each sends a single request with n completions.
@@ -252,22 +250,13 @@ def generate_rollouts_vllm(
 # ---------------------------------------------------------------------------
 
 def organize_rollouts(
-    rollouts: Dict[int, List[Tuple[str, float]]],
-) -> Tuple[List[str], List[float]]:
-    """Flatten worker rollouts into ordered lists, dropping empty completions.
-
-    Returns:
-        (texts, old_logprobs) — parallel lists; old_logprobs[i] is the mean
-        per-token log π_θ_old for texts[i], provided free by vLLM.
-    """
+    rollouts: Dict[int, List[str]],
+) -> List[str]:
+    """Flatten worker rollouts into an ordered list, dropping empty completions."""
     texts: List[str] = []
-    old_logprobs: List[float] = []
     for _rank, items in sorted(rollouts.items()):
-        for text, lp in items:
-            if text and text.strip():
-                texts.append(text)
-                old_logprobs.append(lp)
-    return texts, old_logprobs
+        texts.extend(t for t in items if t and t.strip())
+    return texts
 
 
 def _fetch_for_prompt(
@@ -275,31 +264,30 @@ def _fetch_for_prompt(
     prompt: str,
     true_answer: str,
     config: Dict[str, Any],
-) -> Tuple[int, List[str], List[float], str]:
+) -> Tuple[int, List[str], str]:
     """Fetch vLLM rollouts for a single (pre-formatted) prompt. Called concurrently."""
     worker_rollouts = generate_rollouts_vllm(
         prompt,
         max_tokens=config["max_tokens"],
         num_rollouts=config["num_rollouts"],
     )
-    texts, old_logprobs = organize_rollouts(worker_rollouts)
-    return idx, texts, old_logprobs, true_answer
+    texts = organize_rollouts(worker_rollouts)
+    return idx, texts, true_answer
 
 
 def build_batched_rollout_texts(
     prompts: List[str],
     true_answers: List[str],
     config: Dict[str, Any],
-) -> Tuple[List[str], List[str], List[float]]:
+) -> Tuple[List[str], List[str]]:
     """Dispatch rollout generation for all prompts concurrently, collect in order.
 
     Returns:
-        (rollout_texts, rollout_targets, old_logprobs) — one entry per usable
-        rollout across all prompts. old_logprobs[i] is the mean per-token
-        log π_θ_old for rollout_texts[i], returned free from vLLM.
+        (rollout_texts, rollout_targets) — one entry per usable rollout across
+        all prompts.
     """
     n = len(prompts)
-    ordered: List[Optional[Tuple[List[str], List[float], str]]] = [None] * n
+    ordered: List[Optional[Tuple[List[str], str]]] = [None] * n
 
     with ThreadPoolExecutor(max_workers=n) as executor:
         futures = {
@@ -307,7 +295,7 @@ def build_batched_rollout_texts(
             for idx, (prompt, ans) in enumerate(zip(prompts, true_answers))
         }
         for future in as_completed(futures):
-            idx, prompt_rollouts, prompt_lps, true_answer = future.result()
+            idx, prompt_rollouts, true_answer = future.result()
             logger.info(
                 "[rollout %d/%d] Received %d usable rollout(s) from workers",
                 idx + 1, n, len(prompt_rollouts),
@@ -317,15 +305,13 @@ def build_batched_rollout_texts(
                     "[rollout %d/%d | sample %d] %.200s",
                     idx + 1, n, r_idx + 1, text.replace("\n", " "),
                 )
-            ordered[idx] = (prompt_rollouts, prompt_lps, true_answer)
+            ordered[idx] = (prompt_rollouts, true_answer)
 
     rollout_texts: List[str] = []
     rollout_targets: List[str] = []
-    rollout_old_logprobs: List[float] = []
     for item in ordered:
         if item is not None:
-            prompt_rollouts, prompt_lps, true_answer = item
+            prompt_rollouts, true_answer = item
             rollout_texts.extend(prompt_rollouts)
             rollout_targets.extend([true_answer] * len(prompt_rollouts))
-            rollout_old_logprobs.extend(prompt_lps)
-    return rollout_texts, rollout_targets, rollout_old_logprobs
+    return rollout_texts, rollout_targets

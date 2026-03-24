@@ -50,6 +50,27 @@ with open(grpo_config_path) as f:
 with open(model_config_path) as f:
     model_config = yaml.safe_load(f)
 
+def compute_ratio_stats(
+    curr_logprobs: mx.array,
+    ref_logprobs: mx.array,
+    config: Dict[str, Any],
+    dtype: type = mx.float32,
+) -> Dict[str, float]:
+    """Compute ratio/clip/KL diagnostics given already-computed logprob vectors."""
+    ratio = mx.exp(curr_logprobs - ref_logprobs)
+    lo = 1.0 - float(config["clip_ratio"])
+    hi = 1.0 + float(config["clip_ratio"])
+    clipped = mx.logical_or(ratio < lo, ratio > hi)
+    clip_frac = float(mx.mean(clipped.astype(dtype)).item())
+    kl = (ref_logprobs - curr_logprobs) - mx.exp(ref_logprobs - curr_logprobs) - 1
+    mx.eval(ratio, kl)
+    return {
+        "ratio_mean": float(mx.mean(ratio).item()),
+        "clip_frac": clip_frac,
+        "kl_mean": float(mx.mean(kl).item()),
+    }
+
+
 def compute_advantages(rewards: mx.array, dtype: type = mx.float32) -> mx.array:
     rewards_std = mx.std(rewards)
     return (rewards - mx.mean(rewards)) / mx.maximum(rewards_std, mx.array(1e-3, dtype=dtype))
@@ -137,19 +158,24 @@ def evaluate_batch(
     config: Dict[str, Any],
     prompts: List[str],
     true_answers: List[str],
+    ref_model: Optional[Any] = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
 ) -> Optional[Dict[str, float]]:
-    rollout_texts, rollout_targets, vllm_logprobs = build_batched_rollout_texts(prompts, true_answers, config)
+    rollout_texts, rollout_targets = build_batched_rollout_texts(prompts, true_answers, config)
     if not rollout_texts:
         return None
 
-    old_logprobs = mx.array(vllm_logprobs, dtype=dtype)
     input_ids, attention_mask = tokenize_rollouts(tokenizer, rollout_texts, config["max_tokens"], device=device)
     curr_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype)
     rewards = compute_rewards(rollout_texts, rollout_targets, dtype=dtype, device=device)
     advantages = compute_advantages(rewards, dtype=dtype)
-    loss = compute_grpo_loss(curr_logprobs, advantages, config, ref_logprobs=old_logprobs)
+
+    ref_logprobs: Optional[mx.array] = None
+    if ref_model is not None and config.get("use_kl", True):
+        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype)
+
+    loss = compute_grpo_loss(curr_logprobs, advantages, config, ref_logprobs=ref_logprobs)
     mx.eval(loss, rewards)
 
     return {
@@ -168,29 +194,25 @@ def train_step(
     epoch_idx: int,
     step_in_epoch: int,
     total_steps_in_epoch: int,
+    ref_model: Optional[Any] = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
     device_stream: Optional[mx.Stream] = None,
-    
 ) -> Optional[Tuple[Dict[str, float], Any]]:
     step_tag = f"[train_step epoch={epoch_idx + 1} step={step_in_epoch}/{total_steps_in_epoch}]"
 
     logger.info("\n%s Generating rollouts for %d prompt(s) ...", step_tag, len(prompts))
-    rollout_texts, rollout_targets, vllm_logprobs = build_batched_rollout_texts(prompts, true_answers, config)
+    rollout_texts, rollout_targets = build_batched_rollout_texts(prompts, true_answers, config)
 
     if not rollout_texts:
         logger.warning("%s No rollouts generated, skipping step", step_tag)
         return None
     logger.info("%s Got %d rollout(s)", step_tag, len(rollout_texts))
 
-    # old_logprobs = log π_θ_old(response | prompt), returned free from vLLM sampling.
-    # Used as the ratio denominator for clipped PPO — no local ref_model pass needed.
-    ref_logprobs = mx.array(vllm_logprobs, dtype=dtype)
-
     input_ids, attention_mask = tokenize_rollouts(tokenizer, rollout_texts, config["max_tokens"], device=device)
     logger.info("%s Tokenized input shape: %s", step_tag, list(input_ids.shape))
     _log_mem("train_step: after tokenize_rollouts")
-        
+
     logger.info("%s Computing rewards ...", step_tag)
     rewards = compute_rewards(rollout_texts, rollout_targets, dtype=dtype, device=device)
     logger.info(
@@ -199,10 +221,16 @@ def train_step(
         float(mx.mean(rewards).item()),
         float(mx.min(rewards).item()),
         float(mx.max(rewards).item()),
-        
     )
     logger.info("%s Computing advantages ...", step_tag)
     advantages = compute_advantages(rewards, dtype=dtype)
+
+    # Compute reference logprobs for KL-penalised / ratio-clipped loss.
+    ref_logprobs: Optional[mx.array] = None
+    if ref_model is not None and config.get("use_kl", True):
+        logger.info("%s Computing reference model log-probs ...", step_tag)
+        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype)
+        mx.eval(ref_logprobs)
 
     use_ckpt = config.get("grad_checkpoint", False)
     B = input_ids.shape[0]
@@ -247,10 +275,34 @@ def train_step(
 
     logger.info("%s Loss: %.6f", step_tag, total_loss)
 
+    # ---- extra diagnostics (no grad needed) --------------------------------
+    lengths = mx.sum(attention_mask, axis=1).astype(dtype)
+    metrics_extra: Dict[str, float] = {
+        "reward_std":       float(mx.std(rewards).item()),
+        "reward_min":       float(mx.min(rewards).item()),
+        "reward_max":       float(mx.max(rewards).item()),
+        "advantage_mean":   float(mx.mean(advantages).item()),
+        "advantage_std":    float(mx.std(advantages).item()),
+        "rollout_len_mean": float(mx.mean(lengths).item()),
+        "rollout_len_max":  float(mx.max(lengths).item()),
+    }
+    if ref_logprobs is not None and config.get("use_kl", True):
+        curr_lps = []
+        for start in range(0, B, chunk_size):
+            end = min(start + chunk_size, B)
+            lp = compute_logprobs(model, input_ids[start:end], attention_mask[start:end], dtype=dtype)
+            mx.eval(lp)
+            curr_lps.append(lp)
+        metrics_extra.update(compute_ratio_stats(
+            mx.concatenate(curr_lps, axis=0), ref_logprobs, config, dtype
+        ))
+    # -------------------------------------------------------------------------
+
     return {
         "loss": total_loss,
         "reward": float(mx.mean(rewards).item()),
         "num_rollouts": float(len(rollout_texts)),
+        **metrics_extra,
     }, accum_grads
 
 
@@ -260,6 +312,7 @@ def validate(
     val_examples: Sequence[Tuple[str, str]],
     tokenizer: Any,
     global_step: int,
+    ref_model: Optional[Any] = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
 ) -> Dict[str, float]:
@@ -282,6 +335,7 @@ def validate(
             config=config,
             prompts=prompts,
             true_answers=true_answers,
+            ref_model=ref_model,
             dtype=dtype,
             device=device,
         )
@@ -315,6 +369,7 @@ def train(
     val_examples: Sequence[Tuple[str, str]],
     optimizer: optim.Optimizer,
     tokenizer: Any,
+    ref_model: Optional[Any] = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
 ) -> None:
@@ -377,6 +432,7 @@ def train(
                     epoch_idx=epoch,
                     step_in_epoch=step_in_epoch,
                     total_steps_in_epoch=total_steps_in_epoch,
+                    ref_model=ref_model,
                     dtype=dtype,
                     device=device,
                     device_stream=mx.default_stream(device),
@@ -437,12 +493,22 @@ def train(
             )
             wandb.log(
                 {
-                    "train/loss": metrics["loss"],
-                    "train/reward": metrics["reward"],
-                    "train/grad_norm": grad_norm,
-                    "train/epoch": epoch + 1,
-                    "train/step": global_step,
-                    "train/num_rollouts": metrics["num_rollouts"],
+                    "train/loss":             metrics["loss"],
+                    "train/reward_mean":      metrics["reward"],
+                    "train/reward_std":       metrics.get("reward_std", 0),
+                    "train/reward_min":       metrics.get("reward_min", 0),
+                    "train/reward_max":       metrics.get("reward_max", 0),
+                    "train/advantage_mean":   metrics.get("advantage_mean", 0),
+                    "train/advantage_std":    metrics.get("advantage_std", 0),
+                    "train/rollout_len_mean": metrics.get("rollout_len_mean", 0),
+                    "train/rollout_len_max":  metrics.get("rollout_len_max", 0),
+                    "train/ratio_mean":       metrics.get("ratio_mean", 0),
+                    "train/clip_frac":        metrics.get("clip_frac", 0),
+                    "train/kl_mean":          metrics.get("kl_mean", 0),
+                    "train/grad_norm":        grad_norm,
+                    "train/num_rollouts":     metrics["num_rollouts"],
+                    "train/epoch":            epoch + 1,
+                    "train/step":             global_step,
                 },
                 step=global_step,
             )
@@ -454,6 +520,7 @@ def train(
                     val_examples=val_examples,
                     tokenizer=tokenizer,
                     global_step=global_step,
+                    ref_model=ref_model,
                     dtype=dtype,
                     device=device,
                 )
@@ -482,7 +549,7 @@ def main() -> None:
     logger.info("Using dtype: %s", dtype)
 
     train_examples, val_examples = build_train_val_examples(grpo_config["data"])
-    model, _ref_model, tokenizer = load_model(dtype, grpo_config, model_config)
+    model, ref_model, tokenizer = load_model(dtype, grpo_config, model_config)
     optimizer = optim.AdamW(learning_rate=float(grpo_config["learning_rate"]))
 
     wandb.init(
@@ -502,6 +569,7 @@ def main() -> None:
             val_examples=val_examples,
             optimizer=optimizer,
             tokenizer=tokenizer,
+            ref_model=ref_model,
             dtype=dtype,
             device=device,
         )

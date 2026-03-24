@@ -179,7 +179,7 @@ def load_model(
 
     # When vllm=true, old logprobs come free from vLLM sampling — no ref_model needed.
     ref_model: Optional[Any] = None
-    if config.get("use_kl", True) and not config.get("vllm", False):
+    if config.get("use_kl", True):
         logger.info("Loading reference model (use_kl=true, vllm=false) ...")
         ref_model, _ = mlx_load(model_name, tokenizer_config=tokenizer_config)
         ref_model.eval()
