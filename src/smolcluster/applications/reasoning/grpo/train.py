@@ -2,6 +2,8 @@ import json
 import logging
 import re
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -15,6 +17,7 @@ from mlx.nn.utils import checkpoint as mlx_grad_checkpoint
 from tqdm.auto import tqdm
 
 from smolcluster.applications.reasoning.grpo.data.grpo_data import build_train_val_examples
+from smolcluster.applications.reasoning.grpo.amp import GradScaler, MasterWeightAdamW
 from smolcluster.applications.reasoning.grpo.rewards import (
     calculate_answer_reward,
     calculate_formatted_reward,
@@ -123,14 +126,10 @@ def compute_logprobs(
     def _forward(ids: mx.array) -> mx.array:
         # All [B, T, vocab_size] tensors live and die inside here.
         # Output is [B, T] so the backward graph stores nothing large.
-        _log_mem("compute_logprobs._forward: before model()")
         logits = model(ids)
-        _log_mem("compute_logprobs._forward: after logits [B,T,vocab]")
-        
-        shift_logits = logits[:, :-1, :].to(dtype)
+        shift_logits = logits[:, :-1, :]
         shift_labels = ids[:, 1:]
         log_probs = nn.log_softmax(shift_logits, axis=-1)
-        _log_mem("compute_logprobs._forward: after log_softmax [B,T,vocab]")
         return mx.take_along_axis(log_probs, shift_labels[..., None], axis=-1).squeeze(-1)
 
     if use_checkpoint:
@@ -147,29 +146,49 @@ def compute_logprobs(
     return mx.sum(non_mask_logprobs, axis=1) / counts
 
 
+def _compute_single_reward(
+    args: Tuple[int, str, str],
+) -> Tuple[int, float, dict]:
+    idx, generated_text, target_answer = args
+    predicted_numeric_answer = parse_numeric_answer(generated_text)
+    answer_reward = calculate_answer_reward(predicted_numeric_answer, target_answer)
+    format_reward = calculate_formatted_reward(generated_text)
+    total_reward = float(answer_reward + format_reward)
+    log_record = {
+        "rollout_idx":      idx,
+        "true_answer":      target_answer,
+        "extracted_answer": str(predicted_numeric_answer),
+        "answer_reward":    float(answer_reward),
+        "format_reward":    float(format_reward),
+        "total_reward":     total_reward,
+        "generated_text":   generated_text,
+    }
+    return idx, total_reward, log_record
+
+
 def compute_rewards(
     rollout_texts: List[str],
     rollout_targets: List[str],
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
+    max_workers: Optional[int] = None,
 ) -> mx.array:
+    indexed_args = [
+        (i, text, target)
+        for i, (text, target) in enumerate(zip(rollout_texts, rollout_targets))
+    ]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # map() preserves submission order → results[i] == rollout_texts[i]
+        results = list(executor.map(_compute_single_reward, indexed_args))
+    # All threads joined here (shutdown(wait=True) called by context manager)
+
     reward_values: List[float] = []
     log_records: List[dict] = []
-    for i, (generated_text, target_answer) in enumerate(zip(rollout_texts, rollout_targets)):
-        predicted_numeric_answer = parse_numeric_answer(generated_text)
-        answer_reward = calculate_answer_reward(predicted_numeric_answer, target_answer)
-        format_reward = calculate_formatted_reward(generated_text)
-        total_reward = float(answer_reward + format_reward)
+    for _idx, total_reward, log_record in results:
         reward_values.append(total_reward)
-        log_records.append({
-            "rollout_idx":        i,
-            "true_answer":        target_answer,
-            "extracted_answer":   str(predicted_numeric_answer),
-            "answer_reward":      float(answer_reward),
-            "format_reward":      float(format_reward),
-            "total_reward":       total_reward,
-            "generated_text":     generated_text,
-        })
+        log_records.append(log_record)
+
     _append_answers_log({"rollouts": log_records})
 
     # Move reward tensor to the configured device
@@ -193,7 +212,7 @@ def evaluate_batch(
 
     input_ids, attention_mask = tokenize_rollouts(tokenizer, rollout_texts, config["max_tokens"], device=device)
     curr_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype)
-    rewards = compute_rewards(rollout_texts, rollout_targets, dtype=dtype, device=device)
+    rewards = compute_rewards(rollout_texts, rollout_targets, dtype=dtype, device=device, max_workers=config.get("reward_workers"))
     advantages = compute_advantages(rewards, dtype=dtype)
 
     ref_logprobs: Optional[mx.array] = None
@@ -223,11 +242,14 @@ def train_step(
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
     device_stream: Optional[mx.Stream] = None,
+    scaler: Optional[GradScaler] = None,
 ) -> Optional[Tuple[Dict[str, float], Any]]:
     step_tag = f"[train_step epoch={epoch_idx + 1} step={step_in_epoch}/{total_steps_in_epoch}]"
 
     logger.info("\n%s Generating rollouts for %d prompt(s) ...", step_tag, len(prompts))
+    _t0 = time.time()
     rollout_texts, rollout_targets = build_batched_rollout_texts(prompts, true_answers, config)
+    logger.info("%s [TIMING] rollout_gen: %.1fs", step_tag, time.time() - _t0)
 
     if not rollout_texts:
         logger.warning("%s No rollouts generated, skipping step", step_tag)
@@ -239,7 +261,7 @@ def train_step(
     _log_mem("train_step: after tokenize_rollouts")
 
     logger.info("%s Computing rewards ...", step_tag)
-    rewards = compute_rewards(rollout_texts, rollout_targets, dtype=dtype, device=device)
+    rewards = compute_rewards(rollout_texts, rollout_targets, dtype=dtype, device=device, max_workers=config.get("reward_workers"))
     logger.info(
         "%s Rewards - mean: %.4f  min: %.4f  max: %.4f",
         step_tag,
@@ -249,6 +271,13 @@ def train_step(
     )
     logger.info("%s Computing advantages ...", step_tag)
     advantages = compute_advantages(rewards, dtype=dtype)
+    rewards_std_value = float(mx.std(rewards).item())
+    if rewards_std_value < 1e-8:
+        logger.warning(
+            "%s Reward std is ~0 (%.3e). Advantages collapse and grad_norm may be 0.",
+            step_tag,
+            rewards_std_value,
+        )
 
     # Compute reference logprobs for KL-penalised / ratio-clipped loss.
     ref_logprobs: Optional[mx.array] = None
@@ -267,6 +296,7 @@ def train_step(
 
     accum_grads = None
     total_loss = 0.0
+    _t_grad = time.time()
 
     for start in range(0, B, chunk_size):
         end = min(start + chunk_size, B)
@@ -282,7 +312,10 @@ def train_step(
         def chunk_loss_fn(m, _ids=c_ids, _mask=c_mask,
                           _adv=c_adv, _ref=c_ref) -> mx.array:
             lp = compute_logprobs(m, _ids, _mask, dtype=dtype, use_checkpoint=use_ckpt)
-            return compute_grpo_loss(lp, _adv, config, ref_logprobs=_ref) * chunk_scale
+            chunk_loss = compute_grpo_loss(lp, _adv, config, ref_logprobs=_ref) * chunk_scale
+            if scaler is not None:
+                return scaler.scale_loss(chunk_loss)
+            return chunk_loss
 
         chunk_loss, chunk_grads = nn.value_and_grad(model, chunk_loss_fn)(model)
         # Force evaluation: flushes the [chunk, T, vocab] tensors from the graph
@@ -290,15 +323,16 @@ def train_step(
             mx.eval(chunk_loss, chunk_grads)
         _log_mem(f"train_step: chunk [{start}:{end}] after eval")
 
-        total_loss += float(chunk_loss.item())
+        chunk_loss_value = float(chunk_loss.item())
+        if scaler is not None and scaler.enabled:
+            chunk_loss_value /= scaler.get_scale()
+        total_loss += chunk_loss_value
         if accum_grads is None:
             accum_grads = chunk_grads
         else:
             accum_grads = _add_grads(accum_grads, chunk_grads)
-            with mx.stream(device_stream):
-                mx.eval(accum_grads)
 
-    logger.info("%s Loss: %.6f", step_tag, total_loss)
+    logger.info("%s Loss: %.6f  [TIMING] grad_loop: %.1fs", step_tag, total_loss, time.time() - _t_grad)
 
     # ---- extra diagnostics (no grad needed) --------------------------------
     lengths = mx.sum(attention_mask, axis=1).astype(dtype)
@@ -392,11 +426,12 @@ def train(
     config: Dict[str, Any],
     train_examples: Sequence[Tuple[str, str]],
     val_examples: Sequence[Tuple[str, str]],
-    optimizer: optim.Optimizer,
+    optimizer: Any,
     tokenizer: Any,
     ref_model: Optional[Any] = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
+    scaler: Optional[GradScaler] = None,
 ) -> None:
     model.train()
   
@@ -434,6 +469,7 @@ def train(
 
             accum_grads = None
             accum_metrics: List[Dict[str, float]] = []
+            valid_micro_batches = 0
 
             # Process each micro-batch and accumulate gradients
             micro_idx = 0
@@ -461,6 +497,7 @@ def train(
                     dtype=dtype,
                     device=device,
                     device_stream=mx.default_stream(device),
+                    scaler=scaler,
                 )
                 
                 if result is None:
@@ -471,10 +508,10 @@ def train(
                     continue
                 
                 micro_metrics, grads = result
+                valid_micro_batches += 1
                 
                 # Scale gradients before accumulating
-                scaled_grads = _scale_grads(grads, 1.0 / grad_accum_steps)
-                accum_grads = scaled_grads if accum_grads is None else _add_grads(accum_grads, scaled_grads)
+                accum_grads = grads if accum_grads is None else _add_grads(accum_grads, grads)
                 # Materialise accumulated grads to release the lazy addition graph
                 mx.eval(accum_grads)
                 accum_metrics.append(micro_metrics)
@@ -483,22 +520,43 @@ def train(
             if accum_grads is None:
                 logger.warning("step %d — no micro-batches produced valid rollouts, skipping step", step_in_epoch)
                 continue
+
+            if valid_micro_batches > 1:
+                accum_grads = _scale_grads(accum_grads, 1.0 / valid_micro_batches)
+                mx.eval(accum_grads)
             
             # --- Apply optimizer update after gradient accumulation ---
             max_grad_norm = float(config.get("max_grad_norm") or 0)
             clip_max = max_grad_norm if max_grad_norm > 0 else float("inf")
-            accum_grads, grad_norm = optim.clip_grad_norm(accum_grads, clip_max)
-            mx.eval(grad_norm)
-            grad_norm = float(grad_norm)
-            optimizer.update(model, accum_grads)
-            mx.eval(model.parameters(), optimizer.state)
+
+            step_grads = accum_grads
+            found_inf = False
+            if scaler is not None and scaler.enabled:
+                step_grads = scaler.unscale(step_grads)
+                found_inf = scaler.has_inf_nan(step_grads)
+
+            skipped_update = False
+            if found_inf:
+                skipped_update = True
+                grad_norm = float("nan")
+                scaler.update(found_inf=True)
+                logger.warning("step %d — AMP overflow detected, skipping optimizer update", step_in_epoch)
+            else:
+                step_grads, grad_norm_t = optim.clip_grad_norm(step_grads, clip_max)
+                mx.eval(grad_norm_t)
+                grad_norm = float(grad_norm_t)
+                optimizer.update(model, step_grads)
+                if scaler is not None and scaler.enabled:
+                    scaler.update(found_inf=False)
+                mx.eval(model.parameters(), optimizer.state)
+
             global_step += 1
             metrics = {k: sum(m[k] for m in accum_metrics) / len(accum_metrics) for k in accum_metrics[0]}
             # -------------------------------------------------------
 
             # Periodically save the policy weights and reload vLLM workers so
             # rollouts always come from the most recent policy.
-            if save_steps > 0 and global_step % save_steps == 0:
+            if (not skipped_update) and save_steps > 0 and global_step % save_steps == 0:
                 logger.info("[weight_sync] Step %d — saving and syncing weights ...", global_step)
                 try:
                     weights_dir = save_policy_weights(model, checkpoint_dir, global_step)
@@ -515,6 +573,8 @@ def train(
                 step=global_step,
                 loss=f"{metrics['loss']:.4f}",
                 grad_norm=f"{grad_norm:.4f}",
+                amp_scale=f"{(scaler.get_scale() if scaler else 1.0):.0f}",
+                skipped=int(skipped_update),
             )
             wandb.log(
                 {
@@ -531,6 +591,8 @@ def train(
                     "train/clip_frac":        metrics.get("clip_frac", 0),
                     "train/kl_mean":          metrics.get("kl_mean", 0),
                     "train/grad_norm":        grad_norm,
+                    "train/amp_scale":        scaler.get_scale() if scaler else 1.0,
+                    "train/amp_skipped_step": float(skipped_update),
                     "train/num_rollouts":     metrics["num_rollouts"],
                     "train/epoch":            epoch + 1,
                     "train/step":             global_step,
@@ -579,7 +641,17 @@ def main() -> None:
 
     train_examples, val_examples = build_train_val_examples(grpo_config["data"])
     model, ref_model, tokenizer = load_model(dtype, grpo_config, model_config)
-    optimizer = optim.AdamW(learning_rate=float(grpo_config["learning_rate"]))
+    amp_enabled = bool(grpo_config.get("amp", False))
+    scaler = GradScaler(
+        init_scale=float(grpo_config.get("amp_init_scale", 2 ** 15)),
+        growth_interval=int(grpo_config.get("amp_growth_interval", 2000)),
+        enabled=amp_enabled,
+    )
+    optimizer = MasterWeightAdamW(
+        model=model,
+        learning_rate=float(grpo_config["learning_rate"]),
+        enabled=bool(grpo_config.get("amp_master_weights", amp_enabled)),
+    )
 
     wandb.init(
         project=grpo_config.get("wandb_project", "smolcluster-grpo"),
@@ -601,6 +673,7 @@ def main() -> None:
             ref_model=ref_model,
             dtype=dtype,
             device=device,
+            scaler=scaler,
         )
     finally:
         wandb.finish()

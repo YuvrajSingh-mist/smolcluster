@@ -1,14 +1,20 @@
 # GRPO (Group Relative Policy Optimization) Configuration
 
 # Model configuration
-dtype: "float16"  # "float32" or "bfloat16" for all computations
+dtype: "bfloat16"  # "float32" or "bfloat16" for all computations
 
 # Training hyperparameters
 device: "gpu"
-use_kl: true           # use vLLM old_logprobs for clipped-ratio PPO (no ref_model loaded when vllm=true)
+use_kl: false           # use vLLM old_logprobs for clipped-ratio PPO (no ref_model loaded when vllm=true)
 kl_beta: 0.0001           # 0 = pure clipped-ratio PPO; raise to ~0.01 to add KL penalty term
 clip_ratio: 0.2
 max_grad_norm: 1.0    # gradient clipping threshold (0 or null to disable)
+
+# Automatic mixed precision — dynamic loss scaling to prevent bfloat16 grad underflow
+amp: true
+amp_init_scale: 32768   # initial loss scale (2^15)
+amp_growth_interval: 2000  # double scale every N clean steps
+amp_master_weights: true   # maintain/update FP32 master params, then cast back to model dtype
 learning_rate: 0.0001
 num_epochs: 3
 batch_size: 2
@@ -16,6 +22,7 @@ grad_accum_steps: 1    # accumulate gradients over N micro-batches before each o
 val_steps: 200
 grad_checkpoint: true  
 grad_chunk_size: 4      # Process this many rollouts at a time during backward (reduces peak vocab-dim tensor size)
+reward_workers: 8       # Number of threads for parallel reward computation (null = auto)
 
 # Dataset
 data:

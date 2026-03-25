@@ -17,11 +17,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _log_mem(tag: str) -> None:
+    get_active = getattr(mx, "get_active_memory", mx.metal.get_active_memory)
+    get_peak = getattr(mx, "get_peak_memory", mx.metal.get_peak_memory)
     logger.info(
         "[MEM] %s — active: %.0f MB  peak: %.0f MB",
         tag,
-        mx.metal.get_active_memory() / 1e6,
-        mx.metal.get_peak_memory() / 1e6,
+        get_active() / 1e6,
+        get_peak() / 1e6,
     )
 
 
@@ -117,10 +119,23 @@ def _add_grads(acc: Any, new: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 def parse_numeric_answer(text: str) -> float:
-    matches = re.findall(r"<answer>\s*([-+]?\d*\.?\d+)\s*<\/answer>", text)
-    if not matches:
-        return float("nan")
-    return float(matches[-1])
+    matches = re.findall(r"<answer>\s*([-+]?\d*\.?\d+)\s*<\/answer>", text, flags=re.IGNORECASE)
+    if matches:
+        return float(matches[-1])
+
+    final_answer_match = re.findall(
+        r"final\s+answer[^\d\-\+]*([-+]?\d*\.?\d+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if final_answer_match:
+        return float(final_answer_match[-1])
+
+    fallback_numbers = re.findall(r"[-+]?\d*\.?\d+", text)
+    if fallback_numbers:
+        return float(fallback_numbers[-1])
+
+    return float("nan")
 
 
 # ---------------------------------------------------------------------------

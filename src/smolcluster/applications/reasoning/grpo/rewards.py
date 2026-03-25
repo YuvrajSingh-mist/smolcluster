@@ -1,4 +1,5 @@
 import re
+import math
 
 def calculate_answer_reward(predicted_answer: float, true_answer: float) -> float:
     """
@@ -10,7 +11,9 @@ def calculate_answer_reward(predicted_answer: float, true_answer: float) -> floa
     Returns:
         A reward value, which is 1.0 if the predicted answer is correct, and 0.0 otherwise.
     """
-    return 1.0 if predicted_answer == true_answer else 0.0
+    if not math.isfinite(predicted_answer):
+        return 0.0
+    return 1.0 if math.isclose(predicted_answer, float(true_answer), rel_tol=0.0, abs_tol=1e-6) else 0.0
 
 
 def calculate_formatted_reward(predicted_answer: str) -> float:
@@ -22,10 +25,6 @@ def calculate_formatted_reward(predicted_answer: str) -> float:
     Returns:
         A reward value, which is 1.0 if the predicted answer is correct, and 0.0 otherwise.
     """
-    pattern = r"^\s*<think>.*?</think>\s*<answer>\s*([-+]?\d*\.?\d+)\s*</answer>\s*$"
-    match = re.match(pattern, predicted_answer.strip(), re.DOTALL)
-    if not match:
-        return 0.0  
-    
-    else:
-        return 1.0
+    has_think = re.search(r"<think>.*?</think>", predicted_answer, re.DOTALL | re.IGNORECASE)
+    has_answer = re.search(r"<answer>\s*[-+]?\d*\.?\d+\s*</answer>", predicted_answer, re.DOTALL | re.IGNORECASE)
+    return 1.0 if (has_think and has_answer) else 0.0
