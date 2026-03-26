@@ -50,7 +50,7 @@ install_macos() {
     brew update
 
     log "Installing tmux, docker, colima, redis..."
-    brew install tmux docker colima redis
+    brew install tmux docker colima redis jq
 
     if ! colima status >/dev/null 2>&1; then
         log "Starting Colima..."
