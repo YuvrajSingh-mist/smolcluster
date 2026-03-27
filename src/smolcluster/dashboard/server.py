@@ -376,6 +376,7 @@ async def sse_events():
                     "running":     node_manager.snapshot_processes(),
                     "usernames":   dict(_probed),
                     "ssh_aliases": dict(_ssh_aliases),
+                    "node_os":     dict(_node_os),
                 },
                 "training":     _read_json(METRICS_FILE),
                 "connectivity": _read_json(INFERENCE_FILE),
