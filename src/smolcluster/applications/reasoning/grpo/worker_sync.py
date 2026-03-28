@@ -157,40 +157,30 @@ def _scp_model_files(
     remote_model_dir: str,
 ) -> None:
     """
-    SCP the model config and tokenizer files (but not weights) to the remote worker.
-    Assumes the remote model dir already exists.
+    Rsync all non-weight model files (config, tokenizer, vocab, etc.) to the remote
+    worker. Uses --exclude to skip weight files so only architecture/tokenizer files
+    are transferred. This ensures vLLM gets every file it needs regardless of model
+    architecture (vocab.json, merges.txt, added_tokens.json, etc.).
     """
-    # Files that vLLM needs (but not the weights file itself)
-    required_files = [
-        "config.json",
-        "generation_config.json",
-        "tokenizer.json",
-        "tokenizer.model",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
+    rsync_cmd = [
+        "rsync", "-azL",  # -L follows symlinks (HF cache uses symlinks to blobs)
+        "--exclude=*.safetensors",
+        "--exclude=*.bin",
+        "--exclude=*.pt",
+        "--exclude=*.index.json",
+        f"{local_model_dir}/",
+        f"{hostname}:{remote_model_dir}/",
     ]
-    
-    for fname in required_files:
-        local_path = local_model_dir / fname
-        if local_path.exists():
-            remote_path = f"{remote_model_dir}/{fname}"
-            try:
-                scp_cmd = [
-                    "scp",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "ConnectTimeout=10",
-                    str(local_path),
-                    f"{hostname}:{remote_path}",
-                ]
-                logger.info("[weight_sync] SCP %s → %s:%s", fname, hostname, remote_path)
-                result = subprocess.run(scp_cmd, timeout=180)
-                if result.returncode != 0:
-                    logger.warning(
-                        "[weight_sync] SCP %s to %s failed (rc=%d), continuing ...",
-                        fname, hostname, result.returncode,
-                    )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[weight_sync] SCP %s failed: %s, continuing ...", fname, e)
+    logger.info("[weight_sync] rsync model files → %s:%s", hostname, remote_model_dir)
+    try:
+        result = subprocess.run(rsync_cmd, timeout=180, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning(
+                "[weight_sync] rsync model files to %s failed (rc=%d): %s",
+                hostname, result.returncode, result.stderr.strip(),
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[weight_sync] rsync model files failed: %s, continuing ...", e)
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +324,19 @@ def _sync_single_worker(
         logger.info("[weight_sync] worker %d (%s): syncing model files ...", rank, hostname)
         _scp_model_files(hostname, local_model_dir, remote_model_dir)
 
-    # 3. Copy weights or LoRA adapters to the worker.
+    # 3. Clean stale weight shards on remote before uploading new weights.
+    # Old shard files (model-00001-of-NNNNN.safetensors, model.safetensors.index.json)
+    # left from a previous model setup would cause vLLM to load wrong/mixed weights.
+    clean_cmd = (
+        f"rm -f {shlex.quote(remote_model_dir)}/*.safetensors "
+        f"{shlex.quote(remote_model_dir)}/*.bin "
+        f"{shlex.quote(remote_model_dir)}/*.pt "
+        f"{shlex.quote(remote_model_dir)}/model.safetensors.index.json"
+    )
+    _run_ssh(hostname, clean_cmd)
+    logger.info("[weight_sync] worker %d (%s): stale remote weights cleaned", rank, hostname)
+
+    # 4. Copy weights or LoRA adapters to the worker.
     if is_lora:
         _run_ssh(hostname, f"mkdir -p {shlex.quote(remote_adapter_dir)}")
         for fname in ["adapters.safetensors", "adapter_config.json"]:
@@ -344,7 +346,7 @@ def _sync_single_worker(
         _scp_file(local_weights_file, hostname, remote_weights_path)
         logger.info("[weight_sync] worker %d (%s): weights uploaded", rank, hostname)
 
-    # 4. Kill the running vLLM tmux session and any stale process on the worker.
+    # 5. Kill the running vLLM tmux session and any stale process on the worker.
     kill_result = _run_ssh(
         hostname,
         "tmux kill-session -t vllm_worker 2>/dev/null || true; pkill -f 'vllm serve' 2>/dev/null || true",
@@ -356,7 +358,7 @@ def _sync_single_worker(
     # Brief pause to let the port free up before restarting.
     time.sleep(2)
 
-    # 5. Restart vLLM.
+    # 6. Restart vLLM.
     start_result = _run_ssh(hostname, vllm_start_cmd, timeout=30, use_login_shell=True)
     if start_result.returncode != 0:
         raise RuntimeError(
@@ -365,7 +367,7 @@ def _sync_single_worker(
         )
     logger.info("[weight_sync] worker %d (%s): vLLM restart command sent", rank, hostname)
 
-    # 6. Poll /health until the server is ready.
+    # 7. Poll /health until the server is ready.
     health_url = f"http://{host_ip}:{port}/health"
     retries = int(sync_cfg.get("health_retries", 30))
     interval = int(sync_cfg.get("health_interval", 5))

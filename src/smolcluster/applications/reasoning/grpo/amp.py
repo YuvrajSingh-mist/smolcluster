@@ -135,9 +135,9 @@ class MasterWeightAdamW:
         self,
         model: Any,
         learning_rate: float,
-        betas: Tuple[float, float] = (0.9, 0.999),
+        betas: Tuple[float, float] = (0.9, 0.99),
         eps: float = 1e-8,
-        weight_decay: float = 1e-2,
+        weight_decay: float = 1e-1,
         enabled: bool = True,
     ) -> None:
         self.enabled = enabled

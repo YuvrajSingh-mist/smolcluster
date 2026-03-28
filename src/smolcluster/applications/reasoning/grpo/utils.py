@@ -118,8 +118,12 @@ def _add_grads(acc: Any, new: Any) -> Any:
 # Rewards Parsing
 # ---------------------------------------------------------------------------
 
-def parse_numeric_answer(text: str) -> float:
+def parse_answer(text: str) -> Any:
     matches = re.findall(r"<answer>\s*([-+]?\d*\.?\d+)\s*<\/answer>", text, flags=re.IGNORECASE)
+   
+    # matches = re.findall(r"<summary>(.*?)</summary>", text, re.DOTALL)
+
+    
     if matches:
         return float(matches[-1])
 
@@ -131,16 +135,13 @@ def parse_numeric_answer(text: str) -> float:
     if final_answer_match:
         return float(final_answer_match[-1])
 
-    fallback_numbers = re.findall(r"[-+]?\d*\.?\d+", text)
-    if fallback_numbers:
-        return float(fallback_numbers[-1])
-
     return float("nan")
 
 
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
+
 
 def load_model(
     dtype: type,
@@ -171,11 +172,13 @@ def load_model(
         mx.eval(model.parameters())
     _log_mem("load_model: after policy model load")
 
+  
     ref_model: Optional[Any] = None
     if config.get("use_kl", True):
         logger.info("Loading reference model (use_kl=true) ...")
         ref_model, _ = mlx_load(model_name, tokenizer_config=tokenizer_config)
         ref_model.eval()
+
         with mx.stream(device_stream):
             mx.eval(ref_model.parameters())
     else:

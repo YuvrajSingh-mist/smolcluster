@@ -152,6 +152,7 @@ def _fetch_n_from_worker(
     rollouts: Dict[int, List[str]],
     lock: threading.Lock,
     max_tokens: int,
+    step: Optional[int] = None,
 ) -> None:
     """
     Send ONE request to a vLLM worker asking for n completions.
@@ -170,11 +171,12 @@ def _fetch_n_from_worker(
         non_empty = [c.get("text", "") for c in choices if c and c.get("text", "").strip()]
 
         append_vllm_debug_log({
+            "step": step,
             "worker_rank": worker_rank,
             "url": vllm_url,
             "n": n,
             "max_tokens": max_tokens,
-            "prompt_preview": prompt[:200],
+            "prompt_preview": prompt,
             "status_code": response.status_code,
             "num_choices": len(choices),
             "num_non_empty": len(non_empty),
@@ -194,7 +196,7 @@ def _fetch_n_from_worker(
 
         logger.warning("[vllm worker %d] All %d completions empty", worker_rank, n)
     except Exception as e:
-        append_vllm_debug_log({"worker_rank": worker_rank, "url": vllm_url, "error": str(e)})
+        append_vllm_debug_log({"step": step, "worker_rank": worker_rank, "url": vllm_url, "error": str(e)})
         logger.error("[vllm worker %d] Request failed: %s", worker_rank, e)
 
     with lock:
@@ -205,6 +207,7 @@ def generate_rollouts_vllm(
     prompt: str,
     max_tokens: int,
     num_rollouts: Optional[int] = None,
+    step: Optional[int] = None,
 ) -> Dict[int, List[str]]:
     """
     Generate rollouts using worker-node vLLM OpenAI-compatible completion endpoints.
@@ -231,7 +234,7 @@ def generate_rollouts_vllm(
     threads = [
         threading.Thread(
             target=_fetch_n_from_worker,
-            args=(url, rank, prompt, effective_n, rollouts, vllm_lock, max_tokens),
+            args=(url, rank, prompt, effective_n, rollouts, vllm_lock, max_tokens, step),
         )
         for rank, url in _worker_urls.items()
     ]
@@ -264,12 +267,14 @@ def _fetch_for_prompt(
     prompt: str,
     true_answer: str,
     config: Dict[str, Any],
+    step: Optional[int] = None,
 ) -> Tuple[int, List[str], str]:
     """Fetch vLLM rollouts for a single (pre-formatted) prompt. Called concurrently."""
     worker_rollouts = generate_rollouts_vllm(
         prompt,
-        max_tokens=config["max_tokens"],
+        max_tokens=config["max_output_tokens"],
         num_rollouts=config["num_rollouts"],
+        step=step,
     )
     texts = organize_rollouts(worker_rollouts)
     return idx, texts, true_answer
@@ -279,6 +284,7 @@ def build_rollouts_per_prompt(
     prompts: List[str],
     true_answers: List[str],
     config: Dict[str, Any],
+    step: Optional[int] = None,
 ) -> List[Tuple[List[str], str]]:
     """Dispatch rollout generation for all prompts concurrently, return per-prompt.
 
@@ -291,7 +297,7 @@ def build_rollouts_per_prompt(
 
     with ThreadPoolExecutor(max_workers=n) as executor:
         futures = {
-            executor.submit(_fetch_for_prompt, idx, prompt, ans, config): idx
+            executor.submit(_fetch_for_prompt, idx, prompt, ans, config, step): idx
             for idx, (prompt, ans) in enumerate(zip(prompts, true_answers))
         }
         for future in as_completed(futures):
@@ -317,17 +323,20 @@ def build_batched_rollout_texts(
     prompts: List[str],
     true_answers: List[str],
     config: Dict[str, Any],
-) -> Tuple[List[str], List[str]]:
+    step: Optional[int] = None,
+) -> Tuple[List[str], List[str], List[str]]:
     """Dispatch rollout generation for all prompts concurrently, collect in order.
 
     Returns:
-        (rollout_texts, rollout_targets) — one entry per usable rollout across
-        all prompts.
+        (rollout_texts, rollout_targets, rollout_questions) — one entry per usable
+        rollout across all prompts.
     """
-    per_prompt = build_rollouts_per_prompt(prompts, true_answers, config)
+    per_prompt = build_rollouts_per_prompt(prompts, true_answers, config, step=step)
     rollout_texts: List[str] = []
     rollout_targets: List[str] = []
-    for prompt_rollouts, true_answer in per_prompt:
+    rollout_questions: List[str] = []
+    for (prompt_rollouts, true_answer), prompt in zip(per_prompt, prompts):
         rollout_texts.extend(prompt_rollouts)
         rollout_targets.extend([true_answer] * len(prompt_rollouts))
-    return rollout_texts, rollout_targets
+        rollout_questions.extend([prompt] * len(prompt_rollouts))
+    return rollout_texts, rollout_targets, rollout_questions

@@ -1,73 +1,3 @@
-# # GRPO (Group Relative Policy Optimization) Configuration
-
-# # Model configuration
-# dtype: "bfloat16"  # "float32" or "bfloat16" for all computations
-
-# # Training hyperparameters
-# device: "gpu"
-# use_kl: false           # use vLLM old_logprobs for clipped-ratio PPO (no ref_model loaded when vllm=true)
-# kl_beta: 0.0001           # 0 = pure clipped-ratio PPO; raise to ~0.01 to add KL penalty term
-# clip_ratio: 0.2
-# max_grad_norm: 1.0    # gradient clipping threshold (0 or null to disable)
-
-# # Automatic mixed precision — dynamic loss scaling to prevent bfloat16 grad underflow
-# amp: false      # enable AMP (ignored if dtype is float32)
-# amp_init_scale: 32768   # initial loss scale (2^15)
-# amp_growth_interval: 2000  # double scale every N clean steps
-# amp_master_weights: true   # maintain/update FP32 master params, then cast back to model dtype only if amp is true
-# optimizer: "sgd"       # "adam" (AdamW with optional AMP) or "sgd" (plain SGD, AMP settings ignored)
-# learning_rate: 0.1  # for SGD, recommended lr is 0.1
-# num_epochs: 3
-# batch_size: 2
-# grad_accum_steps: 1    # accumulate gradients over N micro-batches before each optimizer step (1 = disabled)
-# val_steps: 200
-# grad_checkpoint: true  
-# grad_chunk_size: 4      # Process this many rollouts at a time during backward (reduces peak vocab-dim tensor size)
-# reward_workers: 8       # Number of threads for parallel reward computation (null = auto)
-
-# # Dataset
-# data:
-#   dataset_name: "gsm8k"
-#   subset: "main"
-#   train_split: "train"
-#   val_split: "test"
-
-# # Rollout generation
-# max_tokens: 512
-# num_rollouts: 4  # Number of rollouts per prompt per worker
-# vllm: true  # Whether to use vLLM for rollout generation (if false, uses HF Transformers)
-
-# Used when `vllm: true`: the training server sends rollout requests to worker-node vLLM servers.
-# # Workers, host_ip, and user are read from cluster_config_inference.yaml
-# vllm_cluster:
-#   port: 8000
-#   completion_path: "/v1/completions"
-
-# # ---------------------------------------------------------------------------
-# # Weight sync: save policy weights and reload vLLM workers periodically.
-# # Set save_steps: 0 to disable.robs
-# # ---------------------------------------------------------------------------
-# weight_sync:
-#   save_steps: 10                    # sync every N training steps (0 = disabled)
-#   checkpoint_dir: "checkpoints/grpo"  # relative to project root
-
-#   # remote_user and host_ip are read from model_config_inference.yaml cluster.*
-#   remote_model_dir: "~/grpo_model"  
-#   vllm_activate: "~/.venv-vllm-metal/bin/activate"  # sourced before vLLM restart on workers
-#   remote_weights_filename: "model.safetensors"  # weights file to overwrite
-
-#   # Command used to (re)start vLLM on each worker.
-#   # Placeholders: {model_dir}, {port}, {rank}, {vllm_activate}
-#   vllm_start_cmd: >-
-#     tmux kill-session -t vllm_worker 2>/dev/null || true;
-#     tmux new -d -s vllm_worker
-#     "bash -c 'source {vllm_activate} && vllm serve {model_dir} --port {port}
-#     --trust-remote-code --enable-prefix-caching 2>&1 | tee /tmp/vllm_{rank}.log; exec bash'"
-
-#   health_retries: 30                # polling attempts before giving up
-#   health_interval: 5                # seconds between each health check
-
-
 
 
 # GRPO (Group Relative Policy Optimization) Configuration
@@ -77,8 +7,8 @@ dtype: "bfloat16"  # "float32" or "bfloat16" for all computations
 
 # Training hyperparameters
 device: "gpu"
-use_kl: false           # use vLLM old_logprobs for clipped-ratio PPO (no ref_model loaded when vllm=true)
-kl_beta: 0.001           # 0 = pure clipped-ratio PPO; raise to ~0.01 to add KL penalty term
+use_kl: true           # use vLLM old_logprobs for clipped-ratio PPO (no ref_model loaded when vllm=true)
+kl_beta: 0.0001           # 0 = pure clipped-ratio PPO; raise to ~0.01 to add KL penalty term
 clip_ratio: 0.2
 max_grad_norm: 1.0    # gradient clipping threshold (0 or null to disable)
 
@@ -87,11 +17,11 @@ amp: false
 amp_init_scale: 32768   # initial loss scale (2^15)
 amp_growth_interval: 2000  # double scale every N clean steps
 amp_master_weights: true   # maintain/update FP32 master params, then cast back to model dtype
-optimizer: "sgd"      # "adam" (AdamW + optional AMP) or "sgd" (plain SGD, AMP ignored)
-learning_rate: 0.1    # LoRA LR: 1e-4 is standard (100× higher than full-param fine-tuning)
+optimizer: "adam"      # "adam" (AdamW + optional AMP) or "sgd" (plain SGD, AMP ignored)
+learning_rate: 0.00002   # LoRA LR: 1e-4 is standard (100× higher than full-param fine-tuning)
 num_epochs: 1
-batch_size: 2
-grad_accum_steps: 2    # accumulate gradients over N micro-batches before each optimizer step (1 = disabled)
+batch_size: 8
+grad_accum_steps: 1    # accumulate gradients over N micro-batches before each optimizer step (1 = disabled)
 val_steps: 200
 grad_checkpoint: true
 grad_chunk_size: 4      # Process this many rollouts at a time during backward (reduces peak vocab-dim tensor size)
@@ -106,20 +36,21 @@ lora_num_layers: -1    # -1 = all transformer layers
 
 # Dataset
 data:
-  dataset_name: "gsm8k"
-  subset: "main"
+  dataset_name: "mlabonne/smoltldr"
+  subset: "default"
   train_split: "train"
   val_split: "test"
 
 # Rollout generation
-max_tokens: 512
+max_input_tokens: 512
+max_output_tokens: 128
 num_rollouts: 8  # 8 rollouts: halves GRPO gradient variance vs 4 (more stable reward signal)
 vllm: true  # Whether to use vLLM for rollout generation (if false, uses HF Transformers)
 
 # Used when `vllm: true`: the training server sends rollout requests to worker-node vLLM servers.
 # Workers, host_ip, and user are read from cluster_config_inference.yaml
 vllm_cluster:
-  port: 8000
+  port: 8080
   completion_path: "/v1/completions"
 
 # ---------------------------------------------------------------------------
@@ -127,7 +58,7 @@ vllm_cluster:
 # Set save_steps: 0 to disable.
 # ---------------------------------------------------------------------------
 weight_sync:
-  save_steps: 20                    # sync every N training steps (0 = disabled)
+  save_steps: 5                    # sync every N training steps (0 = disabled)
   checkpoint_dir: "checkpoints/grpo"  # relative to project root
 
   # remote_user and host_ip are read from model_config_inference.yaml cluster.*

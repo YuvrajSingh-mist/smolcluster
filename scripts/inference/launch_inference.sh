@@ -163,6 +163,10 @@ if [[ ! -f "$TARGET_SCRIPT" ]]; then
     exit 1
 fi
 
+if [[ "$DRY_RUN" != "true" ]]; then
+    do_cleanup
+fi
+
 echo "🚀 Launching inference with algorithm: $ALGORITHM"
 
 if [[ "$DRY_RUN" == "true" ]]; then

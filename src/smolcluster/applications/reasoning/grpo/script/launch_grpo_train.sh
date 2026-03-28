@@ -28,6 +28,13 @@ if [[ -z "$PROJECT_DIR" ]]; then
     exit 1
 fi
 
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+    set +u
+    # shellcheck disable=SC1090
+    source "$PROJECT_DIR/.env"
+    set -u
+fi
+
 GRPO_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/reasoning/grpo/config.yaml"
 CLUSTER_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/cluster_config_inference.yaml"
 MODEL_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/model_config_inference.yaml"
@@ -137,6 +144,10 @@ reset_all_vllm_workers() {
 # Args: host ip port rank model_dir
 start_vllm_on_worker() {
     local host="$1" ip="$2" port="$3" rank="$4" model_dir="$5"
+    local hf_env=""
+    if [[ -n "${HF_TOKEN:-}" ]]; then
+        hf_env="export HF_TOKEN='${HF_TOKEN}' HUGGING_FACE_HUB_TOKEN='${HF_TOKEN}'; "
+    fi
     local cmd
     cmd=$(printf '%s' "$VLLM_START_CMD" \
         | sed "s|{model_dir}|${model_dir}|g" \
@@ -145,7 +156,7 @@ start_vllm_on_worker() {
         | sed "s|{vllm_activate}|${VLLM_ACTIVATE}|g")
     echo "  [$host] starting vLLM in tmux '${VLLM_TMUX_SESSION}' (rank=$rank port=$port) ..."
     ssh -o ConnectTimeout=8 -o BatchMode=yes "$host" \
-        "${REMOTE_PATH} && ${cmd}" </dev/null
+        "${REMOTE_PATH} && ${hf_env}${cmd}" </dev/null
     sleep 2
     if ! ssh -o ConnectTimeout=8 -o BatchMode=yes "$host" \
         "${REMOTE_PATH} && tmux has-session -t '${VLLM_TMUX_SESSION}'" </dev/null 2>/dev/null; then
