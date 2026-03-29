@@ -94,7 +94,7 @@ Only continue to inference/training after ping and SSH are both stable.
 
 ## Cluster Architecture
 
-<img src="images/architecture.png" alt="Mac Mini Cluster Architecture" width="100%">
+<img src="../images/architecture.png" alt="Mac Mini Cluster Architecture" width="100%">
 
 | Node | Hostname | IP | Role |
 |------|----------|----|------|
