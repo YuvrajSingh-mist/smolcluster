@@ -19,7 +19,7 @@ import yaml
 from mlx.nn.utils import checkpoint as mlx_grad_checkpoint
 from tqdm.auto import tqdm
 
-from smolcluster.applications.reasoning.grpo.data.grpo_data import build_train_val_examples
+from smolcluster.applications.reasoning.grpo.data.summarization import build_train_val_examples
 from smolcluster.applications.reasoning.grpo.amp import GradScaler, MasterWeightAdamW
 from smolcluster.applications.reasoning.grpo.rewards import (
     calculate_answer_reward,

@@ -1,0 +1,1038 @@
+
+
+import json
+import logging
+import queue
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import mlx.core as mx
+import mlx.nn as nn
+import mlx.optimizers as optim
+import numpy as np
+import wandb
+import yaml
+from mlx.nn.utils import checkpoint as mlx_grad_checkpoint
+from tqdm.auto import tqdm
+
+from smolcluster.applications.reasoning.grpo.data.gsm8k import build_train_val_examples
+from smolcluster.applications.reasoning.grpo.amp import GradScaler, MasterWeightAdamW
+from smolcluster.applications.reasoning.grpo.rewards import (
+    calculate_answer_reward,
+    calculate_formatted_reward,
+)
+from smolcluster.applications.reasoning.grpo.rollouts import build_batched_rollout_texts, build_rollouts_per_prompt
+from smolcluster.applications.reasoning.grpo.utils import (
+    _add_grads,
+    _log_mem,
+    _scale_grads,
+    get_dtype_from_config,
+    get_mlx_device,
+    iterate_batches,
+    load_model,
+    apply_lora_if_quantized,
+    tokenize_rollouts,
+    parse_answer,
+)
+from smolcluster.applications.reasoning.grpo.worker_sync import (
+    save_policy_weights,
+    sync_and_reload_workers,
+)
+
+logger = logging.getLogger(__name__)
+
+
+_module_dir = Path(__file__).parent
+_smolcluster_root = _module_dir.parents[2]
+grpo_config_path = _smolcluster_root / "configs" / "inference" / "reasoning" / "grpo" / "config.yaml"
+model_config_path = _smolcluster_root / "configs" / "inference" / "model_config_inference.yaml"
+
+with open(grpo_config_path) as f:
+    grpo_config = yaml.safe_load(f)
+
+with open(model_config_path) as f:
+    model_config = yaml.safe_load(f)
+
+_debug_dir = _module_dir.parents[4] / ".grpo_debug"
+_debug_dir.mkdir(parents=True, exist_ok=True)
+_answers_log_path = _debug_dir / "rollout_answers.jsonl"
+_answers_log_lock = threading.Lock()
+
+
+def _append_answers_log(record: dict) -> None:
+    with _answers_log_lock:
+        with _answers_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n\n")
+
+def compute_ratio_stats(
+    curr_logprobs: mx.array,
+    ref_logprobs: mx.array,
+    config: Dict[str, Any],
+    dtype: type = mx.float32,
+) -> Dict[str, float]:
+    """Compute ratio/clip/KL diagnostics given already-computed logprob vectors."""
+    ratio = mx.exp(curr_logprobs - ref_logprobs)
+    lo = 1.0 - float(config["clip_ratio"])
+    hi = 1.0 + float(config["clip_ratio"])
+    clipped = mx.logical_or(ratio < lo, ratio > hi)
+    clip_frac = float(mx.mean(clipped.astype(dtype)).item())
+    kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
+    mx.eval(ratio, kl)
+    return {
+        "ratio_mean": float(mx.mean(ratio).item()),
+        "clip_frac": clip_frac,
+        "kl_mean": float(mx.mean(kl).item()),
+    }
+
+
+def filter_to_uniform_groups(
+    per_prompt: List[Tuple[List[str], str]],
+    num_rollouts: int,
+) -> List[Tuple[List[str], str]]:
+    """Keep only prompts that produced exactly num_rollouts completions.
+
+    Prompts with fewer completions are dropped (logged as warnings).
+    Prompts with more completions are truncated to num_rollouts.
+    Returns a list where every entry has exactly num_rollouts rollout texts.
+    """
+    filtered = []
+    for i, (texts, answer) in enumerate(per_prompt):
+        if len(texts) == 0:
+            logger.warning("filter_to_uniform_groups: prompt %d produced 0 rollouts — dropping", i)
+        elif len(texts) < num_rollouts:
+            logger.warning(
+                "filter_to_uniform_groups: prompt %d has %d/%d rollouts — dropping",
+                i, len(texts), num_rollouts,
+            )
+        else:
+            filtered.append((texts[:num_rollouts], answer))
+    return filtered
+
+
+def compute_advantages(rewards: mx.array, dtype: type = mx.float32) -> mx.array:
+    """Normalize rewards into advantages within each prompt's rollout group.
+
+    Args:
+        rewards: [T, C] — T prompts, C rollouts each (uniform groups required)
+    Returns:
+        advantages: [T, C] — per-group z-score normalised
+    """
+    group_mean = mx.mean(rewards, axis=1, keepdims=True)           # [T, 1]
+    group_var  = mx.mean((rewards - group_mean) ** 2, axis=1, keepdims=True)
+    group_std  = mx.sqrt(group_var)                                # [T, 1]
+    return (rewards - group_mean) / mx.maximum(group_std, mx.array(1e-6, dtype=dtype))
+
+
+
+
+def compute_grpo_loss(
+    curr_logprobs: mx.array,
+    advantages: mx.array,
+    config: Dict[str, Any],
+    old_logprobs: Optional[mx.array] = None,
+    ref_logprobs: Optional[mx.array] = None,
+) -> mx.array:
+    """GRPO macro-averaged loss.
+
+    Args:
+        curr_logprobs: [T, C] — log-probs under the current (training) policy
+        advantages:    [T, C] — per-group z-score advantages
+        old_logprobs:  [T, C] — log-probs under the policy that generated the
+                                rollouts (pre-gradient snapshot); used for the
+                                PPO importance-sampling ratio and clip.
+                                If None, falls back to plain policy gradient.
+        ref_logprobs:  [T, C] — log-probs under the frozen reference model;
+                                used only for the KL penalty (use_kl=True).
+                                Independent of old_logprobs.
+    Returns:
+        scalar loss
+    """
+    if old_logprobs is not None:
+        logprobs_ratio = mx.exp(curr_logprobs - old_logprobs)   # [T, C]
+        clipped_ratio = mx.clip(
+            logprobs_ratio,
+            1 - config["clip_ratio"],
+            1 + config["clip_ratio"],
+        )
+        per_rollout = mx.minimum(
+            logprobs_ratio * advantages, clipped_ratio * advantages
+        )                                                        # [T, C]
+    else:
+        per_rollout = advantages * curr_logprobs                 # [T, C] — plain PG fallback
+
+    if ref_logprobs is not None and config.get("use_kl", True):
+        kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
+        per_rollout = per_rollout - config["kl_beta"] * kl      # [T, C]
+
+    per_group = mx.mean(per_rollout, axis=1)                     # [T] — mean within each prompt's group
+    return -mx.mean(per_group)                                   # scalar — macro-average across prompts
+
+
+def compute_logprobs(
+    model: Any,
+    input_ids: mx.array,
+    attention_mask: mx.array,
+    dtype: type = mx.float32,
+    use_checkpoint: bool = False,
+    completion_mask: Optional[mx.array] = None,
+) -> mx.array:
+    """Compute per-sequence mean log-probs over completion tokens.
+
+    Args:
+        input_ids:       [T, C, D] — T prompts, C rollouts, D tokens (prompt+completion)
+        attention_mask:  [T, C, D] — 1 for real tokens, 0 for padding
+        completion_mask: [T, C, D] — 1 only for completion tokens (0 for prompt + padding).
+                         When provided, the mean is taken only over completion tokens,
+                         giving p(completion | prompt). When None, averages over all tokens.
+    Returns:
+        [T, C] — mean log-prob for each rollout
+    """
+    T, C, D = input_ids.shape
+    N = T * C
+    flat_ids  = input_ids.reshape(N, D)
+    flat_mask = attention_mask.reshape(N, D)
+
+    # Score only completion tokens when mask is provided; fall back to all real tokens.
+    score_flat = completion_mask.reshape(N, D) if completion_mask is not None else flat_mask
+    shift_mask = score_flat[:, 1:]
+
+    def _forward(ids: mx.array) -> mx.array:
+        logits = model(ids)
+        shift_logits = logits[:, :-1, :]
+        shift_labels = ids[:, 1:]
+        # logsumexp trick: avoids materializing [N, D, vocab] log_softmax tensor
+        target_logit = mx.take_along_axis(shift_logits, shift_labels[..., None], axis=-1).squeeze(-1)
+        log_z = mx.logsumexp(shift_logits, axis=-1)
+        return target_logit - log_z
+
+    if use_checkpoint:
+        token_logprobs = mlx_grad_checkpoint(model, _forward)(flat_ids)
+    else:
+        token_logprobs = _forward(flat_ids)
+
+    filtered_logprobs = mx.where(shift_mask > 0, token_logprobs, 0.0)
+    counts = mx.maximum(mx.sum(shift_mask, axis=1), mx.array(1.0, dtype=dtype))
+    flat_result = mx.sum(filtered_logprobs, axis=1) / counts     # [T*C]
+    return flat_result.reshape(T, C)                             # [T, C]
+
+
+def _build_completion_mask(
+    tokenizer: Any,
+    rollout_questions: List[str],
+    flat_mask: mx.array,
+    T: int,
+    C: int,
+) -> mx.array:
+    """Return [T*C, D] mask that is 1 only for completion tokens (not prompt, not padding).
+
+    Encodes each unique prompt to find where the prompt ends in the tokenized
+    prompt+completion sequence, then zeros out those prefix positions.
+    """
+    hf_tok = getattr(tokenizer, "_tokenizer", tokenizer)
+    prompt_lens_flat: List[int] = []
+    for i in range(T):
+        p_len = len(hf_tok.encode(rollout_questions[i * C], add_special_tokens=False))
+        prompt_lens_flat.extend([p_len] * C)
+
+    D = flat_mask.shape[1]
+    p_lens = mx.array(prompt_lens_flat, dtype=mx.int32)   # [T*C]
+    positions = mx.arange(D, dtype=mx.int32)               # [D]
+    # 1 where position >= prompt_len (completion token) AND token is not padding
+    comp_mask = (positions[None, :] >= p_lens[:, None]).astype(mx.int32) * flat_mask
+    mx.eval(comp_mask)
+    return comp_mask
+
+
+def _compute_single_reward(
+    args: Tuple[int, str, str, str],
+) -> Tuple[int, float, dict]:
+    idx, question, generated_text, true_answer = args
+
+    predicted_answer = parse_answer(generated_text)
+    answer_reward = calculate_answer_reward(predicted_answer, true_answer)
+    formatted_reward = calculate_formatted_reward(generated_text)
+    total_reward = float(2 * answer_reward + formatted_reward)
+    log_record = {
+        "rollout_idx":    idx,
+        "question":       question,
+        "predicted_answer": predicted_answer,
+        "answer_reward": float(answer_reward),
+        "formatted_reward": float(formatted_reward),
+        "total_reward":   total_reward,
+        "generated_text": generated_text,
+        "true_answer":    true_answer,
+    }
+    return idx, total_reward, log_record
+
+
+def compute_rewards(
+    rollout_texts: List[str],
+    rollout_targets: List[str],
+    dtype: type = mx.float32,
+    device: mx.Device = mx.cpu,
+    max_workers: Optional[int] = None,
+    step: Optional[int] = None,
+    rollout_questions: Optional[List[str]] = None,
+) -> Tuple[mx.array, Dict[str, List[float]]]:
+    """Returns (reward_tensor [T*C], components) where components has per-rollout
+    lists for each reward term (answer_reward, formatted_reward, total_reward)."""
+    questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
+    indexed_args = [
+        (i, q, text, target)
+        for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
+    ]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(_compute_single_reward, indexed_args))
+
+    reward_values: List[float] = []
+    log_records: List[dict] = []
+    for _idx, total_reward, log_record in results:
+        reward_values.append(total_reward)
+        log_records.append(log_record)
+
+    _append_answers_log({"step": step, "rollouts": log_records})
+
+    components: Dict[str, List[float]] = {
+        "answer_reward": [r["answer_reward"] for r in log_records],
+        "formatted_reward": [r["formatted_reward"] for r in log_records],
+        "total_reward":   [r["total_reward"]   for r in log_records],
+    }
+
+    with mx.stream(mx.default_stream(device)):
+        return mx.array(reward_values, dtype=dtype), components
+
+
+def evaluate_batch(
+    model: Any,
+    tokenizer: Any,
+    config: Dict[str, Any],
+    prompts: List[str],
+    true_answers: List[str],
+    ref_model: Optional[Any] = None,
+    dtype: type = mx.float32,
+    device: mx.Device = mx.cpu,
+    step: Optional[int] = None,
+) -> Optional[Dict[str, float]]:
+    per_prompt_raw = build_rollouts_per_prompt(prompts, true_answers, config, step=step)
+    effective_rollouts = len(per_prompt_raw[0][0]) if per_prompt_raw and per_prompt_raw[0][0] else int(config["num_rollouts"])
+    per_prompt = filter_to_uniform_groups(per_prompt_raw, effective_rollouts)
+    if not per_prompt:
+        return None
+
+    T = len(per_prompt)
+    C = effective_rollouts
+    rollout_texts: List[str] = []
+    rollout_targets: List[str] = []
+    rollout_questions: List[str] = []
+    for (texts, ans), prompt in zip(per_prompt, prompts[:T]):
+        rollout_texts.extend(texts)
+        rollout_targets.extend([ans] * C)
+        rollout_questions.extend([prompt] * C)
+
+    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts)]
+    flat_ids, flat_mask = tokenize_rollouts(tokenizer, full_texts, config["max_input_tokens"], device=device)
+    D = flat_ids.shape[1]
+    input_ids      = flat_ids.reshape(T, C, D)   # [T, C, D]
+    attention_mask = flat_mask.reshape(T, C, D)
+    completion_mask = _build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
+
+    model.eval()
+    old_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+    mx.eval(old_logprobs)
+    model.train()
+
+    curr_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+
+    rewards_flat, reward_components = compute_rewards(
+        rollout_texts,
+        rollout_targets,
+        dtype=dtype,
+        device=device,
+        max_workers=config.get("reward_workers"),
+        step=step,
+        rollout_questions=rollout_questions,
+    )
+    rewards = rewards_flat.reshape(T, C)          # [T, C]
+    advantages = compute_advantages(rewards, dtype=dtype)  # [T, C]
+
+    ref_logprobs: Optional[mx.array] = None
+    if ref_model is not None and config.get("use_kl", True):
+        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+
+    loss = compute_grpo_loss(
+        curr_logprobs, advantages, config,
+        old_logprobs=old_logprobs, ref_logprobs=ref_logprobs,
+    )
+    mx.eval(loss, rewards)
+
+    return {
+        "loss": float(loss.item()),
+        "reward": float(mx.mean(rewards).item()),
+        "num_rollouts": float(T * C),
+    }
+
+
+class RolloutPrefetcher:
+    """Fetches the next step's rollouts in a background thread while current compute runs.
+
+    Submit the next step's prompts immediately after this step's rollouts arrive.
+    The background fetch runs concurrently with tokenisation, forward/backward, and
+    the optimizer step. Call get() at the top of the next step — it blocks only if
+    compute finished faster than vLLM (rare).
+
+    Returns rollouts per-prompt (not flattened) so the train loop can slice by
+    micro-batch index and works correctly with any grad_accum_steps value.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        self._config = config
+        self._queue: queue.Queue = queue.Queue(maxsize=1)
+        self._thread: Optional[threading.Thread] = None
+
+    def submit(self, prompts: List[str], answers: List[str], step: Optional[int] = None) -> None:
+        def _run() -> None:
+            result = build_rollouts_per_prompt(prompts, answers, self._config, step=step)
+            self._queue.put(result)
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def get(self) -> List[Tuple[List[str], str]]:
+        """Return per-prompt rollouts: [(rollout_texts, true_answer), ...]."""
+        return self._queue.get()
+
+    def flush(self) -> None:
+        """Discard buffered result — call after weight sync so stale rollouts are dropped."""
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=120)
+        try:
+            self._queue.get_nowait()
+        except queue.Empty:
+            pass
+
+
+def train_step(
+    model: Any,
+    tokenizer: Any,
+    config: Dict[str, Any],
+    prompts: List[str],
+    true_answers: List[str],
+    epoch_idx: int,
+    step_in_epoch: int,
+    total_steps_in_epoch: int,
+    ref_model: Optional[Any] = None,
+    dtype: type = mx.float32,
+    device: mx.Device = mx.cpu,
+    device_stream: Optional[mx.Stream] = None,
+    scaler: Optional[GradScaler] = None,
+    prefetched_rollouts: Optional[Tuple[List[str], List[str], List[str]]] = None,
+    rollout_group_sizes: Optional[List[int]] = None,
+    step: Optional[int] = None,
+) -> Optional[Tuple[Dict[str, float], Any]]:
+    step_tag = f"[train_step epoch={epoch_idx + 1} step={step_in_epoch}/{total_steps_in_epoch}]"
+
+    num_rollouts = int(config["num_rollouts"])
+
+    if prefetched_rollouts is not None:
+        # Reconstruct per_prompt from flat lists + group_sizes so we can apply
+        # uniform-group filtering consistently with the non-prefetch path.
+        flat_texts, flat_targets, flat_questions = prefetched_rollouts
+        per_prompt_raw: List[Tuple[List[str], str]] = []
+        idx = 0
+        for size in (rollout_group_sizes or []):
+            per_prompt_raw.append((flat_texts[idx : idx + size], flat_targets[idx] if idx < len(flat_targets) else ""))
+            idx += size
+        logger.info("\n%s Using prefetched rollouts (%d)", step_tag, len(flat_texts))
+    else:
+        logger.info("\n%s Generating rollouts for %d prompt(s) ...", step_tag, len(prompts))
+        _t0 = time.time()
+        per_prompt_raw = build_rollouts_per_prompt(prompts, true_answers, config, step=step)
+        logger.info("%s [TIMING] rollout_gen: %.1fs", step_tag, time.time() - _t0)
+
+    # Infer effective C from actual data: num_rollouts_per_worker × num_workers.
+    # config["num_rollouts"] is per-worker; each prompt receives that many from EACH worker.
+    effective_rollouts = len(per_prompt_raw[0][0]) if per_prompt_raw and per_prompt_raw[0][0] else num_rollouts
+
+    # Enforce uniform C: drop prompts that didn't get exactly effective_rollouts completions.
+    per_prompt = filter_to_uniform_groups(per_prompt_raw, effective_rollouts)
+    if not per_prompt:
+        logger.warning("%s No prompts with full rollouts after filtering, skipping step", step_tag)
+        return None
+
+    T = len(per_prompt)
+    C = effective_rollouts
+    rollout_texts: List[str] = []
+    rollout_targets: List[str] = []
+    rollout_questions: List[str] = []
+    for (texts, ans), prompt in zip(per_prompt, prompts[:T]):
+        rollout_texts.extend(texts)
+        rollout_targets.extend([ans] * C)
+        rollout_questions.extend([prompt] * C)
+    logger.info("%s Got %d prompt(s) × %d rollouts = %d total", step_tag, T, C, T * C)
+
+    # Tokenize prompt+completion together so the model sees full context.
+    # completion_mask zeros out prompt positions so log-prob averaging is over
+    # generated tokens only, giving p(completion | prompt).
+    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts)]
+    flat_ids, flat_mask = tokenize_rollouts(tokenizer, full_texts, config["max_input_tokens"], device=device)
+    D = flat_ids.shape[1]
+    input_ids      = flat_ids.reshape(T, C, D)    # [T, C, D]
+    attention_mask = flat_mask.reshape(T, C, D)   # [T, C, D]
+    completion_mask = _build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
+    logger.info("%s input_ids shape: %s  (prompt+completion, D=%d)", step_tag, list(input_ids.shape), D)
+    _log_mem("train_step: after tokenize_rollouts")
+
+    logger.info("%s Computing rewards ...", step_tag)
+    rewards_flat, reward_components = compute_rewards(
+        rollout_texts,
+        rollout_targets,
+        dtype=dtype,
+        device=device,
+        max_workers=config.get("reward_workers"),
+        step=step,
+        rollout_questions=rollout_questions,
+    )
+    rewards = rewards_flat.reshape(T, C)          # [T, C]
+    logger.info(
+        "%s Rewards - mean: %.4f  min: %.4f  max: %.4f",
+        step_tag,
+        float(mx.mean(rewards).item()),
+        float(mx.min(rewards).item()),
+        float(mx.max(rewards).item()),
+    )
+    logger.info("%s Computing advantages ...", step_tag)
+    advantages = compute_advantages(rewards, dtype=dtype)         # [T, C]
+    rewards_std_value = float(mx.std(rewards).item())
+    if rewards_std_value < 1e-8:
+        logger.warning(
+            "%s Reward std is ~0 (%.3e). Advantages collapse and grad_norm may be 0.",
+            step_tag,
+            rewards_std_value,
+        )
+
+    # old_logprobs: snapshot of the policy that generated the rollouts.
+    # Computed from current model weights (same weights vLLM was synced to)
+    # BEFORE any gradient update this step. model.eval() disables dropout,
+    # matching vLLM inference behaviour. No extra model copy needed.
+    logger.info("%s Computing old policy log-probs ...", step_tag)
+    model.eval()
+    old_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+    mx.eval(old_logprobs)
+    model.train()
+
+    # ref_logprobs: frozen initial model, used only for KL penalty (use_kl=True).
+    ref_logprobs: Optional[mx.array] = None
+    if ref_model is not None and config.get("use_kl", True):
+        logger.info("%s Computing reference model log-probs ...", step_tag)
+        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+        mx.eval(ref_logprobs)
+
+    use_ckpt = config.get("grad_checkpoint", False)
+    # Chunk over T (prompts) and C (rollouts) so each backward sees only a small batch.
+    chunk_T = int(config.get("grad_chunk_size", T))
+    rollout_chunk = int(config.get("rollout_grad_chunk", C))
+
+    mx.reset_peak_memory()
+    _log_mem("train_step: before grad computation (peak reset)")
+    logger.info(
+        "%s Computing GRPO loss and gradients (T=%d C=%d chunk_T=%d rollout_chunk=%d) ...",
+        step_tag, T, C, chunk_T, rollout_chunk,
+    )
+
+    accum_grads = None
+    total_loss = 0.0
+    _t_grad = time.time()
+
+    # Store curr_logprobs for ratio diagnostics (avoid recomputing after grad loop)
+    curr_lps: List[mx.array] = []
+
+    for t_start in range(0, T, chunk_T):
+        t_end = min(t_start + chunk_T, T)
+
+        for rc_start in range(0, C, rollout_chunk):
+            rc_end = min(rc_start + rollout_chunk, C)
+            # Scale: each chunk contributes (chunk_T × chunk_C) / (T × C) of the total loss.
+            # compute_grpo_loss computes mean over its T and C dims, so multiplying by
+            # chunk_scale converts that mean into the correct sum contribution: sum / (T*C).
+            chunk_scale = (t_end - t_start) * (rc_end - rc_start) / (T * C)
+
+            c_ids  = input_ids[t_start:t_end, rc_start:rc_end]       # [chunk_T, chunk_C, D]
+            c_mask = attention_mask[t_start:t_end, rc_start:rc_end]
+            c_comp = completion_mask[t_start:t_end, rc_start:rc_end]
+            c_adv  = advantages[t_start:t_end, rc_start:rc_end]       # [chunk_T, chunk_C]
+            c_old  = old_logprobs[t_start:t_end, rc_start:rc_end]     # [chunk_T, chunk_C]
+            c_ref  = ref_logprobs[t_start:t_end, rc_start:rc_end] if ref_logprobs is not None else None
+
+            # Capture loop variables by value via default args to avoid closure bugs
+            def chunk_loss_fn(m, _ids=c_ids, _mask=c_mask, _comp=c_comp,
+                              _adv=c_adv, _old=c_old, _ref=c_ref) -> mx.array:
+                lp = compute_logprobs(m, _ids, _mask, dtype=dtype, use_checkpoint=use_ckpt, completion_mask=_comp)  # [chunk_T, chunk_C]
+                curr_lps.append(lp)
+                chunk_loss = compute_grpo_loss(
+                    lp, _adv, config, old_logprobs=_old, ref_logprobs=_ref
+                ) * chunk_scale
+                if scaler is not None:
+                    return scaler.scale_loss(chunk_loss)
+                return chunk_loss
+
+            chunk_loss, chunk_grads = nn.value_and_grad(model, chunk_loss_fn)(model)
+            with mx.stream(device_stream):
+                mx.eval(chunk_loss, chunk_grads)
+            _log_mem(f"train_step: chunk t[{t_start}:{t_end}] rc[{rc_start}:{rc_end}] after eval")
+
+            chunk_loss_value = float(chunk_loss.item())
+            if scaler is not None and scaler.enabled:
+                chunk_loss_value /= scaler.get_scale()
+            total_loss += chunk_loss_value
+            if accum_grads is None:
+                accum_grads = chunk_grads
+            else:
+                accum_grads = _add_grads(accum_grads, chunk_grads)
+                with mx.stream(device_stream):
+                    mx.eval(accum_grads)
+
+    logger.info("%s Loss: %.6f  [TIMING] grad_loop: %.1fs", step_tag, total_loss, time.time() - _t_grad)
+
+    # ---- extra diagnostics (no grad needed) --------------------------------
+    # completion_mask is [T, C, D]; sum over token dim → per-rollout completion lengths [T, C]
+    lengths = mx.sum(completion_mask, axis=-1).astype(dtype)
+    ar = mx.array(reward_components["answer_reward"]) if reward_components else None
+    fr = mx.array(reward_components["formatted_reward"]) if reward_components else None
+    metrics_extra: Dict[str, float] = {
+        "reward_std":       float(mx.std(rewards).item()),
+        "reward_min":       float(mx.min(rewards).item()),
+        "reward_max":       float(mx.max(rewards).item()),
+        "advantage_mean":   float(mx.mean(advantages).item()),
+        "advantage_std":    float(mx.std(advantages).item()),
+        "generation_token_len_mean": float(mx.mean(lengths).item()),
+        "generation_token_len_min": float(mx.min(lengths).item()),
+        "generation_token_len_max":  float(mx.max(lengths).item()),
+        "answer_reward_mean": float(mx.mean(ar).item()), 
+        "answer_reward_std":  float(mx.std(ar).item()),  
+        "answer_reward_min":  float(mx.min(ar).item()),  
+        "answer_reward_max":  float(mx.max(ar).item()), 
+        "formatted_reward_mean": float(mx.mean(fr).item()), 
+        "formatted_reward_std":  float(mx.std(fr).item()) , 
+        "formatted_reward_min":  float(mx.min(fr).item()) , 
+        "formatted_reward_max":  float(mx.max(fr).item()) ,
+    }
+    # Ratio stats: curr vs old policy (always available now)
+    curr_lps_flat = mx.concatenate([lp.reshape(-1) for lp in curr_lps])  # [T*C]
+    old_flat = old_logprobs.reshape(-1)                             # [T*C]
+    metrics_extra.update(compute_ratio_stats(curr_lps_flat, old_flat, config, dtype))
+    # -------------------------------------------------------------------------
+
+    return {
+        "loss": total_loss,
+        "reward": float(mx.mean(rewards).item()),
+        "num_rollouts": float(len(rollout_texts)),
+        **metrics_extra,
+        "_reward_components": reward_components,
+    }, accum_grads
+
+
+def validate(
+    model: Any,
+    config: Dict[str, Any],
+    val_examples: Sequence[Tuple[str, str]],
+    tokenizer: Any,
+    global_step: int,
+    ref_model: Optional[Any] = None,
+    dtype: type = mx.float32,
+    device: mx.Device = mx.cpu,
+) -> Dict[str, float]:
+    model.eval()
+
+    loss_values: List[float] = []
+    reward_values: List[float] = []
+    rollout_counts: List[float] = []
+
+    logger.info("Running evaluation at step %s", global_step)
+    for prompts, true_answers in iterate_batches(
+        val_examples,
+        batch_size=config["batch_size"],
+        shuffle=False,
+        seed=global_step,
+    ):
+        metrics = evaluate_batch(
+            model=model,
+            tokenizer=tokenizer,
+            config=config,
+            prompts=prompts,
+            true_answers=true_answers,
+            ref_model=ref_model,
+            dtype=dtype,
+            device=device,
+            step=global_step,
+        )
+        if metrics is None:
+            logger.warning("No metrics were returned. Skipping logging of metrics for this batch.")
+            continue
+        loss_values.append(metrics["loss"])
+        reward_values.append(metrics["reward"])
+        rollout_counts.append(metrics["num_rollouts"])
+
+    model.train()
+
+    if not loss_values:
+        return {
+            "val/loss": 0.0,
+            "val/reward": 0.0,
+            "val/num_rollouts": 0.0,
+        }
+
+    return {
+        "val/loss": sum(loss_values) / len(loss_values),
+        "val/reward": sum(reward_values) / len(reward_values),
+        "val/num_rollouts": sum(rollout_counts) / len(rollout_counts),
+    }
+
+
+def train(
+    model: Any,
+    config: Dict[str, Any],
+    train_examples: Sequence[Tuple[str, str]],
+    val_examples: Sequence[Tuple[str, str]],
+    optimizer: Any,
+    tokenizer: Any,
+    ref_model: Optional[Any] = None,
+    dtype: type = mx.float32,
+    device: mx.Device = mx.cpu,
+    scaler: Optional[GradScaler] = None,
+) -> None:
+    model.train()
+  
+    global_step = 0
+    total_epochs = config["num_epochs"]
+    val_steps = config["val_steps"]
+    base_seed = int(config.get("seed", 42))
+    save_steps = int(config.get("weight_sync", {}).get("save_steps", 0))
+    checkpoint_dir = str(config.get("weight_sync", {}).get("checkpoint_dir", "checkpoints/grpo"))
+
+    grad_accum_steps = int(config.get("grad_accum_steps", 1))
+    use_prefetch = bool(config.get("prefetch_rollouts", False))
+    logger.info(
+        "Starting MLX GRPO training for %s epochs (grad_accum_steps=%d, prefetch=%s)",
+        total_epochs, grad_accum_steps, use_prefetch,
+    )
+    rollout_step = 0
+
+    for epoch in range(total_epochs):
+        epoch_batches = list(
+            iterate_batches(
+                train_examples,
+                batch_size=config["batch_size"],
+                shuffle=True,
+                seed=base_seed + epoch,
+            )
+        )
+        epoch_bar = tqdm(
+            epoch_batches,
+            desc=f"epoch {epoch + 1}/{total_epochs}",
+            leave=True,
+        )
+
+        total_steps_in_epoch = len(epoch_batches)
+
+        prefetcher = RolloutPrefetcher(config) if use_prefetch else None
+        if prefetcher and epoch_batches:
+            prefetcher.submit(*epoch_batches[0], step=rollout_step + 1)
+            logger.info("Prefetcher armed for epoch %d step 0.", epoch + 1)
+
+        for step_in_epoch, (prompts, true_answers) in enumerate(epoch_bar, start=0):
+            current_rollout_step = rollout_step + 1
+            rollout_step = current_rollout_step
+            # Collect prefetched rollouts (blocks only on cold-start or very fast compute)
+            pre = prefetcher.get() if prefetcher else None
+            # Immediately arm next step — runs concurrently with all compute below
+            next_idx = step_in_epoch + 1
+            if prefetcher and next_idx < total_steps_in_epoch:
+                prefetcher.submit(*epoch_batches[next_idx], step=current_rollout_step + 1)
+
+            # Subdivide this batch into micro-batches for gradient accumulation
+            num_prompts = len(prompts)
+            micro_batch_size = max(1, num_prompts // grad_accum_steps)
+
+            accum_grads = None
+            accum_metrics: List[Dict[str, float]] = []
+            valid_micro_batches = 0
+
+            # Process each micro-batch and accumulate gradients
+            micro_idx = 0
+            for micro_step in range(0, num_prompts, micro_batch_size):
+                micro_idx += 1
+                end_idx = min(micro_step + micro_batch_size, num_prompts)
+                micro_prompts = prompts[micro_step:end_idx]
+                micro_answers = true_answers[micro_step:end_idx]
+
+                logger.info(
+                        "\nstep %d — micro-batch %d/%d processing prompts...",
+                        step_in_epoch, micro_idx, grad_accum_steps
+                    )
+
+                # Slice prefetched rollouts for exactly this micro-batch's prompts
+                micro_pre = None
+                micro_group_sizes = None
+                if pre is not None:
+                    texts: List[str] = []
+                    targets: List[str] = []
+                    questions: List[str] = []
+                    micro_group_sizes = []
+                    for (rollout_texts, true_answer), prompt in zip(pre[micro_step:end_idx], micro_prompts):
+                        micro_group_sizes.append(len(rollout_texts))
+                        texts.extend(rollout_texts)
+                        targets.extend([true_answer] * len(rollout_texts))
+                        questions.extend([prompt] * len(rollout_texts))
+                    if texts:
+                        micro_pre = (texts, targets, questions)
+                    else:
+                        micro_group_sizes = None
+
+                result = train_step(
+                    model=model,
+                    tokenizer=tokenizer,
+                    config=config,
+                    prompts=micro_prompts,
+                    true_answers=micro_answers,
+                    epoch_idx=epoch,
+                    step_in_epoch=step_in_epoch,
+                    total_steps_in_epoch=total_steps_in_epoch,
+                    ref_model=ref_model,
+                    dtype=dtype,
+                    device=device,
+                    device_stream=mx.default_stream(device),
+                    scaler=scaler,
+                    prefetched_rollouts=micro_pre,
+                    rollout_group_sizes=micro_group_sizes,
+                    step=current_rollout_step,
+                )
+                
+                if result is None:
+                    logger.info(
+                        "step %d — micro-batch %d/%d had no usable rollouts, skipping",
+                        step_in_epoch, micro_idx, grad_accum_steps,
+                    )
+                    continue
+                
+                micro_metrics, grads = result
+                valid_micro_batches += 1
+                
+                # Scale gradients before accumulating
+                accum_grads = grads if accum_grads is None else _add_grads(accum_grads, grads)
+                # Materialise accumulated grads to release the lazy addition graph
+                mx.eval(accum_grads)
+                accum_metrics.append(micro_metrics)
+            
+            # If no valid micro-batches produced gradients, skip optimizer step
+            if accum_grads is None:
+                logger.warning("step %d — no micro-batches produced valid rollouts, skipping step", step_in_epoch)
+                continue
+
+            if valid_micro_batches > 1:
+                accum_grads = _scale_grads(accum_grads, 1.0 / valid_micro_batches)
+                mx.eval(accum_grads)
+            
+            # --- Apply optimizer update after gradient accumulation ---
+            max_grad_norm = float(config.get("max_grad_norm") or 0)
+            clip_max = max_grad_norm if max_grad_norm > 0 else float("inf")
+
+            step_grads = accum_grads
+            found_inf = False
+            if scaler is not None and scaler.enabled:
+                step_grads = scaler.unscale(step_grads)
+                found_inf = scaler.has_inf_nan(step_grads)
+
+            skipped_update = False
+            if found_inf:
+                skipped_update = True
+                grad_norm = float("nan")
+                scaler.update(found_inf=True)
+                logger.warning("step %d — AMP overflow detected, skipping optimizer update", step_in_epoch)
+            else:
+                step_grads, grad_norm_t = optim.clip_grad_norm(step_grads, clip_max)
+                mx.eval(grad_norm_t)
+                grad_norm = float(grad_norm_t)
+                optimizer.update(model, step_grads)
+                if scaler is not None and scaler.enabled:
+                    scaler.update(found_inf=False)
+                mx.eval(model.parameters(), optimizer.state)
+
+            global_step += 1
+            metrics = {
+                k: sum(m[k] for m in accum_metrics) / len(accum_metrics)
+                for k in accum_metrics[0]
+                if not isinstance(accum_metrics[0][k], dict)
+            }
+            # -------------------------------------------------------
+
+            # Periodically save the policy weights and reload vLLM workers so
+            # rollouts always come from the most recent policy.
+            if (not skipped_update) and save_steps > 0 and global_step % save_steps == 0:
+                logger.info("[weight_sync] Step %d — saving and syncing weights ...", global_step)
+                try:
+                    weights_dir = save_policy_weights(model, checkpoint_dir, global_step)
+                    sync_and_reload_workers(weights_dir, config, model_config)
+                    logger.info("[weight_sync] Step %d — workers reloaded.", global_step)
+                    # Discard stale prefetched rollouts (generated by old weights) and re-arm
+                    if prefetcher and next_idx < total_steps_in_epoch:
+                        prefetcher.flush()
+                        prefetcher.submit(*epoch_batches[next_idx], step=current_rollout_step + 1)
+                        logger.info("[weight_sync] Prefetcher re-armed for step %d.", next_idx)
+                except Exception as sync_exc:  # noqa: BLE001
+                    logger.error(
+                        "[weight_sync] Step %d — sync failed (training continues): %s",
+                        global_step, sync_exc,
+                    )
+
+            epoch_bar.set_postfix(
+                epoch=epoch + 1,
+                step=global_step,
+                loss=f"{metrics['loss']:.4f}",
+                grad_norm=f"{grad_norm:.4f}",
+                amp_scale=f"{(scaler.get_scale() if scaler else 1.0):.0f}",
+                skipped=int(skipped_update),
+            )
+            wandb.log(
+                {
+                    "train/loss":             metrics["loss"],
+                    "rewards/reward_mean":      metrics["reward"],
+                    "rewards/reward_std":       metrics.get("reward_std", 0),
+                    "rewards/reward_min":       metrics.get("reward_min", 0),
+                    "rewards/reward_max":       metrics.get("reward_max", 0),
+                    "rewards/answer_reward_mean": metrics.get("answer_reward_mean", 0),
+                    "rewards/answer_reward_std":  metrics.get("answer_reward_std",  0),
+                    "rewards/answer_reward_min":  metrics.get("answer_reward_min",  0),
+                    "rewards/answer_reward_max":  metrics.get("answer_reward_max",  0),
+                    "rewards/formatted_reward_mean": metrics.get("formatted_reward_mean", 0),
+                    "rewards/formatted_reward_std":  metrics.get("formatted_reward_std",  0),
+                    "rewards/formatted_reward_min":  metrics.get("formatted_reward_min", 0),
+                    "advantage/advantage_mean":   metrics.get("advantage_mean", 0),
+                    "advantage/advantage_std":    metrics.get("advantage_std", 0),
+                    "rollouts/generation_token_len_min": metrics.get("generation_token_len_min", 0),
+                    "rollouts/generation_token_len_mean": metrics.get("generation_token_len_mean", 0),
+                    "rollouts/generation_token_len_max":  metrics.get("generation_token_len_max", 0),
+                    "kl/ratio_mean":       metrics.get("ratio_mean", 0),
+                    "kl/clip_frac":        metrics.get("clip_frac", 0),
+                    "kl/kl_mean":          metrics.get("kl_mean", 0),
+                    "train/grad_norm":        grad_norm,
+                    "train/amp_scale":        scaler.get_scale() if scaler else 1.0,
+                    "train/amp_skipped_step": float(skipped_update),
+                    "rollouts/num_rollouts":     metrics["num_rollouts"],
+                    "train/epoch":            epoch + 1,
+                    "train/step":             global_step,
+                },
+                step=global_step,
+            )
+
+            if config.get("do_eval", False) and global_step % val_steps == 0:
+                val_metrics = validate(
+                    model=model,
+                    config=config,
+                    val_examples=val_examples,
+                    tokenizer=tokenizer,
+                    global_step=global_step,
+                    ref_model=ref_model,
+                    dtype=dtype,
+                    device=device,
+                )
+                wandb.log(val_metrics, step=global_step)
+
+        epoch_bar.close()
+
+    # Save final checkpoint after all epochs complete
+    logger.info("[checkpoint] Training complete — saving final weights (step_%d) ...", global_step)
+    save_policy_weights(model, checkpoint_dir, global_step)
+    logger.info("[checkpoint] Final checkpoint saved at step_%d.", global_step)
+
+
+def main() -> None:
+    
+    for _log in [_answers_log_path, _debug_dir / "vllm_rollouts.jsonl"]:
+        _log.write_text("", encoding="utf-8")
+    
+    
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger().setLevel(logging.INFO)
+
+    if mx.metal.is_available():
+        mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
+
+    seed = int(grpo_config.get("seed", 42))
+    np.random.seed(seed)
+    mx.random.seed(seed)
+
+    # Resolve device from config and set as MLX global default
+    device = get_mlx_device(grpo_config)
+    mx.set_default_device(device)
+    logger.info("Device: %s", grpo_config.get("device", "cpu").upper())
+
+    dtype = get_dtype_from_config(grpo_config)
+    logger.info("Using dtype: %s", dtype)
+
+    model, ref_model, tokenizer = load_model(dtype, grpo_config, model_config)
+    train_examples, val_examples = build_train_val_examples(grpo_config["data"], tokenizer=tokenizer)
+
+    # Save step_0 checkpoint — initial (pre-training) weights for baseline comparison
+    _ckpt_dir = str(grpo_config.get("weight_sync", {}).get("checkpoint_dir", "checkpoints/grpo"))
+    logger.info("[checkpoint] Saving initial weights as step_0 ...")
+    save_policy_weights(model, _ckpt_dir, 0)
+    logger.info("[checkpoint] step_0 checkpoint saved.")
+    _lora_active = apply_lora_if_quantized(model, grpo_config)
+    optimizer_name = grpo_config.get("optimizer", "adam").lower()
+    amp_enabled = bool(grpo_config.get("amp", False))
+    if optimizer_name == "sgd":
+        if amp_enabled:
+            logger.warning("AMP is not supported with SGD — disabling AMP")
+            amp_enabled = False
+        scaler = GradScaler(enabled=False)
+        optimizer = optim.SGD(learning_rate=float(grpo_config["learning_rate"]))
+        logger.info("Optimizer: SGD (lr=%.6f)", float(grpo_config["learning_rate"]))
+    else:
+        scaler = GradScaler(
+            init_scale=float(grpo_config.get("amp_init_scale", 2 ** 15)),
+            growth_interval=int(grpo_config.get("amp_growth_interval", 2000)),
+            enabled=amp_enabled,
+        )
+        master_weights_enabled = _lora_active and bool(grpo_config.get("amp_master_weights", amp_enabled))
+        optimizer = MasterWeightAdamW(
+            model=model,
+            learning_rate=float(grpo_config["learning_rate"]),
+            enabled=master_weights_enabled,
+        )
+        logger.info(
+            "Optimizer: AdamW (lr=%.6f, amp=%s, master_weights=%s)",
+            float(grpo_config["learning_rate"]), amp_enabled, master_weights_enabled,
+        )
+
+    wandb.init(
+        project=grpo_config.get("wandb_project", "smolcluster-grpo"),
+        config={
+            **grpo_config,
+            "backend": "mlx",
+            "hf_model_name": model_config["dp"]["hf_model_name"],
+        },
+    )
+
+    try:
+        train(
+            model=model,
+            config=grpo_config,
+            train_examples=train_examples,
+            val_examples=val_examples,
+            optimizer=optimizer,
+            tokenizer=tokenizer,
+            ref_model=ref_model,
+            dtype=dtype,
+            device=device,
+            scaler=scaler,
+        )
+    finally:
+        wandb.finish()
+
+
+if __name__ == "__main__":
+    main()

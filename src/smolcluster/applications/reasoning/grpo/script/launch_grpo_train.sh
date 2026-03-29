@@ -2,8 +2,8 @@
 
 # GRPO training launcher with preflight checks and vLLM worker health checks.
 # Usage:
-#   ./scripts/training/launch_grpo_train.sh
-#   ./scripts/training/launch_grpo_train.sh --dry-run
+#   ./scripts/training/launch_grpo_train.sh [gsm8k|summarization]
+#   ./scripts/training/launch_grpo_train.sh --dry-run [gsm8k|summarization]
 #   ./scripts/training/launch_grpo_train.sh --cleanup
 
 set -euo pipefail
@@ -43,6 +43,7 @@ VLLM_TMUX_SESSION="vllm_worker"
 
 DRY_RUN=false
 CLEANUP=false
+TRAIN_TARGET="gsm8k"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,10 +56,19 @@ while [[ $# -gt 0 ]]; do
             echo "  --dry-run    Print commands without executing"
             echo "  --cleanup    Kill the grpo_train tmux session and all vLLM worker processes"
             echo "  --help, -h   Show help"
+            echo ""
+            echo "Training targets:"
+            echo "  gsm8k"
+            echo "  summarization"
             exit 0
             ;;
+        gsm8k|summarization)
+            TRAIN_TARGET="$1"
+            shift
+            ;;
         *)
-            echo "Error: Unknown option: $1"
+            echo "Error: Unknown option or training target: $1"
+            echo "Valid targets: gsm8k, summarization"
             echo "Run with --help for usage"
             exit 1
             ;;
@@ -364,8 +374,13 @@ fi
 # Start training
 # ---------------------------------------------------------------------------
 
-TRAIN_SCRIPT="$PROJECT_DIR/src/smolcluster/applications/reasoning/grpo/train.py"
+TRAIN_SCRIPT="$PROJECT_DIR/src/smolcluster/applications/reasoning/grpo/train_${TRAIN_TARGET}.py"
 VENV_ACTIVATE="$PROJECT_DIR/.venv/bin/activate"
+
+if [[ ! -f "$TRAIN_SCRIPT" ]]; then
+    echo "Error: training script not found: $TRAIN_SCRIPT"
+    exit 1
+fi
 
 if [[ ! -f "$VENV_ACTIVATE" ]]; then
     echo "Error: .venv not found at $PROJECT_DIR/.venv"
@@ -390,7 +405,7 @@ TRAIN_CMD="source \"$VENV_ACTIVATE\" && ${HF_ENV_SETUP}python \"$TRAIN_SCRIPT\""
 TMUX_CMD="bash -lc '$TRAIN_CMD; status=\$?; echo; echo Training exited with status \$status.; echo Session kept open for inspection.; exec bash -i'"
 
 echo ""
-echo "Launching GRPO training ($SERVER_HOST) ..."
+echo "Launching GRPO training ($SERVER_HOST, target=$TRAIN_TARGET) ..."
 if [[ "$DRY_RUN" == "true" ]]; then
     echo "Dry run command: tmux new -d -s $SESSION_NAME \"$TMUX_CMD\""
 else

@@ -132,21 +132,15 @@ def _add_grads(acc: Any, new: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 def parse_answer(text: str) -> Any:
-    matches = re.findall(r"<answer>\s*([-+]?\d*\.?\d+)\s*<\/answer>", text, flags=re.IGNORECASE)
-   
-    # matches = re.findall(r"<summary>(.*?)</summary>", text, re.DOTALL)
-
+    
+    matches = re.findall(
+    r"<answer>.*?([-+]?\d*\.?\d+).*?</answer>",
+    text,
+    flags=re.IGNORECASE | re.DOTALL
+)
     
     if matches:
         return float(matches[-1])
-
-    final_answer_match = re.findall(
-        r"final\s+answer[^\d\-\+]*([-+]?\d*\.?\d+)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if final_answer_match:
-        return float(final_answer_match[-1])
 
     return float("nan")
 
