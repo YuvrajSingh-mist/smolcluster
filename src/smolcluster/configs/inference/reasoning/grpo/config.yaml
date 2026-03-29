@@ -16,19 +16,24 @@ max_grad_norm: 1.0    # gradient clipping threshold (0 or null to disable)
 amp: false
 amp_init_scale: 32768   # initial loss scale (2^15)
 amp_growth_interval: 2000  # double scale every N clean steps
-amp_master_weights: true   # maintain/update FP32 master params, then cast back to model dtype
+amp_master_weights: false   # maintain/update FP32 master params, then cast back to model dtype
 optimizer: "adam"      # "adam" (AdamW + optional AMP) or "sgd" (plain SGD, AMP ignored)
-learning_rate: 0.00002   # LoRA LR: 1e-4 is standard (100× higher than full-param fine-tuning)
+learning_rate: 0.000002   # LoRA LR: 1e-4 is standard (100× higher than full-param fine-tuning)
 num_epochs: 1
-batch_size: 8
+batch_size: 2
 grad_accum_steps: 1    # accumulate gradients over N micro-batches before each optimizer step (1 = disabled)
+do_eval: false         # set true to run validation every val_steps
 val_steps: 200
 grad_checkpoint: true
-grad_chunk_size: 4      # Process this many rollouts at a time during backward (reduces peak vocab-dim tensor size)
+grad_chunk_size: 1      # Prompts per outer backward chunk (T=2, so 2 outer iterations)
+rollout_grad_chunk: 2   # Rollouts per inner backward chunk — each nn.value_and_grad sees chunk_T×rollout_grad_chunk sequences
 reward_workers: 8       # Number of threads for parallel reward computation (null = auto)
 prefetch_rollouts: true  # fetch next step's rollouts in background during compute (grad_accum_steps=1 only)
 
-# LoRA adapters for quantized models (applied automatically when model has uint32 weights)
+# LoRA adapters — applied when model has uint32 (4-bit) weights, or force_lora=true.
+# For a bf16 0.5B model: force_lora=true cuts trainable params 494M→~2.8M,
+# reducing gradient+optimizer memory from ~5 GB to ~24 MB.
+force_lora: false
 lora_rank: 16          # rank 16: enough capacity for arithmetic reasoning, not too heavy
 lora_scale: 4.0        # scale=4.0 (conservative for RL; full SFT typically uses 8-20)
 lora_dropout: 0.0      # no dropout — GRPO gradients are already noisy
@@ -43,8 +48,8 @@ data:
 
 # Rollout generation
 max_input_tokens: 512
-max_output_tokens: 128
-num_rollouts: 8  # 8 rollouts: halves GRPO gradient variance vs 4 (more stable reward signal)
+max_output_tokens: 64
+num_rollouts: 4  # for each worker
 vllm: true  # Whether to use vLLM for rollout generation (if false, uses HF Transformers)
 
 # Used when `vllm: true`: the training server sends rollout requests to worker-node vLLM servers.
@@ -67,13 +72,17 @@ weight_sync:
   remote_weights_filename: "model.safetensors"  # weights file to overwrite
 
   # Command used to (re)start vLLM on each worker.
-  # Placeholders: {model_dir}, {port}, {rank}, {vllm_activate}
+  # Placeholders: {model_dir}, {port}, {rank}, {vllm_activate}, {max_model_len}
   # --adapter-path is injected automatically when LoRA adapters are present.
+  # max-model-len = 2 * max_input_tokens (512 * 2 = 1024). Update if max_input_tokens changes.
+  # Note: {model_dir}, {port}, {rank}, {vllm_activate} are substituted by worker_sync.py at runtime.
   vllm_start_cmd: >-
     tmux kill-session -t vllm_worker 2>/dev/null || true;
     tmux new-session -d -s vllm_worker
     "bash -c 'source {vllm_activate} && vllm serve {model_dir} --port {port}
-    --dtype bfloat16 --trust-remote-code --enable-prefix-caching 2>&1 | tee /tmp/vllm_{rank}.log; exec bash'"
+    --dtype bfloat16 --trust-remote-code --enable-prefix-caching
+    --max-model-len 1024
+    --gpu-memory-utilization 0.8 2>&1 | tee /tmp/vllm_{rank}.log; exec bash'"
 
   health_retries: 30                # polling attempts before giving up
   health_interval: 5                # seconds between each health check

@@ -29,6 +29,7 @@ dependencies = [
     "redis>=5.0.0",
     "mlx-lm",
     "mlx",
+    "rouge-score>=0.1.2",
     "zeroconf>=0.132.0",
 ]
 

@@ -56,7 +56,9 @@ _DEFAULT_VLLM_START_CMD = (
     "tmux kill-session -t vllm_worker 2>/dev/null || true; "
     "tmux new-session -d -s vllm_worker "
     "\"bash -c 'source {vllm_activate} && vllm serve {model_dir} --port {port} "
-    "--trust-remote-code --enable-prefix-caching 2>&1 | tee /tmp/vllm_{rank}.log; exec bash'\""
+    "--dtype bfloat16 --trust-remote-code --enable-prefix-caching "
+    "--max-model-len {max_model_len} --gpu-memory-utilization 0.8 "
+    "2>&1 | tee /tmp/vllm_{rank}.log; exec bash'\""
 )
 
 
@@ -280,6 +282,7 @@ def _sync_single_worker(
     sync_cfg: Dict[str, Any],
     vllm_cluster: Dict[str, Any],
     local_model_dir: Path = None,
+    max_model_len: int = 1024,
 ) -> None:
     remote_model_dir = _resolve_remote_path(hostname, sync_cfg["remote_model_dir"])
     remote_weights_filename = sync_cfg.get("remote_weights_filename", "model.safetensors")
@@ -298,6 +301,7 @@ def _sync_single_worker(
         port=port,
         rank=rank,
         vllm_activate=vllm_activate,
+        max_model_len=max_model_len,
     )
     if is_lora:
         # Inject --adapter-path before the output redirect so it lands inside
@@ -399,6 +403,7 @@ def sync_and_reload_workers(
     """
     sync_cfg = grpo_config.get("weight_sync", {})
     vllm_cluster = grpo_config["vllm_cluster"]
+    max_model_len = 2 * int(grpo_config.get("max_input_tokens", 512))
     # host_ip, workers, and per-node user all come from cluster_config_inference.yaml
     host_ip_map = _cluster_cfg["host_ip"]
     num_workers = int(_cluster_cfg["num_workers"])
@@ -427,7 +432,7 @@ def sync_and_reload_workers(
         hostname = worker["hostname"]
         ip = host_ip_map[hostname]
         try:
-            _sync_single_worker(rank, hostname, ip, local_weights_dir, sync_cfg, vllm_cluster, local_model_dir)
+            _sync_single_worker(rank, hostname, ip, local_weights_dir, sync_cfg, vllm_cluster, local_model_dir, max_model_len)
         except Exception as exc:  # noqa: BLE001
             with errors_lock:
                 errors[rank] = exc

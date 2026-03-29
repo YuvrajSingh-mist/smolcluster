@@ -23,7 +23,8 @@ from smolcluster.applications.reasoning.grpo.data.grpo_data import build_train_v
 from smolcluster.applications.reasoning.grpo.amp import GradScaler, MasterWeightAdamW
 from smolcluster.applications.reasoning.grpo.rewards import (
     calculate_answer_reward,
-    calculate_length_reward
+    calculate_summary_quality,
+    calculate_length_reward,
 )
 from smolcluster.applications.reasoning.grpo.rollouts import build_batched_rollout_texts, build_rollouts_per_prompt
 from smolcluster.applications.reasoning.grpo.utils import (
@@ -133,31 +134,40 @@ def compute_grpo_loss(
     curr_logprobs: mx.array,
     advantages: mx.array,
     config: Dict[str, Any],
+    old_logprobs: Optional[mx.array] = None,
     ref_logprobs: Optional[mx.array] = None,
 ) -> mx.array:
     """GRPO macro-averaged loss.
 
     Args:
-        curr_logprobs: [T, C] — log-probs for each rollout
+        curr_logprobs: [T, C] — log-probs under the current (training) policy
         advantages:    [T, C] — per-group z-score advantages
-        ref_logprobs:  [T, C] or None
+        old_logprobs:  [T, C] — log-probs under the policy that generated the
+                                rollouts (pre-gradient snapshot); used for the
+                                PPO importance-sampling ratio and clip.
+                                If None, falls back to plain policy gradient.
+        ref_logprobs:  [T, C] — log-probs under the frozen reference model;
+                                used only for the KL penalty (use_kl=True).
+                                Independent of old_logprobs.
     Returns:
         scalar loss
     """
-    if ref_logprobs is not None and config.get("use_kl", True):
-        logprobs_ratio = mx.exp(curr_logprobs - ref_logprobs)   # [T, C]
+    if old_logprobs is not None:
+        logprobs_ratio = mx.exp(curr_logprobs - old_logprobs)   # [T, C]
         clipped_ratio = mx.clip(
             logprobs_ratio,
             1 - config["clip_ratio"],
             1 + config["clip_ratio"],
         )
-        kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
-        per_rollout = (
-            mx.minimum(logprobs_ratio * advantages, clipped_ratio * advantages)
-            - config["kl_beta"] * kl
+        per_rollout = mx.minimum(
+            logprobs_ratio * advantages, clipped_ratio * advantages
         )                                                        # [T, C]
     else:
-        per_rollout = advantages * curr_logprobs                 # [T, C]
+        per_rollout = advantages * curr_logprobs                 # [T, C] — plain PG fallback
+
+    if ref_logprobs is not None and config.get("use_kl", True):
+        kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
+        per_rollout = per_rollout - config["kl_beta"] * kl      # [T, C]
 
     per_group = mx.mean(per_rollout, axis=1)                     # [T] — mean within each prompt's group
     return -mx.mean(per_group)                                   # scalar — macro-average across prompts
@@ -169,28 +179,36 @@ def compute_logprobs(
     attention_mask: mx.array,
     dtype: type = mx.float32,
     use_checkpoint: bool = False,
+    completion_mask: Optional[mx.array] = None,
 ) -> mx.array:
-    """Compute per-sequence mean log-probs.
+    """Compute per-sequence mean log-probs over completion tokens.
 
     Args:
-        input_ids:      [T, C, D] — T prompts, C rollouts, D tokens
-        attention_mask: [T, C, D]
+        input_ids:       [T, C, D] — T prompts, C rollouts, D tokens (prompt+completion)
+        attention_mask:  [T, C, D] — 1 for real tokens, 0 for padding
+        completion_mask: [T, C, D] — 1 only for completion tokens (0 for prompt + padding).
+                         When provided, the mean is taken only over completion tokens,
+                         giving p(completion | prompt). When None, averages over all tokens.
     Returns:
         [T, C] — mean log-prob for each rollout
     """
     T, C, D = input_ids.shape
-    # Flatten to [T*C, D] for an efficient batched model forward pass.
-    flat_ids  = input_ids.reshape(T * C, D)
-    flat_mask = attention_mask.reshape(T * C, D)
+    N = T * C
+    flat_ids  = input_ids.reshape(N, D)
+    flat_mask = attention_mask.reshape(N, D)
 
-    shift_mask = flat_mask[:, 1:]
+    # Score only completion tokens when mask is provided; fall back to all real tokens.
+    score_flat = completion_mask.reshape(N, D) if completion_mask is not None else flat_mask
+    shift_mask = score_flat[:, 1:]
 
     def _forward(ids: mx.array) -> mx.array:
         logits = model(ids)
         shift_logits = logits[:, :-1, :]
         shift_labels = ids[:, 1:]
-        log_probs = nn.log_softmax(shift_logits, axis=-1)
-        return mx.take_along_axis(log_probs, shift_labels[..., None], axis=-1).squeeze(-1)
+        # logsumexp trick: avoids materializing [N, D, vocab] log_softmax tensor
+        target_logit = mx.take_along_axis(shift_logits, shift_labels[..., None], axis=-1).squeeze(-1)
+        log_z = mx.logsumexp(shift_logits, axis=-1)
+        return target_logit - log_z
 
     if use_checkpoint:
         token_logprobs = mlx_grad_checkpoint(model, _forward)(flat_ids)
@@ -203,22 +221,48 @@ def compute_logprobs(
     return flat_result.reshape(T, C)                             # [T, C]
 
 
+def _build_completion_mask(
+    tokenizer: Any,
+    rollout_questions: List[str],
+    flat_mask: mx.array,
+    T: int,
+    C: int,
+) -> mx.array:
+    """Return [T*C, D] mask that is 1 only for completion tokens (not prompt, not padding).
+
+    Encodes each unique prompt to find where the prompt ends in the tokenized
+    prompt+completion sequence, then zeros out those prefix positions.
+    """
+    hf_tok = getattr(tokenizer, "_tokenizer", tokenizer)
+    prompt_lens_flat: List[int] = []
+    for i in range(T):
+        p_len = len(hf_tok.encode(rollout_questions[i * C], add_special_tokens=False))
+        prompt_lens_flat.extend([p_len] * C)
+
+    D = flat_mask.shape[1]
+    p_lens = mx.array(prompt_lens_flat, dtype=mx.int32)   # [T*C]
+    positions = mx.arange(D, dtype=mx.int32)               # [D]
+    # 1 where position >= prompt_len (completion token) AND token is not padding
+    comp_mask = (positions[None, :] >= p_lens[:, None]).astype(mx.int32) * flat_mask
+    mx.eval(comp_mask)
+    return comp_mask
+
+
 def _compute_single_reward(
-    args: Tuple[int, str, str, str],
+    args: Tuple[int, str, str, str, int],
 ) -> Tuple[int, float, dict]:
-    idx, question, generated_text, max_output_length = args
-    # predicted_answer = parse_answer(generated_text)
-    answer_reward = calculate_length_reward(generated_text, max_output_length)
-    # format_reward = calculate_formatted_reward(generated_text)
-    total_reward = float(answer_reward)
+    idx, question, generated_text, true_answer, max_output_tokens = args
+    quality_reward = calculate_summary_quality(generated_text, true_answer)
+    length_penalty = calculate_length_reward(generated_text, max_output_tokens)
+    total_reward = float(quality_reward + 2 * length_penalty)
     log_record = {
-        "rollout_idx":      idx,
-        "question":         question,
-        # "extracted_answer": str(predicted_answer),
-        "answer_reward":    float(answer_reward),
-        # "format_reward":    float(format_reward),
-        "total_reward":     total_reward,
-        "generated_text":   generated_text,
+        "rollout_idx":    idx,
+        "question":       question,
+        "quality_reward": float(quality_reward),
+        "length_penalty": float(2 * length_penalty),
+        "total_reward":   total_reward,
+        "generated_text": generated_text,
+        "true_answer":    true_answer,
     }
     return idx, total_reward, log_record
 
@@ -232,17 +276,17 @@ def compute_rewards(
     max_workers: Optional[int] = None,
     step: Optional[int] = None,
     rollout_questions: Optional[List[str]] = None,
-) -> mx.array:
+) -> Tuple[mx.array, Dict[str, List[float]]]:
+    """Returns (reward_tensor [T*C], components) where components has per-rollout
+    lists for each reward term (quality_reward, length_penalty, total_reward)."""
     questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
     indexed_args = [
-        (i, q, text, max_output_tokens)
-        for i, (q, text) in enumerate(zip(questions, rollout_texts))
+        (i, q, text, target, max_output_tokens)
+        for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
     ]
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # map() preserves submission order → results[i] == rollout_texts[i]
         results = list(executor.map(_compute_single_reward, indexed_args))
-    # All threads joined here (shutdown(wait=True) called by context manager)
 
     reward_values: List[float] = []
     log_records: List[dict] = []
@@ -252,9 +296,14 @@ def compute_rewards(
 
     _append_answers_log({"step": step, "rollouts": log_records})
 
-    # Move reward tensor to the configured device
+    components: Dict[str, List[float]] = {
+        "quality_reward": [r["quality_reward"] for r in log_records],
+        "length_penalty": [r["length_penalty"] for r in log_records],
+        "total_reward":   [r["total_reward"]   for r in log_records],
+    }
+
     with mx.stream(mx.default_stream(device)):
-        return mx.array(reward_values, dtype=dtype)
+        return mx.array(reward_values, dtype=dtype), components
 
 
 def evaluate_batch(
@@ -268,15 +317,14 @@ def evaluate_batch(
     device: mx.Device = mx.cpu,
     step: Optional[int] = None,
 ) -> Optional[Dict[str, float]]:
-    num_rollouts = int(config["num_rollouts"])
-
     per_prompt_raw = build_rollouts_per_prompt(prompts, true_answers, config, step=step)
-    per_prompt = filter_to_uniform_groups(per_prompt_raw, num_rollouts)
+    effective_rollouts = len(per_prompt_raw[0][0]) if per_prompt_raw and per_prompt_raw[0][0] else int(config["num_rollouts"])
+    per_prompt = filter_to_uniform_groups(per_prompt_raw, effective_rollouts)
     if not per_prompt:
         return None
 
     T = len(per_prompt)
-    C = num_rollouts
+    C = effective_rollouts
     rollout_texts: List[str] = []
     rollout_targets: List[str] = []
     rollout_questions: List[str] = []
@@ -285,14 +333,21 @@ def evaluate_batch(
         rollout_targets.extend([ans] * C)
         rollout_questions.extend([prompt] * C)
 
-    flat_ids, flat_mask = tokenize_rollouts(tokenizer, rollout_texts, config["max_tokens"], device=device)
+    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts)]
+    flat_ids, flat_mask = tokenize_rollouts(tokenizer, full_texts, config["max_input_tokens"], device=device)
     D = flat_ids.shape[1]
     input_ids      = flat_ids.reshape(T, C, D)   # [T, C, D]
     attention_mask = flat_mask.reshape(T, C, D)
+    completion_mask = _build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
 
-    curr_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype)  # [T, C]
+    model.eval()
+    old_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+    mx.eval(old_logprobs)
+    model.train()
 
-    rewards_flat = compute_rewards(
+    curr_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+
+    rewards_flat, reward_components = compute_rewards(
         rollout_texts,
         rollout_targets,
         dtype=dtype,
@@ -307,9 +362,12 @@ def evaluate_batch(
 
     ref_logprobs: Optional[mx.array] = None
     if ref_model is not None and config.get("use_kl", True):
-        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype)  # [T, C]
+        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
 
-    loss = compute_grpo_loss(curr_logprobs, advantages, config, ref_logprobs=ref_logprobs)
+    loss = compute_grpo_loss(
+        curr_logprobs, advantages, config,
+        old_logprobs=old_logprobs, ref_logprobs=ref_logprobs,
+    )
     mx.eval(loss, rewards)
 
     return {
@@ -395,14 +453,18 @@ def train_step(
         per_prompt_raw = build_rollouts_per_prompt(prompts, true_answers, config, step=step)
         logger.info("%s [TIMING] rollout_gen: %.1fs", step_tag, time.time() - _t0)
 
-    # Enforce uniform C: drop prompts that didn't get exactly num_rollouts completions.
-    per_prompt = filter_to_uniform_groups(per_prompt_raw, num_rollouts)
+    # Infer effective C from actual data: num_rollouts_per_worker × num_workers.
+    # config["num_rollouts"] is per-worker; each prompt receives that many from EACH worker.
+    effective_rollouts = len(per_prompt_raw[0][0]) if per_prompt_raw and per_prompt_raw[0][0] else num_rollouts
+
+    # Enforce uniform C: drop prompts that didn't get exactly effective_rollouts completions.
+    per_prompt = filter_to_uniform_groups(per_prompt_raw, effective_rollouts)
     if not per_prompt:
         logger.warning("%s No prompts with full rollouts after filtering, skipping step", step_tag)
         return None
 
     T = len(per_prompt)
-    C = num_rollouts
+    C = effective_rollouts
     rollout_texts: List[str] = []
     rollout_targets: List[str] = []
     rollout_questions: List[str] = []
@@ -412,16 +474,20 @@ def train_step(
         rollout_questions.extend([prompt] * C)
     logger.info("%s Got %d prompt(s) × %d rollouts = %d total", step_tag, T, C, T * C)
 
-    # Tokenize as [T*C, D] then reshape to [T, C, D]
-    flat_ids, flat_mask = tokenize_rollouts(tokenizer, rollout_texts, config["max_input_tokens"], device=device)
+    # Tokenize prompt+completion together so the model sees full context.
+    # completion_mask zeros out prompt positions so log-prob averaging is over
+    # generated tokens only, giving p(completion | prompt).
+    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts)]
+    flat_ids, flat_mask = tokenize_rollouts(tokenizer, full_texts, config["max_input_tokens"], device=device)
     D = flat_ids.shape[1]
     input_ids      = flat_ids.reshape(T, C, D)    # [T, C, D]
     attention_mask = flat_mask.reshape(T, C, D)   # [T, C, D]
-    logger.info("%s input_ids shape: %s", step_tag, list(input_ids.shape))
+    completion_mask = _build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
+    logger.info("%s input_ids shape: %s  (prompt+completion, D=%d)", step_tag, list(input_ids.shape), D)
     _log_mem("train_step: after tokenize_rollouts")
 
     logger.info("%s Computing rewards ...", step_tag)
-    rewards_flat = compute_rewards(
+    rewards_flat, reward_components = compute_rewards(
         rollout_texts,
         rollout_targets,
         dtype=dtype,
@@ -449,84 +515,115 @@ def train_step(
             rewards_std_value,
         )
 
-    # Compute reference logprobs for KL-penalised / ratio-clipped loss.
+    # old_logprobs: snapshot of the policy that generated the rollouts.
+    # Computed from current model weights (same weights vLLM was synced to)
+    # BEFORE any gradient update this step. model.eval() disables dropout,
+    # matching vLLM inference behaviour. No extra model copy needed.
+    logger.info("%s Computing old policy log-probs ...", step_tag)
+    model.eval()
+    old_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
+    mx.eval(old_logprobs)
+    model.train()
+
+    # ref_logprobs: frozen initial model, used only for KL penalty (use_kl=True).
     ref_logprobs: Optional[mx.array] = None
     if ref_model is not None and config.get("use_kl", True):
         logger.info("%s Computing reference model log-probs ...", step_tag)
-        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype)  # [T, C]
+        ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
         mx.eval(ref_logprobs)
 
     use_ckpt = config.get("grad_checkpoint", False)
-    # Chunk over T (prompts) to respect group boundaries.
+    # Chunk over T (prompts) and C (rollouts) so each backward sees only a small batch.
     chunk_T = int(config.get("grad_chunk_size", T))
+    rollout_chunk = int(config.get("rollout_grad_chunk", C))
 
     mx.reset_peak_memory()
     _log_mem("train_step: before grad computation (peak reset)")
-    logger.info("%s Computing GRPO loss and gradients (T=%d C=%d chunk_T=%d) ...", step_tag, T, C, chunk_T)
+    logger.info(
+        "%s Computing GRPO loss and gradients (T=%d C=%d chunk_T=%d rollout_chunk=%d) ...",
+        step_tag, T, C, chunk_T, rollout_chunk,
+    )
 
     accum_grads = None
     total_loss = 0.0
     _t_grad = time.time()
 
-    # Store logprobs for later metric computation (avoid recomputation)
-    curr_lps = [] if (ref_model is not None and config.get("use_kl", True)) else None
+    # Store curr_logprobs for ratio diagnostics (avoid recomputing after grad loop)
+    curr_lps: List[mx.array] = []
 
     for t_start in range(0, T, chunk_T):
         t_end = min(t_start + chunk_T, T)
-        # Scale so that accumulated sum of chunk losses = full-batch macro-average
-        chunk_scale = (t_end - t_start) / T
 
-        c_ids  = input_ids[t_start:t_end]       # [chunk_T, C, D]
-        c_mask = attention_mask[t_start:t_end]
-        c_adv  = advantages[t_start:t_end]       # [chunk_T, C]
-        c_ref  = ref_logprobs[t_start:t_end] if ref_logprobs is not None else None
+        for rc_start in range(0, C, rollout_chunk):
+            rc_end = min(rc_start + rollout_chunk, C)
+            # Scale: each chunk contributes (chunk_T × chunk_C) / (T × C) of the total loss.
+            # compute_grpo_loss computes mean over its T and C dims, so multiplying by
+            # chunk_scale converts that mean into the correct sum contribution: sum / (T*C).
+            chunk_scale = (t_end - t_start) * (rc_end - rc_start) / (T * C)
 
-        # Capture loop variables by value via default args to avoid closure bugs
-        def chunk_loss_fn(m, _ids=c_ids, _mask=c_mask,
-                          _adv=c_adv, _ref=c_ref, _curr_lps=curr_lps) -> mx.array:
-            lp = compute_logprobs(m, _ids, _mask, dtype=dtype, use_checkpoint=use_ckpt)  # [chunk_T, C]
-            if _curr_lps is not None:
-                _curr_lps.append(lp)
-            chunk_loss = compute_grpo_loss(lp, _adv, config, ref_logprobs=_ref) * chunk_scale
-            if scaler is not None:
-                return scaler.scale_loss(chunk_loss)
-            return chunk_loss
+            c_ids  = input_ids[t_start:t_end, rc_start:rc_end]       # [chunk_T, chunk_C, D]
+            c_mask = attention_mask[t_start:t_end, rc_start:rc_end]
+            c_comp = completion_mask[t_start:t_end, rc_start:rc_end]
+            c_adv  = advantages[t_start:t_end, rc_start:rc_end]       # [chunk_T, chunk_C]
+            c_old  = old_logprobs[t_start:t_end, rc_start:rc_end]     # [chunk_T, chunk_C]
+            c_ref  = ref_logprobs[t_start:t_end, rc_start:rc_end] if ref_logprobs is not None else None
 
-        chunk_loss, chunk_grads = nn.value_and_grad(model, chunk_loss_fn)(model)
-        with mx.stream(device_stream):
-            mx.eval(chunk_loss, chunk_grads)
-        _log_mem(f"train_step: chunk [{t_start}:{t_end}] after eval")
+            # Capture loop variables by value via default args to avoid closure bugs
+            def chunk_loss_fn(m, _ids=c_ids, _mask=c_mask, _comp=c_comp,
+                              _adv=c_adv, _old=c_old, _ref=c_ref) -> mx.array:
+                lp = compute_logprobs(m, _ids, _mask, dtype=dtype, use_checkpoint=use_ckpt, completion_mask=_comp)  # [chunk_T, chunk_C]
+                curr_lps.append(lp)
+                chunk_loss = compute_grpo_loss(
+                    lp, _adv, config, old_logprobs=_old, ref_logprobs=_ref
+                ) * chunk_scale
+                if scaler is not None:
+                    return scaler.scale_loss(chunk_loss)
+                return chunk_loss
 
-        chunk_loss_value = float(chunk_loss.item())
-        if scaler is not None and scaler.enabled:
-            chunk_loss_value /= scaler.get_scale()
-        total_loss += chunk_loss_value
-        if accum_grads is None:
-            accum_grads = chunk_grads
-        else:
-            accum_grads = _add_grads(accum_grads, chunk_grads)
+            chunk_loss, chunk_grads = nn.value_and_grad(model, chunk_loss_fn)(model)
             with mx.stream(device_stream):
-                mx.eval(accum_grads)
+                mx.eval(chunk_loss, chunk_grads)
+            _log_mem(f"train_step: chunk t[{t_start}:{t_end}] rc[{rc_start}:{rc_end}] after eval")
+
+            chunk_loss_value = float(chunk_loss.item())
+            if scaler is not None and scaler.enabled:
+                chunk_loss_value /= scaler.get_scale()
+            total_loss += chunk_loss_value
+            if accum_grads is None:
+                accum_grads = chunk_grads
+            else:
+                accum_grads = _add_grads(accum_grads, chunk_grads)
+                with mx.stream(device_stream):
+                    mx.eval(accum_grads)
 
     logger.info("%s Loss: %.6f  [TIMING] grad_loop: %.1fs", step_tag, total_loss, time.time() - _t_grad)
 
     # ---- extra diagnostics (no grad needed) --------------------------------
-    # attention_mask is [T, C, D]; sum over token dim to get per-rollout lengths [T, C]
-    lengths = mx.sum(attention_mask, axis=-1).astype(dtype)
+    # completion_mask is [T, C, D]; sum over token dim → per-rollout completion lengths [T, C]
+    lengths = mx.sum(completion_mask, axis=-1).astype(dtype)
+    qr = mx.array(reward_components["quality_reward"]) if reward_components else None
+    lp = mx.array(reward_components["length_penalty"]) if reward_components else None
     metrics_extra: Dict[str, float] = {
         "reward_std":       float(mx.std(rewards).item()),
         "reward_min":       float(mx.min(rewards).item()),
         "reward_max":       float(mx.max(rewards).item()),
         "advantage_mean":   float(mx.mean(advantages).item()),
         "advantage_std":    float(mx.std(advantages).item()),
-        "rollout_len_mean": float(mx.mean(lengths).item()),
-        "rollout_len_max":  float(mx.max(lengths).item()),
+        "generation_token_len_mean": float(mx.mean(lengths).item()),
+        "generation_token_len_min": float(mx.min(lengths).item()),
+        "generation_token_len_max":  float(mx.max(lengths).item()),
+        "quality_reward_mean": float(mx.mean(qr).item()) if qr is not None else 0,
+        "quality_reward_std":  float(mx.std(qr).item())  if qr is not None else 0,
+        "quality_reward_min":  float(mx.min(qr).item())  if qr is not None else 0,
+        "quality_reward_max":  float(mx.max(qr).item())  if qr is not None else 0,
+        "length_penalty_mean": float(mx.mean(lp).item()) if lp is not None else 0,
+        "length_penalty_min":  float(mx.min(lp).item())  if lp is not None else 0,
+        "length_penalty_max":  float(mx.max(lp).item())  if lp is not None else 0,
     }
-    if ref_logprobs is not None and config.get("use_kl", True):
-        # compute_ratio_stats expects flat [T*C] vectors
-        curr_lps_flat = mx.concatenate(curr_lps, axis=0).reshape(-1)   # [T*C]
-        ref_flat = ref_logprobs.reshape(-1)                             # [T*C]
-        metrics_extra.update(compute_ratio_stats(curr_lps_flat, ref_flat, config, dtype))
+    # Ratio stats: curr vs old policy (always available now)
+    curr_lps_flat = mx.concatenate([lp.reshape(-1) for lp in curr_lps])  # [T*C]
+    old_flat = old_logprobs.reshape(-1)                             # [T*C]
+    metrics_extra.update(compute_ratio_stats(curr_lps_flat, old_flat, config, dtype))
     # -------------------------------------------------------------------------
 
     return {
@@ -534,6 +631,7 @@ def train_step(
         "reward": float(mx.mean(rewards).item()),
         "num_rollouts": float(len(rollout_texts)),
         **metrics_extra,
+        "_reward_components": reward_components,
     }, accum_grads
 
 
@@ -764,7 +862,11 @@ def train(
                 mx.eval(model.parameters(), optimizer.state)
 
             global_step += 1
-            metrics = {k: sum(m[k] for m in accum_metrics) / len(accum_metrics) for k in accum_metrics[0]}
+            metrics = {
+                k: sum(m[k] for m in accum_metrics) / len(accum_metrics)
+                for k in accum_metrics[0]
+                if not isinstance(accum_metrics[0][k], dict)
+            }
             # -------------------------------------------------------
 
             # Periodically save the policy weights and reload vLLM workers so
@@ -801,10 +903,18 @@ def train(
                     "rewards/reward_std":       metrics.get("reward_std", 0),
                     "rewards/reward_min":       metrics.get("reward_min", 0),
                     "rewards/reward_max":       metrics.get("reward_max", 0),
+                    "rewards/quality_reward_mean": metrics.get("quality_reward_mean", 0),
+                    "rewards/quality_reward_std":  metrics.get("quality_reward_std",  0),
+                    "rewards/quality_reward_min":  metrics.get("quality_reward_min",  0),
+                    "rewards/quality_reward_max":  metrics.get("quality_reward_max",  0),
+                    "rewards/length_penalty_mean": metrics.get("length_penalty_mean", 0),
+                    "rewards/length_penalty_min":  metrics.get("length_penalty_min",  0),
+                    "rewards/length_penalty_max":  metrics.get("length_penalty_max",  0),
                     "advantage/advantage_mean":   metrics.get("advantage_mean", 0),
                     "advantage/advantage_std":    metrics.get("advantage_std", 0),
-                    "rollouts/rollout_len_mean": metrics.get("rollout_len_mean", 0),
-                    "rollouts/rollout_len_max":  metrics.get("rollout_len_max", 0),
+                    "rollouts/generation_token_len_min": metrics.get("generation_token_len_min", 0),
+                    "rollouts/generation_token_len_mean": metrics.get("generation_token_len_mean", 0),
+                    "rollouts/generation_token_len_max":  metrics.get("generation_token_len_max", 0),
                     "kl/ratio_mean":       metrics.get("ratio_mean", 0),
                     "kl/clip_frac":        metrics.get("clip_frac", 0),
                     "kl/kl_mean":          metrics.get("kl_mean", 0),
@@ -818,7 +928,7 @@ def train(
                 step=global_step,
             )
 
-            if global_step % val_steps == 0:
+            if config.get("do_eval", False) and global_step % val_steps == 0:
                 val_metrics = validate(
                     model=model,
                     config=config,
@@ -840,8 +950,8 @@ def main() -> None:
         _log.write_text("", encoding="utf-8")
     
     
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger().setLevel(logging.INFO)
 
     if mx.metal.is_available():
         mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
@@ -858,8 +968,8 @@ def main() -> None:
     dtype = get_dtype_from_config(grpo_config)
     logger.info("Using dtype: %s", dtype)
 
-    train_examples, val_examples = build_train_val_examples(grpo_config["data"])
     model, ref_model, tokenizer = load_model(dtype, grpo_config, model_config)
+    train_examples, val_examples = build_train_val_examples(grpo_config["data"], tokenizer=tokenizer)
     _lora_active = apply_lora_if_quantized(model, grpo_config)
     optimizer_name = grpo_config.get("optimizer", "adam").lower()
     amp_enabled = bool(grpo_config.get("amp", False))
@@ -876,12 +986,16 @@ def main() -> None:
             growth_interval=int(grpo_config.get("amp_growth_interval", 2000)),
             enabled=amp_enabled,
         )
+        master_weights_enabled = _lora_active and bool(grpo_config.get("amp_master_weights", amp_enabled))
         optimizer = MasterWeightAdamW(
             model=model,
             learning_rate=float(grpo_config["learning_rate"]),
-            enabled=bool(grpo_config.get("amp_master_weights", amp_enabled)),
+            enabled=master_weights_enabled,
         )
-        logger.info("Optimizer: AdamW (lr=%.6f, amp=%s)", float(grpo_config["learning_rate"]), amp_enabled)
+        logger.info(
+            "Optimizer: AdamW (lr=%.6f, amp=%s, master_weights=%s)",
+            float(grpo_config["learning_rate"]), amp_enabled, master_weights_enabled,
+        )
 
     wandb.init(
         project=grpo_config.get("wandb_project", "smolcluster-grpo"),
