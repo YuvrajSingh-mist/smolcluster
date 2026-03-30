@@ -9,6 +9,21 @@ This guide covers:
 
 ---
 
+## Choose Your Setup Path
+
+Use the path that matches your hardware before continuing:
+
+- **Mac Mini cluster (Thunderbolt direct-cable):** Start at [Initial Mac Mini Networking Setup](#initial-mac-mini-networking-setup)
+- **Jetson workers (home router / Ethernet):** Start at [Jetson Orin / Orin Nano Setup](#jetson-orin--orin-nano-setup)
+
+After completing the matching setup section, continue to:
+
+- [Automated Setup (recommended)](#automated-setup-recommended)
+- [Smoke Test 1 — SyncPS DP Inference](#smoke-test-1--syncps-dp-inference)
+- [Smoke Test 2 — SyncPS DP Training](#smoke-test-2--syncps-dp-training)
+
+---
+
 ## Requirements
 - 3x Mac Minis (I have used M4 2025) 
 - 3x Thunderbolt 4 cables (for direct node-to-node connectivity)
@@ -44,33 +59,30 @@ On each Mac:
 Gateway can be left empty for this private fabric.
 
 
-### 3. Configure SSH on `mini1` to reach workers by hostname
+### 3. Fill node inventory on `mini1`
 
-Add the following to `~/.ssh/config` on `mini1` so all launch scripts can use short hostnames:
-
-```
-Host mini1
-    HostName 10.10.0.1
-    User your_username
-    IdentityFile ~/.ssh/smolcluster_key
-
-Host mini2
-    HostName 10.10.0.2
-    User your_username
-    IdentityFile ~/.ssh/smolcluster_key
-
-Host mini3
-    HostName 10.10.0.3
-    User your_username
-    IdentityFile ~/.ssh/smolcluster_key
-```
-
-Replace `your_username` with the macOS user on each node (usually the same across all three). Confirm it works:
+`setup_ssh.sh` reads worker details from `~/.config/smolcluster/nodes.yaml`. Copy the template and fill it in:
 
 ```bash
-ssh mini2 "hostname && echo ok"
-ssh mini3 "hostname && echo ok"
+cp scripts/installations/nodes.yaml.example ~/.config/smolcluster/nodes.yaml
+${EDITOR:-nano} ~/.config/smolcluster/nodes.yaml
 ```
+
+For a Thunderbolt Mac Mini cluster the file should look like:
+
+```yaml
+nodes:
+  - alias: mini2
+    ip: 10.10.0.2
+    user: your_username
+  - alias: mini3
+    ip: 10.10.0.3
+    user: your_username
+```
+
+> **Home-network setup?** If your nodes are connected via a router and you don't know their IPs yet,
+> run `./scripts/installations/discover_network.sh` on each node first to find the interface name
+> and DHCP IP, then assign static IPs following `docs/setup_network.md`.
 
 ### 5. Verify interface and routes
 
@@ -92,6 +104,181 @@ Only continue to inference/training after ping and SSH are both stable.
 
 
 
+---
+
+## Jetson Orin / Orin Nano Setup
+
+> **Supported hardware**: Jetson AGX Orin, Orin NX, Orin Nano — all running **JetPack 6** (CUDA 12.6).
+> The original Jetson Nano (JetPack 4/5) is **not** supported by these scripts.
+
+These steps replace the "Initial Mac Mini Networking Setup" above when one or more workers are Jetsons connected via a home router (instead of Thunderbolt direct-cable).
+
+---
+
+### 1. On each Jetson worker — enable SSH
+
+SSH may already be running. Confirm and enable on boot:
+
+```bash
+sudo systemctl enable ssh
+sudo systemctl start ssh
+sudo systemctl status ssh   # should show "active (running)"
+```
+
+---
+
+### 2. On each Jetson worker — find the Ethernet interface and assign a static IP
+
+Run the discovery script to see the interface name and current DHCP IP:
+
+```bash
+./scripts/installations/discover_network.sh
+```
+
+Look for your Ethernet interface in the output (typically `eth0`, `enp3s0`, `enP8p1s0`, or similar). Then assign a static IP with `nmcli`:
+
+```bash
+# List connections to get the exact NAME (e.g. "Wired connection 1")
+nmcli con show
+
+# Assign static IP — replace <CONNECTION_NAME> and choose your IP
+sudo nmcli con mod "<CONNECTION_NAME>" \
+  ipv4.addresses 192.168.50.101/24 \
+  ipv4.method manual
+
+# Apply
+sudo nmcli con up "<CONNECTION_NAME>"
+
+# Verify
+ip addr show
+```
+
+Repeat on each Jetson worker, incrementing the last octet (`.101`, `.102`, …).
+
+The controller (Mac mini1 or whichever machine runs the launch scripts) should also have a static IP on the same subnet — assign via System Settings → Network on Mac, or `nmcli` if it's also Linux.
+
+---
+
+### 3. On each Jetson worker — configure passwordless sudo
+
+`setup_jetson.sh` installs system packages and requires passwordless sudo:
+
+```bash
+sudo visudo
+# Add this line at the end (replace 'your_username' with the result of whoami):
+# your_username ALL=(ALL) NOPASSWD:ALL
+```
+
+---
+
+### 4. On controller — verify connectivity
+
+```bash
+ping -c 4 192.168.50.101   # replace with your Jetson's IP
+ssh nvidia@192.168.50.101  # confirm password-based SSH works
+```
+
+---
+
+### 5. On controller — fill node inventory
+
+```bash
+cp scripts/installations/nodes.yaml.example ~/.config/smolcluster/nodes.yaml
+${EDITOR:-nano} ~/.config/smolcluster/nodes.yaml
+```
+
+Example for one Mac controller + two Jetson workers:
+
+```yaml
+nodes:
+  - alias: jetson1
+    ip: 192.168.50.101
+    user: nvidia          # run 'whoami' on the Jetson to confirm
+  - alias: jetson2
+    ip: 192.168.50.102
+    user: nvidia
+```
+
+---
+
+### 6. On controller — run SSH setup and cluster bootstrap
+
+```bash
+# Distribute SSH keys and write ~/.ssh/config
+./scripts/installations/setup_ssh.sh
+
+# Install base deps, clone repo, create venv on each worker
+./scripts/installations/setup.sh
+```
+
+---
+
+### 7. On controller — install Jetson-specific PyTorch on each worker
+
+`setup.sh` installs the default PyTorch from `pyproject.toml`. For Jetsons you need the
+JetPack 6 wheel (CUDA 12.6) instead. Run `setup_jetson.sh` remotely on each worker:
+
+```bash
+ssh jetson1 "cd ~/Desktop/smolcluster && bash scripts/installations/setup_jetson.sh"
+ssh jetson2 "cd ~/Desktop/smolcluster && bash scripts/installations/setup_jetson.sh"
+```
+
+This script:
+- Installs system deps (`python3.10`, `libopenblas`, `libopenmpi-dev`)
+- Runs `uv sync` to set up the venv
+- Replaces default PyTorch with `torch==2.8.0` + `torchvision==0.23.0` from `pypi.jetson-ai-lab.io/jp6/cu126`
+- Verifies CUDA is accessible and prints device info
+
+At the end you should see:
+
+```
+CUDA available: True
+CUDA device: Orin
+```
+
+---
+
+### 8. Copy `.env` to workers
+
+```bash
+cat > .env <<'EOF'
+WANDB_API_KEY=your_wandb_key_here
+HF_TOKEN=your_huggingface_token_here
+EOF
+
+scp .env jetson1:~/Desktop/smolcluster/
+scp .env jetson2:~/Desktop/smolcluster/
+```
+
+---
+
+### 9. Update cluster config YAMLs
+
+Open [`src/smolcluster/configs/cluster_config_syncps.yaml`](src/smolcluster/configs/cluster_config_syncps.yaml) and replace the `host_ip` and `workers` blocks with your actual aliases and IPs:
+
+```yaml
+host_ip:
+  mini1: "192.168.50.100"    # controller
+  jetson1: "192.168.50.101"
+  jetson2: "192.168.50.102"
+
+port: 65432
+
+num_workers: 2
+server: mini1
+workers:
+  - hostname: jetson1
+    rank: 1
+  - hostname: jetson2
+    rank: 2
+```
+
+Do the same for [`src/smolcluster/configs/inference/cluster_config_inference.yaml`](src/smolcluster/configs/inference/cluster_config_inference.yaml).
+
+Then proceed to the **Smoke Test** sections below.
+
+---
+
 ## Cluster Architecture
 
 <img src="../images/architecture.png" alt="Mac Mini Cluster Architecture" width="100%">
@@ -111,6 +298,9 @@ Nodes are connected via **Thunderbolt fabric** (40 Gbps point-to-point). Static 
 Two scripts handle everything end-to-end. Run them once from `mini1` after completing the Thunderbolt networking steps above.
 
 ### Step 1 — SSH keys and config
+
+> **Prerequisite**: complete the Thunderbolt IP assignment (above) **and** fill
+> `~/.config/smolcluster/nodes.yaml` before running this script.
 
 ```bash
 ./scripts/installations/setup_ssh.sh

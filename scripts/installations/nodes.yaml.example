@@ -1,0 +1,64 @@
+# Smolcluster Node Inventory
+# 
+# This file defines the worker nodes in your cluster.
+# Edit with your actual node details, then save as:
+#   ~/.config/smolcluster/nodes.yaml
+#
+# Only list WORKER nodes here (not the controller/server node you're running from)
+#
+# Fields:
+#   alias: Short name for the node (used in SSH config and scripts)
+#          - Use simple names like: node1, worker1, jetson1, mini2, etc.
+#          - Avoid spaces and special characters
+#   ip:    Static IP address you configured for this node
+#          - Use format: 192.168.50.101 (without /24 suffix)
+#          - All nodes must be on the same subnet
+#   user:  SSH username on this node
+#          - Find with: ssh <ip> "whoami"
+#          - Usually the same across all nodes
+
+nodes:
+  - alias: node1
+    ip: 192.168.50.101
+    user: youruser
+    
+  - alias: node2
+    ip: 192.168.50.102
+    user: youruser
+    
+  # Add more nodes as needed:
+  # - alias: node3
+  #   ip: 192.168.50.103
+  #   user: youruser
+
+
+# Example configurations for different setups:
+
+# Mac Mini cluster (3 nodes):
+# nodes:
+#   - alias: mini2
+#     ip: 192.168.50.102
+#     user: yuvrajsingh
+#   - alias: mini3
+#     ip: 192.168.50.103
+#     user: yuvrajsingh
+
+# Mixed cluster (Jetson + Mac):
+# nodes:
+#   - alias: jetson1
+#     ip: 192.168.50.101
+#     user: nvidia
+#   - alias: macbook
+#     ip: 192.168.50.102
+#     user: yuvrajsingh
+#   - alias: jetson2
+#     ip: 192.168.50.103
+#     user: nvidia
+
+# Before using this file:
+# 1. Complete network setup (see docs/setup_network.md)
+# 2. Verify ping works to all IPs
+# 3. Verify password-based SSH works: ssh <user>@<ip>
+# 4. Edit this file with your actual values
+# 5. Save to ~/.config/smolcluster/nodes.yaml
+# 6. Run: ./scripts/installations/setup_ssh.sh

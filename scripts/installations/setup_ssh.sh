@@ -2,6 +2,12 @@
 # Generates an ed25519 SSH key for smolcluster and writes clean ~/.ssh/config
 # entries for every cluster node. Run once on the controller (dashboard machine).
 #
+# Prerequisites: complete the Thunderbolt networking and static-IP steps in
+#   docs/quickstart.md before running this script. The expected node layout is:
+#     mini1  10.10.0.1  (this machine — controller / rank 0)
+#     mini2  10.10.0.2  (worker / rank 1)
+#     mini3  10.10.0.3  (worker / rank 2)
+#
 # Usage: ./scripts/installations/setup_ssh.sh
 
 set -euo pipefail
@@ -35,31 +41,36 @@ echo "  Public key:"
 echo "    $(cat "$KEY_PATH.pub")"
 echo ""
 
-# ─── STEP 2: Collect cluster node info interactively ─────────────────────────
+# ─── STEP 2: Load cluster nodes from nodes.yaml ──────────────────────────────
 hr
 echo ""
-echo "  STEP 2 — Cluster nodes"
-echo "  Enter each worker node (not this machine). Leave alias blank to finish."
+echo "  STEP 2 — Cluster nodes (from ~/.config/smolcluster/nodes.yaml)"
 echo ""
 
+NODES_YAML="$HOME/.config/smolcluster/nodes.yaml"
+if [[ ! -f "$NODES_YAML" ]]; then
+    warn "nodes.yaml not found: $NODES_YAML"
+    warn "Run discover_network.sh on each node, assign static IPs, then fill:"
+    warn "  cp scripts/installations/nodes.yaml.example $NODES_YAML"
+    exit 1
+fi
+
 declare -a ALIASES=() IPS=() USERS=()
-i=1
-while true; do
-    read -r -p "  Node $i alias  (e.g. mini${i}, or press Enter to finish): " alias
-    [[ -z "$alias" ]] && break
-    read -r -p "  Node $i IP     (e.g. 10.10.0.${i}): " ip
-    read -r -p "  Node $i user   (macOS username on that machine): " user
-    ALIASES+=("$alias")
-    IPS+=("$ip")
-    USERS+=("$user")
-    echo ""
-    (( i++ )) || true
-done
+while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*alias:[[:space:]]*(.+)$ ]] && ALIASES+=("${BASH_REMATCH[1]}")
+    [[ "$line" =~ ^[[:space:]]*ip:[[:space:]]*(.+)$    ]] && IPS+=("${BASH_REMATCH[1]}")
+    [[ "$line" =~ ^[[:space:]]*user:[[:space:]]*(.+)$  ]] && USERS+=("${BASH_REMATCH[1]}")
+done < "$NODES_YAML"
 
 if [[ ${#ALIASES[@]} -eq 0 ]]; then
-    warn "No nodes entered. Nothing to do."
-    exit 0
+    warn "No nodes found in $NODES_YAML. Check the file format."
+    exit 1
 fi
+
+for (( j=0; j<${#ALIASES[@]}; j++ )); do
+    log "${ALIASES[$j]}  ${IPS[$j]}  user=${USERS[$j]}"
+done
+echo ""
 
 # ─── STEP 3: Write ~/.ssh/config block ───────────────────────────────────────
 hr
