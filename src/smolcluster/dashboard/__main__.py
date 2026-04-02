@@ -9,7 +9,7 @@ Usage:
 
 import argparse
 import logging
-
+import socket
 import uvicorn
 
 logging.basicConfig(
@@ -25,7 +25,7 @@ def main():
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload (dev mode)")
     args = parser.parse_args()
 
-    import socket
+    
     hostname = socket.gethostname().removesuffix(".local")
     print(f"\n  smolcluster dashboard  →  http://{hostname}.local:{args.port}\n")
 

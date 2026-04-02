@@ -107,6 +107,9 @@ if is_local_ssh_target "$SERVER"; then
 fi
 for worker_entry in "${REGULAR_WORKERS[@]}"; do
     hostname="${worker_entry%%:*}"
+    if is_local_ssh_target "$hostname"; then
+        continue
+    fi
     found=false
     for node in "${SSH_NODES[@]}"; do
         if [[ "$node" == "$hostname" ]]; then
@@ -275,13 +278,17 @@ action_local() {
 echo "🧹 Cleaning up old sessions"
 if [[ "$DRY_RUN" != "true" ]]; then
     for node in "${SSH_NODES[@]}"; do
-        ssh "$node" "tmux ls 2>/dev/null | cut -d: -f1 | grep '^syncps_inf_' | xargs -I{} tmux kill-session -t {} 2>/dev/null || true"
+        ssh $SSH_OPTS "$node" "tmux ls 2>/dev/null | cut -d: -f1 | grep '^syncps_inf_' | xargs -I{} tmux kill-session -t {} 2>/dev/null || true"
     done
 
     for worker_entry in "${REGULAR_WORKERS[@]}"; do
         hostname="${worker_entry%%:*}"
         rank="${worker_entry##*:}"
-        ssh "$hostname" "tmux kill-session -t syncps_inf_worker$rank 2>/dev/null || true"
+        if is_local_ssh_target "$hostname"; then
+            tmux kill-session -t "syncps_inf_worker$rank" 2>/dev/null || true
+        else
+            ssh $SSH_OPTS "$hostname" "tmux kill-session -t syncps_inf_worker$rank 2>/dev/null || true"
+        fi
     done
     tmux ls 2>/dev/null | cut -d: -f1 | grep '^syncps_inf_' | xargs -I{} tmux kill-session -t {} 2>/dev/null || true
     for worker_entry in "${TABLET_WORKERS[@]}"; do
@@ -306,9 +313,15 @@ echo "👷 Starting SyncPS inference workers"
 for worker_entry in "${REGULAR_WORKERS[@]}"; do
     hostname="${worker_entry%%:*}"
     rank="${worker_entry##*:}"
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/DataParallelism/SynchronousPS/inference/worker.py $rank $hostname"
-    action_ssh "$hostname" "$WORKER_CMD" "syncps_inf_worker$rank"
-    echo "   ✅ Worker rank $rank on $hostname"
+    if is_local_ssh_target "$hostname"; then
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$PROJECT_DIR/src':\$PYTHONPATH && cd $PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/DataParallelism/SynchronousPS/inference/worker.py $rank $hostname"
+        action_local "$WORKER_CMD" "syncps_inf_worker$rank"
+        echo "   ✅ Local worker rank $rank for $hostname"
+    else
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/DataParallelism/SynchronousPS/inference/worker.py $rank $hostname"
+        action_ssh "$hostname" "$WORKER_CMD" "syncps_inf_worker$rank"
+        echo "   ✅ Worker rank $rank on $hostname"
+    fi
 done
 
 for worker_entry in "${TABLET_WORKERS[@]}"; do

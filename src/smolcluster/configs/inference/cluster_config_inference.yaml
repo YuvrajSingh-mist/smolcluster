@@ -7,10 +7,9 @@ host_ip:
   pi5: "192.168.50.1"
   win: "10.10.0.1"
   ipad: "172.20.10.3"
-  jetson: "100.66.210.6"
-  jetson2: "100.74.40.7"
-  jetson3: "100.101.219.103"
-
+  jetson: 10.10.1.1
+  jetson3: 10.10.1.3
+  jetson2: 10.10.1.2
 port:
   default: 65432
   mini1: 65432
@@ -56,16 +55,14 @@ total_num_nodes: 3
 server: jetson  # Server hostname (rank 0 for SyncPS inference)
 workers:
   regular:
-    - hostname: jetson2
-      user: yuvrajsingh
-      rank: 1
+  - hostname: jetson2
+    user: yuvrajsingh
+    rank: 1
+  - hostname: jetson3
+    user: yuvrajsingh
+    rank: 2
+  tablets: []
 
-    - hostname: jetson3
-      user: yuvrajsingh
-      rank: 2
-
-#-------------------------------------------------------------------------
-#Model parallelism specific configs
 num_nodes: 3
 num_layers: 6  # Number of transformer blocks (auto-detected from model, this is just for reference)
-model_name: causal_gpt2 
+model_name: causal_gpt2

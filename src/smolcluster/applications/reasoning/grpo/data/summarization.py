@@ -14,6 +14,7 @@ PROMPT = (
 
 def build_train_val_examples(
     data_config: Dict[str, Any],
+    seed: int = 42,
 ) -> Tuple[List[Tuple[str, Optional[str]]], List[Tuple[str, Optional[str]]]]:
     """Load a HuggingFace dataset and return pre-formatted (prompt, answer) pairs.
 
@@ -23,6 +24,7 @@ def build_train_val_examples(
     Args:
         data_config: Dict with keys ``dataset_name``, ``subset``, ``train_split``,
                      ``val_split`` (matches the ``data:`` section of config.yaml).
+        seed: Random seed for dataset shuffling reproducibility.
 
     Returns:
         (train_examples, val_examples) — each a list of (prompt_str, answer_str).
@@ -31,8 +33,8 @@ def build_train_val_examples(
         data_config["dataset_name"],
         data_config.get("subset"),
     )
-    train_split = dataset[data_config["train_split"]]
-    val_split = dataset[data_config["val_split"]]
+    train_split = dataset[data_config["train_split"]].shuffle(seed=seed)
+    val_split   = dataset[data_config["val_split"]]
 
     train_examples = [
         (PROMPT.format(question=q), None)

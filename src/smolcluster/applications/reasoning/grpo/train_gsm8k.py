@@ -3,6 +3,7 @@
 import json
 import logging
 import queue
+import random
 import re
 import threading
 import time
@@ -962,8 +963,10 @@ def main() -> None:
         mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
 
     seed = int(grpo_config.get("seed", 42))
+    random.seed(seed)
     np.random.seed(seed)
     mx.random.seed(seed)
+    logger.info("[reproducibility] seed=%d (random, numpy, mlx)", seed)
 
     # Resolve device from config and set as MLX global default
     device = get_mlx_device(grpo_config)
@@ -974,7 +977,9 @@ def main() -> None:
     logger.info("Using dtype: %s", dtype)
 
     model, ref_model, tokenizer = load_model(dtype, grpo_config, model_config)
-    train_examples, val_examples = build_train_val_examples(grpo_config["data"], tokenizer=tokenizer)
+    train_examples, val_examples = build_train_val_examples(
+        grpo_config["data"], tokenizer=tokenizer, seed=seed
+    )
 
     # Save step_0 checkpoint — initial (pre-training) weights for baseline comparison
     _ckpt_dir = str(grpo_config.get("weight_sync", {}).get("checkpoint_dir", "checkpoints/grpo"))

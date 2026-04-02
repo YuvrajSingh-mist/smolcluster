@@ -17,7 +17,7 @@
       --ink: #0f2926;
       --ink-2: #2f504d;
       --ink-3: #5a7a77;
-      --accent:   #d06a2f;
+        --accent:   #d06a2f;
       --teal:     #177e89;
       --green:    #1a9e63;
       --red:      #c0392b;
@@ -154,6 +154,30 @@
       font-size: 9.5px; font-weight: 700; letter-spacing: 1.2px;
       text-transform: uppercase; color: var(--ink-3); pointer-events: none;
     }
+    .mode-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.72);
+    }
+    .mode-tab {
+      border: none;
+      background: transparent;
+      color: var(--ink-2);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background .14s, color .14s;
+    }
+    .mode-tab.active.train { background: var(--green); color: #fff; }
+    .mode-tab.active.infer { background: var(--teal); color: #fff; }
+    .mode-tab:not(.active):hover { background: rgba(15,41,38,0.06); }
     .topo-legend {
       position: absolute; bottom: 10px; right: 14px;
       display: flex; gap: 14px; pointer-events: none;
@@ -197,9 +221,23 @@
     .bottom {
       flex-shrink: 0;
       display: flex; flex-direction: column;
-      max-height: 42vh; overflow: hidden;
+      height: 34vh;
+      min-height: 170px;
+      max-height: 78vh;
+      overflow: hidden;
       background: rgba(255,255,255,0.35);
     }
+
+    .bottom-resizer {
+      height: 9px;
+      flex-shrink: 0;
+      cursor: row-resize;
+      background: linear-gradient(to bottom, transparent 0%, rgba(15,41,38,0.11) 48%, transparent 100%);
+      border-top: 1px solid var(--line2);
+      border-bottom: 1px solid var(--line2);
+    }
+    .bottom-resizer:hover { background: linear-gradient(to bottom, transparent 0%, rgba(23,126,137,0.24) 48%, transparent 100%); }
+    .right.resizing, .right.resizing * { cursor: row-resize !important; user-select: none; }
 
     /* Controls bar */
     .ctrl-bar {
@@ -312,6 +350,10 @@
 <header>
   <div class="logo">smol<em>cluster</em></div>
   <div class="hstats">
+    <div class="mode-tabs">
+      <button class="mode-tab train active" id="mode-train" onclick="setDashboardMode('train')">Train</button>
+      <button class="mode-tab infer" id="mode-infer" onclick="setDashboardMode('infer')">Inference</button>
+    </div>
     <div class="hstat"><div class="pip on" id="pip-disc"></div><span id="lbl-disc">0 discovered</span></div>
     <div class="hstat"><div class="pip hot" id="pip-clus"></div><span id="lbl-clus">0 in cluster</span></div>
   </div>
@@ -345,6 +387,8 @@
       <span id="status-msg"></span>
       <div id="conn-chips"></div>
     </div>
+
+    <div class="bottom-resizer" id="bottom-resizer" title="Drag to resize logs panel"></div>
 
     <!-- Bottom controls + log -->
     <div class="bottom">
@@ -400,8 +444,8 @@
         </div>
         <div class="prog-bar-wrap" id="prog-wrap" style="display:none">
           <div class="prog-labels">
-            <span id="prog-lbl">Step 0</span>
-            <span id="prog-pct">0%</span>
+            <span id="prog-lbl">—</span>
+            <span id="prog-pct">—</span>
           </div>
           <div class="prog-bg"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
         </div>
@@ -433,6 +477,25 @@ let state = {
 };
 const sshOverrides = {};
 let _prevNSig='', _prevTSig='', _prevCSig='';
+let dashboardMode = 'train';
+let ssEventSource = null;  // Global state event source
+let logsEventSource = null; // Global logs event source
+
+const TRAIN_ALGOS = [
+  { value: 'syncps', label: 'SyncPS — Sync Parameter Server' },
+  { value: 'mp', label: 'MP — Model Parallelism' },
+  { value: 'classicdp', label: 'ClassicDP — Classic Data Parallelism' },
+  { value: 'fsdp', label: 'FSDP — Fully Sharded Data Parallel' },
+  { value: 'ep', label: 'EP — Expert Parallelism' },
+  { value: 'mp_pipeline', label: 'MP Pipeline — Model Parallelism Pipeline' },
+  { value: 'edp', label: 'EDP — Elastic Data Parallelism' },
+];
+
+const INFER_ALGOS = [
+  { value: 'syncps', label: 'SyncPS — Sync Parameter Server' },
+  { value: 'mp', label: 'MP — Model Parallelism' },
+  { value: 'classicdp', label: 'ClassicDP — Classic Data Parallelism' },
+];
 
 // Log terminal
 let autoscroll = true;
@@ -451,8 +514,8 @@ function hostColor(hostname) {
 // SSE — state stream
 // ════════════════════════════════════════════════════════════════════════════
 function startSSE() {
-  const es = new EventSource('/api/events');
-  es.onmessage = e => {
+  ssEventSource = new EventSource('/api/events');
+  ssEventSource.onmessage = e => {
     const d = JSON.parse(e.data);
     state.discovered    = d.nodes.discovered    || {};
     state.selected      = d.nodes.selected      || {};
@@ -468,21 +531,21 @@ function startSSE() {
     const tSig = JSON.stringify(state.training);
     const cSig = JSON.stringify(state.connectivity);
 
-    if (nSig !== _prevNSig) { renderHeader(); renderLeft(); updateButtons(); _prevNSig = nSig; }
+    if (nSig !== _prevNSig) { renderHeader(); renderLeft(); updateButtons(); syncLogFilter(); _prevNSig = nSig; }
     if (tSig !== _prevTSig) { renderMetrics(); updateButtons(); _prevTSig = tSig; }
     if (cSig !== _prevCSig) { renderConnBar(); _prevCSig = cSig; }
   };
-  es.onerror = () => { es.close(); setTimeout(startSSE, 3000); };
+  ssEventSource.onerror = () => { ssEventSource.close(); ssEventSource = null; setTimeout(startSSE, 3000); };
 }
 
 // SSE — log stream
 function startLogs() {
-  const es = new EventSource('/api/logs');
-  es.onmessage = e => {
+  logsEventSource = new EventSource('/api/logs');
+  logsEventSource.onmessage = e => {
     const lines = JSON.parse(e.data);
     lines.forEach(appendLog);
   };
-  es.onerror = () => { es.close(); setTimeout(startLogs, 3000); };
+  logsEventSource.onerror = () => { logsEventSource.close(); logsEventSource = null; setTimeout(startLogs, 3000); };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -494,9 +557,34 @@ function renderHeader() {
   setText('lbl-clus', `${n} in cluster`);
 }
 
+function currentAlgoOptions() {
+  return dashboardMode === 'infer' ? INFER_ALGOS : TRAIN_ALGOS;
+}
+
+function syncAlgoMenu(preferredValue) {
+  const select = $('algo-sel');
+  if (!select) return;
+  const current = preferredValue || select.value;
+  const options = currentAlgoOptions();
+  select.innerHTML = options.map(opt => `<option value="${opt.value}">${opt.label}</option>`).join('');
+  const fallback = options[0]?.value || '';
+  const next = options.some(opt => opt.value === current) ? current : fallback;
+  if (next) select.value = next;
+}
+
+function setDashboardMode(mode) {
+  dashboardMode = mode === 'infer' ? 'infer' : 'train';
+  $('mode-train').classList.toggle('active', dashboardMode === 'train');
+  $('mode-infer').classList.toggle('active', dashboardMode === 'infer');
+  syncAlgoMenu();
+  updateButtons();
+}
+
 function updateButtons() {
   const running = Object.keys(state.running).length > 0;
   const hasSel  = Object.keys(state.selected).length > 0;
+  $('btn-train').style.display = dashboardMode === 'train' ? '' : 'none';
+  $('btn-infer').style.display = dashboardMode === 'infer' ? '' : 'none';
   $('btn-train').disabled = running || !hasSel;
   $('btn-infer').disabled = running || !hasSel;
   $('btn-conn').disabled  = !hasSel && !running;
@@ -525,13 +613,14 @@ function renderLeft() {
 }
 
 function buildCard(h, n) {
+  const aliasLabel = (state.ssh_aliases[h] || n.alias || h);
   const c = document.createElement('div');
   c.className = 'ncard'; c.dataset.h = h;
   c.innerHTML = `
     <div class="nhead">
       <div class="nicon">${nodeIcon(n)}</div>
       <div>
-        <div class="nname">${h}.local</div>
+        <div class="nname">${aliasLabel}</div>
         <div class="nmeta">${[n.os,n.os_version,n.machine].filter(s=>s&&s!=='unknown').join(' · ')}</div>
       </div>
     </div>
@@ -546,7 +635,7 @@ function buildCard(h, n) {
     sshOverrides[h] = this.value.trim();
   });
   c.querySelector('.ncbtn').addEventListener('click', () => {
-    (h in state.selected || h in state.running) ? removeNode(h) : addNode(h, c);
+    (h in state.selected || h in state.running) ? removeNode(h, c) : addNode(h, c);
   });
   return c;
 }
@@ -556,6 +645,10 @@ function syncCard(c, h, n) {
   const isRun = h in state.running;
 
   c.className = `ncard${isRun ? ' running' : isSel ? ' in-cluster' : ''}`;
+
+  const aliasLabel = (state.ssh_aliases[h] || n.alias || h);
+  const nameEl = c.querySelector('.nname');
+  if (nameEl && nameEl.textContent !== aliasLabel) nameEl.textContent = aliasLabel;
 
   // Update OS meta if SSH probe returned info (discovered nodes start with empty OS)
   const osInfo = state.node_os[h] || n || {};
@@ -580,8 +673,9 @@ function syncCard(c, h, n) {
   const badges = c.querySelector('.badges');
   if (isRun) {
     const r = state.running[h] || {};
-    const label = (r.role === 'launcher' || r.status === 'launched') ? 'inferring'
-                : r.algorithm === 'infer' ? 'inferring' : 'training';
+    const label = (r.role === 'inference_launcher' || r.algorithm === 'infer')
+      ? 'inferring'
+      : 'training';
     badges.innerHTML = `<span class="nbadge active">● ${label}</span>`;
   } else if (isSel) {
     badges.innerHTML = `<span class="nbadge cluster">✓ in cluster</span>`;
@@ -625,7 +719,8 @@ function renderConnBar() {
 // ── Training metrics ──────────────────────────────────────────────────────────
 function renderMetrics() {
   const t   = state.training;
-  const has = t && (t.step != null || t.loss != null);
+  const isRunning = Object.keys(state.running || {}).length > 0;
+  const has = isRunning && t && (t.step != null || t.loss != null);
   $('metrics-strip').classList.toggle('show', has);
   if (!has) return;
   setText('m-loss', t.loss       != null ? Number(t.loss).toFixed(4) : '—');
@@ -643,14 +738,32 @@ function renderMetrics() {
   }
 }
 
-// ── Log terminal ──────────────────────────────────────────────────────────────
+// ── Log terminal ─────────────────────────────────────────────────────────────
+// Pre-populate the filter dropdown from selected+running nodes (don't wait for log lines)
+function syncLogFilter() {
+  const allNodes = {...state.selected, ...state.running};
+  for (const h of Object.keys(allNodes)) {
+    if (!knownLogHosts.has(h)) {
+      knownLogHosts.add(h);
+      const opt = document.createElement('option');
+      opt.value = h;
+      opt.textContent = state.ssh_aliases[h] || h;
+      $('log-filter').appendChild(opt);
+    } else {
+      // Update label if alias became available
+      const opt = Array.from($('log-filter').options).find(o => o.value === h);
+      if (opt) { const lbl = state.ssh_aliases[h] || h; if (opt.textContent !== lbl) opt.textContent = lbl; }
+    }
+  }
+}
+
 function appendLog({ hostname, line }) {
   // Register new hostname in filter dropdown
   if (!knownLogHosts.has(hostname)) {
     knownLogHosts.add(hostname);
     const opt = document.createElement('option');
     opt.value = hostname;
-    opt.textContent = hostname;
+    opt.textContent = state.ssh_aliases[hostname] || hostname;
     $('log-filter').appendChild(opt);
   }
 
@@ -681,6 +794,7 @@ function clearLogs() {
   while (sel.children.length > 1) sel.removeChild(sel.lastChild);
   logFilterHost = 'all';
   sel.value = 'all';
+  syncLogFilter();  // re-add current nodes immediately
 }
 
 function toggleAutoscroll() {
@@ -688,44 +802,130 @@ function toggleAutoscroll() {
   $('autoscroll-btn').textContent = autoscroll ? 'autoscroll ✓' : 'autoscroll ✗';
 }
 
+function initBottomResizer() {
+  const right = document.querySelector('.right');
+  const bottom = document.querySelector('.bottom');
+  const resizer = $('bottom-resizer');
+  if (!right || !bottom || !resizer) return;
+
+  const MIN_BOTTOM = 170;
+  const MIN_TOPO = 170;
+
+  const saved = Number(localStorage.getItem('smolcluster.bottom.height') || 0);
+  if (saved > 0) bottom.style.height = `${saved}px`;
+
+  let dragging = false;
+  let startY = 0;
+  let startBottom = 0;
+
+  resizer.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startBottom = bottom.getBoundingClientRect().height;
+    right.classList.add('resizing');
+    resizer.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  const onPointerMove = (e) => {
+    if (!dragging) return;
+    const delta = startY - e.clientY;
+    const maxBottom = Math.max(MIN_BOTTOM, right.clientHeight - MIN_TOPO);
+    const next = Math.max(MIN_BOTTOM, Math.min(maxBottom, startBottom + delta));
+    bottom.style.height = `${Math.round(next)}px`;
+  };
+
+  const onPointerUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    right.classList.remove('resizing');
+    localStorage.setItem('smolcluster.bottom.height', String(Math.round(bottom.getBoundingClientRect().height)));
+  };
+
+  window.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup', onPointerUp);
+
+  resizer.addEventListener('dblclick', () => {
+    bottom.style.height = '34vh';
+    localStorage.removeItem('smolcluster.bottom.height');
+  });
+}
+
 // ── Actions ───────────────────────────────────────────────────────────────────
 async function addNode(h, card) {
   const btn  = card.querySelector('.ncbtn');
   const user = sshOverrides[h] || state.ssh_aliases[h] || state.usernames[h] || guessUser(h) || '';
   btn.disabled = true; btn.textContent = 'Adding…';
-  const r = await fetch(`/api/nodes/${h}/select`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ ssh_user: user }),
-  });
-  btn.disabled = false;
-  if (!r.ok) alert(`Error: ${(await r.json()).detail}`);
+  try {
+    const r = await fetch(`/api/nodes/${h}/select`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ ssh_user: user }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: 'Unknown error'}));
+      console.error('Add node failed:', err.detail);
+      btn.textContent = '⚠ Failed';
+      return;
+    }
+    btn.disabled = false; btn.textContent = 'Added';
+  } catch (e) {
+    console.error('Add node error:', e);
+    btn.textContent = '⚠ Error';
+  }
 }
-async function removeNode(h) { await fetch(`/api/nodes/${h}/deselect`, {method:'POST'}); }
+
+
+async function removeNode(h, card) {
+  if (!card) return;
+  const btn = card.querySelector('.ncbtn');
+  btn.disabled = true; btn.textContent = 'Removing…';
+  try {
+    const r = await fetch(`/api/nodes/${h}/deselect`, {method:'POST'});
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: 'Unknown error'}));
+      console.error('Remove node failed:', err.detail);
+      btn.textContent = '⚠ Failed';
+      return;
+    }
+    btn.disabled = false; btn.textContent = 'Removed';
+  } catch (e) {
+    console.error('Remove node error:', e);
+    btn.textContent = '⚠ Error';
+  }
+}
 
 async function startTraining() {
+  setDashboardMode('train');
   if (!Object.keys(state.selected).length) { alert('Add nodes first.'); return; }
   const algo  = $('algo-sel').value;
   const hosts = Object.keys(state.selected);
-  // Auto-pick lowest-rank node as server/coordinator
-  const srv   = hosts.reduce((a, b) => state.selected[a].rank <= state.selected[b].rank ? a : b);
+  // Use user-picked server (click on node), fall back to lowest-rank node
+  const srv = (selectedServer && state.selected[selectedServer])
+    ? selectedServer
+    : hosts.reduce((a, b) => state.selected[a].rank <= state.selected[b].rank ? a : b);
   const r = await fetch('/api/training/launch', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ algorithm: algo, server_hostname: srv }),
   });
-  if (!r.ok) alert(`Error: ${(await r.json()).detail}`);
+  if (r.ok) {
+    inferLocked = true;
+  } else {
+    alert(`Error: ${(await r.json()).detail}`);
+  }
 }
 let selectedServer = null;   // hostname of user-picked server node
 let inferLocked    = false;  // true while inference is running — blocks server re-selection
 
 async function startInference() {
+  setDashboardMode('infer');
   if (!Object.keys(state.selected).length) { alert('Add nodes first.'); return; }
   const algo = $('algo-sel').value;
 
-  // SyncPS: auto-pick a random selected node as server (user doesn't need to pick)
+  // Respect user-picked server; fallback to lowest-rank selected node
+  const hosts = Object.keys(state.selected);
   let srv = selectedServer;
-  if (algo === 'syncps' || !srv) {
-    const hosts = Object.keys(state.selected);
-    srv = hosts[Math.floor(Math.random() * hosts.length)];
+  if (!srv || !state.selected[srv]) {
+    srv = hosts.reduce((a, b) => state.selected[a].rank <= state.selected[b].rank ? a : b);
     selectedServer = srv;
   }
 
@@ -744,10 +944,20 @@ async function checkConn() {
   if (!r.ok) alert(`Error: ${(await r.json()).detail}`);
 }
 async function stopAll() {
+  // Close SSE streams to stop receiving log and state updates
+  if (ssEventSource) { ssEventSource.close(); ssEventSource = null; }
+  if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+  
   await fetch('/api/training/stop',  { method:'POST' });
   await fetch('/api/inference/stop', { method:'POST' });
   inferLocked    = false;
   selectedServer = null;
+  
+  // Restart streams after a brief delay
+  setTimeout(() => {
+    if (!ssEventSource) startSSE();
+    if (!logsEventSource) startLogs();
+  }, 500);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -759,10 +969,11 @@ function nodeIcon(n) {
   const os=((n.os||'').toLowerCase()), h=((n.hostname||'').toLowerCase());
   if(h.includes('ipad')) return '📱';
   if(h.includes('pi')||h.includes('rasp')) return '🍓';
-  if(h.includes('win')) return '🖥️';
   if(os==='darwin'||h.includes('mac')) return '💻';
-  if(os==='linux') return '🐧';
-  return '💻';
+  if(os==='windows'||os==='win32'||h.includes('win')) return '🖥️';
+  if(os==='linux'||os==='ubuntu'||os==='debian'||os==='fedora') return '🐧';
+  if(h.includes('jetson')||h.includes('nano')||h.includes('xavier')) return '🐧';
+  return '�';
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -945,16 +1156,85 @@ function bp(t, x0,y0, cpx,cpy, x1,y1) {
   return { x: m*m*x0 + 2*m*t*cpx + t*t*x1, y: m*m*y0 + 2*m*t*cpy + t*t*y1 };
 }
 
+// ── Legend (bottom-right) ────────────────────────────────────────────────────
+function drawLegend(isTraining, isInferring, dashboardMode) {
+  const padding = 12;
+  const lineH = 16;
+  const dotR = 4;
+  const w = 240;
+  
+  // Always show legend with mode-specific content
+  let rows = [];
+  
+  if (dashboardMode === 'train' || (!isTraining && !isInferring && dashboardMode !== 'infer')) {
+    // Training mode or idle on train tab
+    rows.push({type: 'title', text: isTraining ? 'Training Data Flow' : 'Training Colors'});
+    rows.push({type: 'item', color: 'rgb(26, 158, 99)', text: 'Gradients & activations up'});
+    rows.push({type: 'item', color: 'rgb(208, 106, 47)', text: 'Weights & updates down'});
+  }
+  
+  if (dashboardMode === 'infer' || (!isTraining && !isInferring && dashboardMode === 'infer')) {
+    // Inference mode or idle on infer tab
+    if (rows.length > 0) rows.push({type: 'spacer'});
+    rows.push({type: 'title', text: isInferring ? 'Inference Data Flow' : 'Inference Colors'});
+    rows.push({type: 'item', color: 'rgb(23, 126, 137)', text: 'Query → workers (forward)'});
+    rows.push({type: 'item', color: 'rgb(208, 106, 47)', text: 'Results ← workers (return)'});
+  }
+  
+  const h = (rows.filter(r => r.type !== 'spacer').length * lineH) + padding * 2 + 4;
+  const x = CVS.width - w - padding;
+  const y = CVS.height - h - padding;
+
+  // Semi-transparent background
+  CTX.fillStyle = 'rgba(248, 245, 238, 0.92)';
+  CTX.fillRect(x, y, w, h);
+
+  // Border
+  CTX.strokeStyle = 'rgba(15, 41, 38, 0.15)';
+  CTX.lineWidth = 1;
+  CTX.strokeRect(x, y, w, h);
+
+  CTX.font = '500 10px "IBM Plex Mono", monospace';
+  CTX.textAlign = 'left';
+  CTX.textBaseline = 'middle';
+  CTX.fillStyle = '#0f2926';
+
+  let row = 0;
+  
+  for (const item of rows) {
+    if (item.type === 'title') {
+      CTX.font = 'bold 10px "IBM Plex Mono", monospace';
+      CTX.fillStyle = '#0f2926';
+      CTX.fillText(item.text, x + padding, y + padding + row * lineH);
+    } else if (item.type === 'item') {
+      CTX.font = '500 9px "IBM Plex Mono", monospace';
+      // Dot
+      CTX.fillStyle = item.color;
+      CTX.beginPath(); CTX.arc(x + padding + 4, y + padding + row * lineH, dotR, 0, Math.PI * 2); CTX.fill();
+      // Text
+      CTX.fillStyle = '#0f2926';
+      CTX.fillText(item.text, x + padding + 18, y + padding + row * lineH);
+    } else if (item.type === 'spacer') {
+      row += 0.5;
+      continue;
+    }
+    row++;
+  }
+}
+
+
 // ── Main draw loop ─────────────────────────────────────────────────────────────
 function draw(ts) {
   resizeCvs();
 
   // ── Determine active state ──────────────────────────────────────────────────
   const runningVals = Object.values(state.running);
-  const inferEntry  = runningVals.find(r => r.role === 'launcher' || r.algorithm === 'infer');
+  const inferEntry  = runningVals.find(r => r.role === 'inference_launcher' || r.algorithm === 'infer');
   const isInferring = !!inferEntry;
   const inferAlgo   = inferEntry?.algorithm || $('algo-sel').value;
-  const isTraining  = !isInferring && runningVals.some(r => r.role === 'server' || r.role === 'worker');
+  const isTraining  = !isInferring && runningVals.some(
+    r => r.role === 'server' || r.role === 'worker' || r.role === 'training_launcher'
+  );
   const isActive    = isTraining || isInferring;
   _activeAlgo       = isInferring ? inferAlgo : '';
 
@@ -1002,15 +1282,26 @@ function draw(ts) {
   const coord = server || (workers.length ? workers[0] : null);
   const peers  = server ? workers : workers.slice(1);
   if (isTraining && coord && ts - spawnTs > 420) {
-    peers.filter(w => w.running).forEach(w => {
-      // Activations / gradients → coord (green)
-      particles.push({sx:w.x, sy:w.y, ex:coord.x, ey:coord.y, cpOff:-22,
-                      t:0, speed:0.018+Math.random()*.005, col:'26,158,99', sz:6});
-      // Weight updates → worker (amber)
-      particles.push({sx:coord.x, sy:coord.y, ex:w.x, ey:w.y, cpOff:+22,
-                      t:-(0.018*14), speed:0.016+Math.random()*.005, col:'208,106,47', sz:5.5});
-    });
-    spawnTs = ts;
+    const hasGradients = particles.some(p => p.phase === 'gradients');
+    const hasWeights   = particles.some(p => p.phase === 'weights');
+    
+    if (!hasGradients && !hasWeights && particles.length === 0) {
+      peers.filter(w => w.running).forEach(w => {
+        // Activations / gradients → coord (green)
+        particles.push({sx:w.x, sy:w.y, ex:coord.x, ey:coord.y, cpOff:-22,
+                t:0, speed:0.018+Math.random()*.005, col:'26,158,99', sz:6, phase:'gradients'});
+      });
+      spawnTs = ts;
+    }
+    
+    const maxGradientT = Math.max(0, ...particles.filter(p => p.phase === 'gradients').map(p => p.t));
+    if (maxGradientT > 0.8 && !hasWeights) {
+      peers.filter(w => w.running).forEach(w => {
+        // Weight updates → worker (amber)
+        particles.push({sx:coord.x, sy:coord.y, ex:w.x, ey:w.y, cpOff:+22,
+                t:0, speed:0.016+Math.random()*.005, col:'208,106,47', sz:5.5, phase:'weights'});
+      });
+    }
   }
   if (!isTraining) particles = [];
   particles = particles.filter(p => { p.t += p.speed; return p.t < 1; });
@@ -1043,7 +1334,7 @@ function draw(ts) {
     CTX.restore();
   });
 
-  // ── INFERENCE particles — same pattern as chat app, dashboard glow style ────
+  // ── INFERENCE particles — SEQUENTIAL: outbound, then return ─────────────────
   // Coordinator = server node (syncps/mp) or rank-0 worker (classicdp)
   const inferCoord = server || workers[0];
   const inferPeers = server ? workers : workers.slice(1);
@@ -1052,18 +1343,32 @@ function draw(ts) {
     // Only spawn when tokens are actually flowing (ping file touched by chat backend)
     const tokenRecent = state.token_ts && (Date.now() / 1000 - state.token_ts) < 1.5;
 
-    if (tokenRecent && inferParticles.length === 0 && ts - inferSpawnTs > 300) {
-      // Out: coordinator → all peers (teal) — exactly like chat app spawnDots()
-      inferPeers.forEach(w => {
-        inferParticles.push({sx:inferCoord.x, sy:inferCoord.y, tx:w.x, ty:w.y,
-          cpOff:-18, t:0, speed:0.022, col:'23,126,137', sz:5.5});
-      });
-      // Back: all peers → coordinator (orange, 380ms later — same as chat app)
-      inferPeers.forEach(w => {
-        inferParticles.push({sx:w.x, sy:w.y, tx:inferCoord.x, ty:inferCoord.y,
-          cpOff:+18, t:-0.022*380/16.67, speed:0.026, col:'208,106,47', sz:4.5});
-      });
-      inferSpawnTs = ts;
+    if (tokenRecent && ts - inferSpawnTs > 380) {
+      // ── PHASE 1: Check if we need to start a new cycle ──
+      const hasOutbound = inferParticles.some(p => p.phase === 'outbound');
+      const hasReturn   = inferParticles.some(p => p.phase === 'return');
+      
+      // Spawn outbound first (teal) — coordinator → workers
+      if (!hasOutbound && !hasReturn && inferParticles.length === 0) {
+        inferPeers.forEach(w => {
+          inferParticles.push({
+            sx:inferCoord.x, sy:inferCoord.y, tx:w.x, ty:w.y,
+            cpOff:-18, t:0, speed:0.022, col:'23,126,137', sz:5.5, phase:'outbound'
+          });
+        });
+        inferSpawnTs = ts;
+      }
+      
+      // ── PHASE 2: Once outbound completes (t > 0.8), spawn return (amber) ──
+      const maxOutboundT = Math.max(0, ...inferParticles.filter(p => p.phase === 'outbound').map(p => p.t));
+      if (maxOutboundT > 0.8 && !hasReturn) {
+        inferPeers.forEach(w => {
+          inferParticles.push({
+            sx:w.x, sy:w.y, tx:inferCoord.x, ty:inferCoord.y,
+            cpOff:+18, t:0, speed:0.026, col:'208,106,47', sz:4.5, phase:'return'
+          });
+        });
+      }
     }
   }
   if (!isInferring) inferParticles = [];
@@ -1096,6 +1401,9 @@ function draw(ts) {
     CTX.restore();
   });
 
+  // ── Draw legend (bottom-right corner) ────────────────────────────────────────
+  drawLegend(isTraining, isInferring, dashboardMode);
+
   // ── Draw nodes ──────────────────────────────────────────────────────────────
   const inferWorkers = new Set((state.connectivity?.workers || []).map(w => w.hostname));
   if (server) {
@@ -1116,6 +1424,8 @@ function draw(ts) {
 // Boot
 // ════════════════════════════════════════════════════════════════════════════
 requestAnimationFrame(draw);
+initBottomResizer();
+setDashboardMode(dashboardMode);
 startSSE();
 startLogs();
 </script>

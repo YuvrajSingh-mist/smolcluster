@@ -242,7 +242,10 @@ class NodeManager:
         2. Run scripts/inference/launch_inference.sh --algorithm <algo>.
         3. Stream output to the log buffer.
         """
-        import yaml as _yaml
+        from ruamel.yaml import YAML as _YAML
+        _yaml = _YAML()
+        _yaml.preserve_quotes = True
+        _yaml.default_flow_style = False
 
         async with self._lock:
             if self.processes:
@@ -252,7 +255,8 @@ class NodeManager:
         p = Path(config_path)
         config = {}
         if p.exists():
-            config = _yaml.safe_load(p.read_text()) or {}
+            import io as _io
+            config = _yaml.load(p.read_text()) or {}
 
         server_info = nodes_info.get(server_hostname, {})
         server_alias = server_info.get("ssh_alias") or server_hostname
@@ -263,7 +267,7 @@ class NodeManager:
         if server_ip:
             host_ip[server_alias] = server_ip
 
-        workers_regular = []
+        workers_regular_raw = []
         for hostname, info in nodes_info.items():
             if hostname == server_hostname:
                 continue
@@ -271,9 +275,15 @@ class NodeManager:
             ip    = info.get("ip", "")
             user  = info.get("user", "")
             rank  = info.get("rank", 1)
-            workers_regular.append({"hostname": alias, "user": user, "rank": rank})
+            workers_regular_raw.append({"hostname": alias, "user": user, "rank": rank})
             if ip:
                 host_ip[alias] = ip
+
+        workers_regular_raw.sort(key=lambda w: w["rank"])
+        workers_regular = [
+            {**worker, "rank": index}
+            for index, worker in enumerate(workers_regular_raw, 1)
+        ]
 
         if algorithm == "classicdp":
             # ClassicDP: server is also rank-0 worker; no separate server role
@@ -291,7 +301,9 @@ class NodeManager:
 
         config["host_ip"] = host_ip
 
-        p.write_text(_yaml.dump(config, default_flow_style=False, allow_unicode=True))
+        _buf = _io.StringIO()
+        _yaml.dump(config, _buf)
+        p.write_text(_buf.getvalue())
         self._log(server_hostname, f"[dashboard] Wrote {config_path}")
         self._log(server_hostname,
                   f"[dashboard] server={server_alias}, "
@@ -312,7 +324,7 @@ class NodeManager:
         )
         async with self._lock:
             self.processes[server_hostname] = {
-                "rank": 0, "algorithm": algorithm, "role": "launcher", "proc": proc,
+                "rank": 0, "algorithm": algorithm, "role": "inference_launcher", "proc": proc,
             }
         asyncio.create_task(self._stream(server_hostname, proc))
 
@@ -331,7 +343,11 @@ class NodeManager:
         2. Run the matching training shell script.
         3. Stream output to the log buffer.
         """
-        import yaml as _yaml
+        import io as _io
+        from ruamel.yaml import YAML as _YAML
+        _yaml = _YAML()
+        _yaml.preserve_quotes = True
+        _yaml.default_flow_style = False
 
         async with self._lock:
             if self.processes:
@@ -346,7 +362,7 @@ class NodeManager:
 
         config: dict = {}
         if config_path.exists():
-            config = _yaml.safe_load(config_path.read_text()) or {}
+            config = _yaml.load(config_path.read_text()) or {}
 
         server_info  = nodes_info.get(server_hostname, {})
         server_alias = server_info.get("ssh_alias") or server_hostname
@@ -363,12 +379,18 @@ class NodeManager:
 
             config["server"] = server_alias
 
-            workers = [
-                {"hostname": (info.get("ssh_alias") or hostname), "rank": info["rank"]}
+            workers_raw = [
+                {
+                    "hostname": (info.get("ssh_alias") or hostname),
+                    "rank":     info["rank"],
+                    "ip":       info.get("ip", ""),
+                }
                 for hostname, info in nodes_info.items()
                 if hostname != server_hostname
             ]
-            workers.sort(key=lambda w: w["rank"])
+            workers_raw.sort(key=lambda w: w["rank"])
+            # Re-number workers from 1 (server is implicit rank 0)
+            workers = [{**w, "rank": i} for i, w in enumerate(workers_raw, 1)]
 
             if topology == "flat_server":
                 config["workers"]     = workers
@@ -397,7 +419,9 @@ class NodeManager:
             config["num_workers"] = len(all_workers)
             config["num_nodes"]   = len(all_workers)
 
-        config_path.write_text(_yaml.dump(config, default_flow_style=False, allow_unicode=True))
+        _buf = _io.StringIO()
+        _yaml.dump(config, _buf)
+        config_path.write_text(_buf.getvalue())
         self._log(server_hostname, f"[dashboard] Wrote {config_path}")
         self._log(server_hostname,
                   f"[dashboard] algorithm={algorithm}, topology={topology}, "
@@ -416,13 +440,14 @@ class NodeManager:
         )
         async with self._lock:
             self.processes[server_hostname] = {
-                "rank": 0, "algorithm": algorithm, "role": "launcher", "proc": proc,
+                "rank": 0, "algorithm": algorithm, "role": "training_launcher", "proc": proc,
             }
         asyncio.create_task(self._stream(server_hostname, proc))
 
     async def stop_training(self) -> None:
         async with self._lock:
             procs = dict(self.processes)
+            selected = dict(self.selected)
             self.processes.clear()
 
         for hostname, info in procs.items():
@@ -434,6 +459,54 @@ class NodeManager:
                 except asyncio.TimeoutError:
                     proc.kill()
             logger.info(f"[node_manager] Stopped {hostname}")
+
+        # Launch scripts often spawn long-lived remote tmux sessions.
+        # Stop should clean those up as well.
+        await self._cleanup_tmux_sessions(selected)
+
+    async def _cleanup_tmux_sessions(self, selected: Dict[str, dict]) -> None:
+        tmux_pattern = (
+            "^(server.*|worker.*|classicdp_worker.*|fsdp_worker.*|ep_worker.*|"
+            "mp_pipeline_worker.*|syncps_inf_.*|classicdp_inf_.*|mp_inference_.*|mp_tablet_proxy.*|"
+            "syncps_api|syncps_frontend|classicdp_api|classicdp_frontend|mp_api|mp_frontend)$"
+        )
+
+        local_cleanup = (
+            "if command -v tmux >/dev/null 2>&1; then "
+            "tmux ls 2>/dev/null | cut -d: -f1 | "
+            f"grep -E '{tmux_pattern}' | "
+            "xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true; "
+            "fi"
+        )
+        await asyncio.to_thread(
+            subprocess.run,
+            ["bash", "-lc", local_cleanup],
+            capture_output=True,
+            text=True,
+        )
+
+        seen_targets = set()
+        for hostname, info in selected.items():
+            target = _build_ssh_target(info.get("ssh_user", ""), hostname)
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            remote_cleanup = (
+                "if command -v tmux >/dev/null 2>&1; then "
+                "tmux ls 2>/dev/null | cut -d: -f1 | "
+                f"grep -E '{tmux_pattern}' | "
+                "xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true; "
+                "fi"
+            )
+            cmd = [
+                "ssh", "-o", "StrictHostKeyChecking=no",
+                "-o", "BatchMode=yes", "-o", "ConnectTimeout=6",
+                target, remote_cleanup,
+            ]
+            try:
+                await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
+            except Exception as e:
+                logger.debug(f"[node_manager] tmux cleanup on {target}: {e}")
 
     # ── Username probe ─────────────────────────────────────────────────────────
 
@@ -465,7 +538,7 @@ class NodeManager:
             rc = v["proc"].returncode
             if rc is None:
                 return "running"
-            if v["role"] == "launcher" and rc == 0:
+            if v["role"].endswith("_launcher") and rc == 0:
                 return "launched"   # script done, remote tmux sessions are live
             return f"exited:{rc}"
         return {
@@ -502,6 +575,6 @@ class NodeManager:
                 # Keep launcher entries alive so topology stays visible after
                 # the script exits (inference continues in remote tmux sessions).
                 # Only remove on failure or explicit stop_training().
-                if not (info.get("role") == "launcher" and proc.returncode == 0):
+                if not (str(info.get("role", "")).endswith("_launcher") and proc.returncode == 0):
                     self.processes.pop(hostname, None)
             logger.info(f"[node_manager] {hostname} exited (rc={proc.returncode})")
