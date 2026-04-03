@@ -1,0 +1,62 @@
+# MLX-LM LoRA fine-tuning configuration for GSM8K SFT.
+#
+# Teaches the model to produce chain-of-thought in <think>...</think>
+# and the final answer in <answer>...</answer>, matching the reward
+# format expected by the GRPO training pipeline.
+#
+# Run through the launcher:
+#   bash src/smolcluster/applications/sft/gsm8k/scripts/launch_sft.sh
+#
+# Or directly:
+#   mlx_lm lora --config lora_config.yaml --train
+
+# ---------------------------------------------------------------------------
+# Model & data
+# ---------------------------------------------------------------------------
+model: mlx-community/Qwen2.5-0.5B-Instruct-bf16   # overridden at runtime by launcher
+data: data/                                         # directory with train/valid/test.jsonl
+
+# ---------------------------------------------------------------------------
+# Training format
+# ---------------------------------------------------------------------------
+fine_tune_type: lora           # lora | dora | full
+mask_prompt: true              # only compute loss on the completion (not the prompt)
+
+# ---------------------------------------------------------------------------
+# LoRA adapter settings
+# ---------------------------------------------------------------------------
+num_layers: -1                 # -1 = all transformer layers
+lora_parameters:
+    rank: 16                     # LoRA rank (this is the key that defines rank)
+    scale: 8.0
+    dropout: 0.0
+
+# ---------------------------------------------------------------------------
+# Training hyper-parameters
+# ---------------------------------------------------------------------------
+batch_size: 4
+iters: 1000
+learning_rate: 2.0e-4          # 1e-4 ~ 2e-4 is the sweet-spot for LoRA SFT
+optimizer: adamw
+grad_accumulation_steps: 4     # effective batch = 4 × 4 = 16
+max_seq_length: 512
+
+# ---------------------------------------------------------------------------
+# Evaluation & saving
+# ---------------------------------------------------------------------------
+steps_per_report: 10
+steps_per_eval: 100
+val_batches: -1                # use the full validation set
+save_every: 200
+grad_checkpoint: true          # saves ~30 % memory on small chips
+report_to: wandb                # logging to WandB for SFT (optional)
+# ---------------------------------------------------------------------------
+# Adapter output path
+# ---------------------------------------------------------------------------
+adapter_path: src/smolcluster/applications/sft/gsm8k/checkpoints
+
+# ---------------------------------------------------------------------------
+# Logging (optional — remove report_to if not using wandb)
+# ---------------------------------------------------------------------------
+# report_to: wandb
+# project_name: smolcluster-sft-gsm8k

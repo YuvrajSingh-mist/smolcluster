@@ -8,10 +8,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 PROMPT = (
-    "A conversation between User and Assistant. The user asks a question, and the "
-    "Assistant solves it. The assistant first thinks about the reasoning process "
-    "in the mind and then provides the user with the FINAL answer. The FINAL answer must STRICTLY be written as "
-    "<answer>your_final_answer_here</answer>."
+    "You are an Assistant expert at solving math problems. "
+    "The assistant first thinks about the reasoning process "
+    "to reach the correct answer within '<think>...</think>' tags and then provides the user with the answer. The FINAL answer must STRICTLY be written as "
+    "<answer>answer_here</answer> and the thinking process strictly within '<think>...</think>' tags."
 )
 
 

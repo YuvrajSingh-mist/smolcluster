@@ -20,6 +20,7 @@ amp_growth_interval: 2000  # double scale every N clean steps
 amp_master_weights: false   # maintain/update FP32 master params, then cast back to model dtype
 optimizer: "adam"      # "adam" (AdamW + optional AMP) or "sgd" (plain SGD, AMP ignored)
 learning_rate: 0.000002   # LoRA LR: 1e-4 is standard (100× higher than full-param fine-tuning)
+seed: 42                  # global RNG seed for reproducible batching/rollouts/training
 num_epochs: 1
 batch_size: 2
 grad_accum_steps: 1    # accumulate gradients over N micro-batches before each optimizer step (1 = disabled)
@@ -61,10 +62,11 @@ vllm_cluster:
 
 # ---------------------------------------------------------------------------
 # Weight sync: save policy weights and reload vLLM workers periodically.
-# Set save_steps: 0 to disable.
+# Set sync_steps: 0 to disable.
 # ---------------------------------------------------------------------------
 weight_sync:
-  save_steps: 5                    # sync every N training steps (0 = disabled)
+  save_every_steps: 100              # save/overwrite latest checkpoint every N optimizer steps (0 = disabled)
+  sync_steps: 5                    # sync/reload workers every N training steps (0 = disabled)
   checkpoint_dir: "checkpoints/grpo"  # relative to project root
 
   # remote_user and host_ip are read from model_config_inference.yaml cluster.*

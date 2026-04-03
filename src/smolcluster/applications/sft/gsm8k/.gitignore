@@ -1,0 +1,7 @@
+# Generated SFT data — build with prepare_data.py, don't track in git
+data/train.jsonl
+data/valid.jsonl
+data/test.jsonl
+
+# Adapter checkpoints
+checkpoints/
