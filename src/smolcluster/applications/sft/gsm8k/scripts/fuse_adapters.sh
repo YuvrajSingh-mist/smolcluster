@@ -58,6 +58,7 @@ ADAPTER_PATH="$SFT_DIR/checkpoints"
 SAVE_PATH="checkpoints/sft_final_fused"
 DRY_RUN=false
 EXTRA_ARGS=()
+HAS_EXTRA_ARGS=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -83,6 +84,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             EXTRA_ARGS+=("$1")
+            HAS_EXTRA_ARGS=true
             shift
             ;;
     esac
@@ -119,7 +121,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
     echo ""
     echo "Dry-run - resolved command:"
     printf '  python -m mlx_lm fuse --model %q --adapter-path %q --save-path %q' "$HF_MODEL_NAME" "$ADAPTER_PATH" "$SAVE_PATH"
-    if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    if [[ "$HAS_EXTRA_ARGS" == "true" ]]; then
         printf ' %q' "${EXTRA_ARGS[@]}"
     fi
     echo ""
@@ -134,11 +136,17 @@ cd "$PROJECT_DIR"
 echo "Installing project dependencies..."
 uv pip install -e . -q
 
-env HF_HUB_ENABLE_HF_TRANSFER=1 python -m mlx_lm fuse \
-    --model "$HF_MODEL_NAME" \
-    --adapter-path "$ADAPTER_PATH" \
-    --save-path "$SAVE_PATH" \
-    "${EXTRA_ARGS[@]}"
+FUSE_CMD=(
+    env HF_HUB_ENABLE_HF_TRANSFER=1 python -m mlx_lm fuse
+    --model "$HF_MODEL_NAME"
+    --adapter-path "$ADAPTER_PATH"
+    --save-path "$SAVE_PATH"
+)
+if [[ "$HAS_EXTRA_ARGS" == "true" ]]; then
+    FUSE_CMD+=("${EXTRA_ARGS[@]}")
+fi
+
+"${FUSE_CMD[@]}"
 
 echo ""
 echo "Fusion complete. Final fused model written to: $SAVE_PATH"
