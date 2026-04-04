@@ -5,15 +5,15 @@
 
 vocab_size: null  # Will be set from tokenizer
 model_dim: 256    # Model dimension 
-num_layers: 6     # Number of layers (paper: 6 or 12)
+num_layers: 2     # Number of layers (paper: 6 or 12)
 num_heads: 4      # Number of attention heads (paper: 4)
-ff_dim: 768      # Feed-forward dimension (paper: 1024)
+ff_dim: 256      # Feed-forward dimension (paper: 1024)
 dropout: 0.1      # Dropout rate
 max_seq_len: 256  # Maximum sequence length (paper: 128 or 256)
 
 # Training Hyperparameters
   
-num_microbatches: 8      # Number of micro-batches to split each batch into for pipeline parallelism (paper: 16)         
+num_microbatches: 2      # Number of micro-batches to split each batch into for pipeline parallelism (paper: 16)         
 batch_size: 2             # Batch size (total, across all devices, calculated as per_device_batch_size * num_devices * gradient_accumulation_steps)
 num_epochs: 2              # Number of epochs
 learning_rate: 0.0003       # Learning rate
@@ -32,9 +32,9 @@ min_lr: 0.00003            # Minimum learning rate for cosine decay
 
 dataset_name: "wikitext"              # Dataset name
 dataset_config: "wikitext-103-v1"     # Dataset configuration/subset
-tokenizer: "openai-community/gpt2"    # HuggingFace tokenizer (GPT model)
+tokenizer: "meta-llama/Llama-2-7b"    # HuggingFace tokenizer (GPT model)
 
-# Logging & Checkpoints
+# Logging & Checkpointscker
 
 project_name: "smolcluster-gpt-wikitext2"
 log_interval: 50           # Steps between logging

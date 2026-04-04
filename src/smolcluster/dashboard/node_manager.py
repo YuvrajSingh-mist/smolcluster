@@ -262,8 +262,10 @@ class NodeManager:
         server_alias = server_info.get("ssh_alias") or server_hostname
         server_ip    = server_info.get("ip", "")
 
-        # host_ip: start from existing, then upsert discovered IPs
+        # host_ip/port: start from existing, then upsert discovered values
         host_ip = dict(config.get("host_ip", {}))
+        port_cfg = dict(config.get("port", {})) if isinstance(config.get("port", {}), dict) else {"default": config.get("port", 65432)}
+        default_port = int(port_cfg.get("default", 65432))
         if server_ip:
             host_ip[server_alias] = server_ip
 
@@ -275,9 +277,17 @@ class NodeManager:
             ip    = info.get("ip", "")
             user  = info.get("user", "")
             rank  = info.get("rank", 1)
-            workers_regular_raw.append({"hostname": alias, "user": user, "rank": rank})
+            resolved_port = int(port_cfg.get(alias, port_cfg.get(hostname, default_port)))
+            workers_regular_raw.append({
+                "hostname": alias,
+                "user": user,
+                "rank": rank,
+                "ip": ip or host_ip.get(alias, ""),
+                "port": resolved_port,
+            })
             if ip:
                 host_ip[alias] = ip
+            port_cfg[alias] = resolved_port
 
         workers_regular_raw.sort(key=lambda w: w["rank"])
         workers_regular = [
@@ -288,7 +298,14 @@ class NodeManager:
         if algorithm == "classicdp":
             # ClassicDP: server is also rank-0 worker; no separate server role
             server_user = server_info.get("user", "")
-            all_workers = [{"hostname": server_alias, "user": server_user, "rank": 0}] + workers_regular
+            server_port = int(port_cfg.get(server_alias, port_cfg.get(server_hostname, default_port)))
+            all_workers = [{
+                "hostname": server_alias,
+                "user": server_user,
+                "rank": 0,
+                "ip": server_ip or host_ip.get(server_alias, ""),
+                "port": server_port,
+            }] + workers_regular
             config["server"]          = server_alias
             config["workers"]         = {"regular": all_workers, "tablets": []}
             config["num_workers"]     = len(all_workers)
@@ -300,6 +317,7 @@ class NodeManager:
             config["total_num_nodes"] = len(workers_regular) + 1  # +1 server
 
         config["host_ip"] = host_ip
+        config["port"] = port_cfg
 
         _buf = _io.StringIO()
         _yaml.dump(config, _buf)

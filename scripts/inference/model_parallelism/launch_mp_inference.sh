@@ -16,6 +16,42 @@ fi
 export WANDB_API_KEY="$WANDB_API_TOKEN"
 CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/inference/cluster_config_inference.yaml"
 REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+RSYNC_RSH="ssh $SSH_OPTS"
+
+LOCAL_USER="$(id -un 2>/dev/null || whoami)"
+LOCAL_HOSTNAME="$(hostname 2>/dev/null || true)"
+LOCAL_HOSTNAME_SHORT="$(hostname -s 2>/dev/null || true)"
+declare -a LOCAL_NAMES=("localhost" "$LOCAL_HOSTNAME" "$LOCAL_HOSTNAME_SHORT")
+declare -a LOCAL_IPS=("127.0.0.1" "::1")
+while IFS= read -r ip; do
+    [[ -n "$ip" ]] && LOCAL_IPS+=("$ip")
+done < <(hostname -I 2>/dev/null | tr ' ' '\n')
+
+is_local_ssh_target() {
+    local node="$1"
+    local cfg_user
+    local cfg_host
+    local name
+    local ip
+
+    cfg_user="$(ssh -G "$node" 2>/dev/null | awk '/^user / {print $2; exit}')"
+    cfg_host="$(ssh -G "$node" 2>/dev/null | awk '/^hostname / {print $2; exit}')"
+
+    [[ -z "$cfg_user" ]] && cfg_user="$LOCAL_USER"
+    [[ -z "$cfg_host" ]] && cfg_host="$node"
+    [[ "$cfg_user" != "$LOCAL_USER" ]] && return 1
+
+    for name in "${LOCAL_NAMES[@]}"; do
+        [[ -n "$name" && "$cfg_host" == "$name" ]] && return 0
+    done
+
+    for ip in "${LOCAL_IPS[@]}"; do
+        [[ -n "$ip" && "$cfg_host" == "$ip" ]] && return 0
+    done
+
+    return 1
+}
 
 # Read configuration from YAML
 NUM_WORKERS=$(yq '.num_workers' "$CONFIG_FILE")
@@ -79,8 +115,24 @@ fi
 
 echo "📤 This API key will be used on all remote nodes"
 
-# Create array of nodes that need SSH (server + regular workers only, not tablets)
-SSH_NODES=("$SERVER" "${WORKERS[@]}")
+# Create array of nodes that need SSH (remote server + remote regular workers only, not tablets)
+SSH_NODES=()
+for node in "$SERVER" "${WORKERS[@]}"; do
+    [[ -z "$node" ]] && continue
+    if is_local_ssh_target "$node"; then
+        continue
+    fi
+    found=false
+    for existing in "${SSH_NODES[@]}"; do
+        if [[ "$existing" == "$node" ]]; then
+            found=true
+            break
+        fi
+    done
+    if [[ "$found" == "false" ]]; then
+        SSH_NODES+=("$node")
+    fi
+done
 
 echo "📦 Syncing code to remote nodes"
 if [[ "$DRY_RUN" != "true" ]]; then
@@ -88,7 +140,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
         echo "   Syncing to $node..."
         rsync -az --exclude '.venv' --exclude '__pycache__' --exclude '*.pyc' --exclude '.git' --exclude 'src/data' \
             --exclude '*.pt' --exclude '*.pth' --exclude '*.safetensors' \
-            "$PROJECT_DIR/" "$node:$REMOTE_PROJECT_DIR/" || {
+            -e "$RSYNC_RSH" "$PROJECT_DIR/" "$node:$REMOTE_PROJECT_DIR/" || {
             echo "❌ Error: Failed to sync code to $node"
             exit 1
         }
@@ -107,34 +159,34 @@ if [[ ${#TABLETS[@]} -gt 0 ]]; then
 fi
 if [[ "$DRY_RUN" != "true" ]]; then
     for node in "${SSH_NODES[@]}"; do
-        if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$node" "echo 'SSH OK'"; then
+        if ! ssh $SSH_OPTS "$node" "echo 'SSH OK'"; then
             echo "❌ Error: Cannot connect to $node via SSH. Please check SSH setup."
             exit 1
         fi
         
         # Check if tmux is installed on remote node
-        if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && which tmux"; then
+        if ! ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && which tmux"; then
             echo "❌ Error: tmux is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
         # Check if uv is installed on remote node
-        if ! ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && uv --version"; then
+        if ! ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && uv --version"; then
             echo "❌ Error: uv is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
         
         # Check if Promtail is installed on remote node (cross-platform)
-        if ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe || test -f /mnt/c/promtail/promtail.exe || test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" || test -f \"C:\\\\promtail\\\\promtail.exe\")" &>/dev/null; then
+        if ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe || test -f /mnt/c/promtail/promtail.exe || test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" || test -f \"C:\\\\promtail\\\\promtail.exe\")" &>/dev/null; then
             # Kill any existing Promtail processes (cleanup old/broken instances)
             echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
-            ssh "$node" "((pkill -f '[p]romtail' 2>/dev/null || (command -v sudo >/dev/null 2>&1 && sudo -n pkill -f '[p]romtail' 2>/dev/null) || true); (taskkill /F /IM promtail.exe >/dev/null 2>&1 || true))" &>/dev/null || true
+            ssh $SSH_OPTS "$node" "((pkill -f '[p]romtail' 2>/dev/null || (command -v sudo >/dev/null 2>&1 && sudo -n pkill -f '[p]romtail' 2>/dev/null) || true); (taskkill /F /IM promtail.exe >/dev/null 2>&1 || true))" &>/dev/null || true
             
             # Delete old log files and position files for fresh start
-            ssh "$node" "rm -f $REMOTE_PROJECT_DIR/logging/cluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" &>/dev/null || true
+            ssh $SSH_OPTS "$node" "rm -f $REMOTE_PROJECT_DIR/logging/cluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" &>/dev/null || true
             
             # Ensure log directory exists
-            ssh "$node" "mkdir -p $REMOTE_PROJECT_DIR/logging/cluster-logs"
+            ssh $SSH_OPTS "$node" "mkdir -p $REMOTE_PROJECT_DIR/logging/cluster-logs"
             sleep 1
             
             # Determine config file based on node type
@@ -146,11 +198,11 @@ if [[ "$DRY_RUN" != "true" ]]; then
             
             # Start Promtail in background (auto-detect path)
             echo "🚀 $node: Starting Promtail..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
+            ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
             sleep 2
             
             # Check if Promtail is running
-            if ssh "$node" "pgrep -f promtail || tasklist /FI 'IMAGENAME eq promtail.exe' 2>nul | findstr promtail"; then
+            if ssh $SSH_OPTS "$node" "pgrep -f promtail || tasklist /FI 'IMAGENAME eq promtail.exe' 2>nul | findstr promtail"; then
                 echo "✅ $node: Promtail started successfully"
             else
                 echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
@@ -162,19 +214,19 @@ if [[ "$DRY_RUN" != "true" ]]; then
         
         # Check that venv exists and sync dependencies
         echo "📦 Checking venv on $node..."
-        if ! ssh "$node" "test -f $REMOTE_PROJECT_DIR/.venv/bin/python"; then
+        if ! ssh $SSH_OPTS "$node" "test -f $REMOTE_PROJECT_DIR/.venv/bin/python"; then
             echo "⚠️  Venv not found on $node. Creating with Python 3.9..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv venv --python 3.9.6 .venv && source .venv/bin/activate && uv pip install -e ."
+            ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv venv --python 3.9.6 .venv && source .venv/bin/activate && uv pip install -e ."
         else
             echo "✅ Venv exists on $node. Running uv sync..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"
+            ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv sync"
         fi
 
         echo "🧪 Verifying smolcluster import on $node..."
-        if ! ssh "$node" "cd $REMOTE_PROJECT_DIR && PYTHONPATH=$REMOTE_PROJECT_DIR/src:\$PYTHONPATH .venv/bin/python -c 'import smolcluster'"; then
+        if ! ssh $SSH_OPTS "$node" "cd $REMOTE_PROJECT_DIR && PYTHONPATH=$REMOTE_PROJECT_DIR/src:\$PYTHONPATH .venv/bin/python -c 'import smolcluster'"; then
             echo "⚠️  Import failed on $node after sync. Reinstalling editable package..."
-            ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv pip install -e ."
-            if ! ssh "$node" "cd $REMOTE_PROJECT_DIR && PYTHONPATH=$REMOTE_PROJECT_DIR/src:\$PYTHONPATH .venv/bin/python -c 'import smolcluster'"; then
+            ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && uv pip install -e ."
+            if ! ssh $SSH_OPTS "$node" "cd $REMOTE_PROJECT_DIR && PYTHONPATH=$REMOTE_PROJECT_DIR/src:\$PYTHONPATH .venv/bin/python -c 'import smolcluster'"; then
                 echo "❌ Error: smolcluster is not importable on $node after reinstall"
                 exit 1
             fi
@@ -271,7 +323,7 @@ launch_on_node() {
     echo "🔗 Launching on $node: $command"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_file="\$HOME/${session_name}.log"
+        log_file="$REMOTE_PROJECT_DIR/logging/cluster-logs/${session_name}__${node}.log"
         local safe_command="$command"
         safe_command=$(echo "$safe_command" | sed -E "s/WANDB_API_KEY='[^']*'/WANDB_API_KEY='***REDACTED***'/g; s/HF_TOKEN='[^']*'/HF_TOKEN='***REDACTED***'/g")
         echo "   [DRY RUN] Would execute: ssh $node \"export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \\\"bash -c '$safe_command 2>&1 | tee $log_file; exec bash'\\\"\""
@@ -279,8 +331,8 @@ launch_on_node() {
     fi
 
     # SSH command with tmux and logging
-    log_file="\$HOME/${session_name}.log"
-    ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
+    log_file="$REMOTE_PROJECT_DIR/logging/cluster-logs/${session_name}__${node}.log"
+    ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
         echo "❌ Failed to launch on $node"
         return 1
     }
@@ -291,8 +343,34 @@ launch_on_node() {
     sleep 1
     
     # Verify session exists
-    if ! ssh "$node" "tmux has-session -t $session_name "; then
+    if ! ssh $SSH_OPTS "$node" "tmux has-session -t $session_name "; then
         echo "⚠️  Warning: Session $session_name on $node may have exited. Check logs: ssh $node 'tail -20 $log_file'"
+    fi
+}
+
+launch_local() {
+    local command=$1
+    local session_name=$2
+    local host_name
+    host_name="$(hostname -s 2>/dev/null || hostname)"
+    local log_file="$PROJECT_DIR/logging/cluster-logs/${session_name}__${host_name}.log"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local safe_command="$command"
+        safe_command=$(echo "$safe_command" | sed -E "s/WANDB_API_KEY='[^']*'/WANDB_API_KEY='***REDACTED***'/g; s/HF_TOKEN='[^']*'/HF_TOKEN='***REDACTED***'/g")
+        echo "   [DRY RUN] Would execute locally: tmux new -d -s $session_name \"bash -c '$safe_command 2>&1 | tee $log_file; exec bash'\""
+        return 0
+    fi
+
+    tmux new -d -s "$session_name" "bash -c '$command 2>&1 | tee $log_file; exec bash'" || {
+        echo "❌ Failed to launch local session $session_name"
+        return 1
+    }
+
+    echo "✅ Launched $session_name locally (logs: $log_file)"
+    sleep 1
+    if ! tmux has-session -t "$session_name"; then
+        echo "⚠️  Warning: Local session $session_name may have exited. Check logs: tail -20 $log_file"
     fi
 }
 
@@ -301,10 +379,18 @@ launch_on_node() {
 echo ""
 echo "🧹 Cleaning up existing sessions..."
 if [[ "$DRY_RUN" != "true" ]]; then
-    ssh "$SERVER" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux kill-session -t mp_inference_server  || true"
+    if is_local_ssh_target "$SERVER"; then
+        tmux kill-session -t mp_inference_server 2>/dev/null || true
+    else
+        ssh $SSH_OPTS "$SERVER" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux kill-session -t mp_inference_server  || true"
+    fi
     for worker_node in "${WORKERS[@]}"; do
         # Kill any session that starts with "mp_inference_worker"
-        ssh "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}'  | grep -E '^mp_inference_worker' | xargs -I {} tmux kill-session -t {}  || true"
+        if is_local_ssh_target "$worker_node"; then
+            tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^mp_inference_worker' | xargs -I {} tmux kill-session -t {} 2>/dev/null || true
+        else
+            ssh $SSH_OPTS "$worker_node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && tmux list-sessions -F '#{session_name}'  | grep -E '^mp_inference_worker' | xargs -I {} tmux kill-session -t {}  || true"
+        fi
     done
     echo "✅ Cleanup complete"
 else
@@ -314,8 +400,13 @@ fi
 # Launch server on $SERVER
 echo ""
 echo "🖥️  Launching Model Parallelism inference server on $SERVER..."
-SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/server.py"
-launch_on_node "$SERVER" "$SERVER_CMD" "mp_inference_server"
+if is_local_ssh_target "$SERVER"; then
+    SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$PROJECT_DIR/src':\$PYTHONPATH && cd $PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/server.py"
+    launch_local "$SERVER_CMD" "mp_inference_server"
+else
+    SERVER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/server.py"
+    launch_on_node "$SERVER" "$SERVER_CMD" "mp_inference_server"
+fi
 
 # Wait a moment for server to start
 echo "⏳ Waiting a few seconds for server to initialize..."
@@ -333,7 +424,8 @@ if [[ ${#TABLET_WORKERS[@]} -gt 0 ]]; then
         rank="${worker_entry##*:}"
         
         session_name="mp_tablet_proxy$rank"
-        log_file="$HOME/${session_name}.log"
+        host_name="$(hostname -s 2>/dev/null || hostname)"
+        log_file="$PROJECT_DIR/logging/cluster-logs/${session_name}__${host_name}.log"
         
         # Kill existing session if it exists
         tmux kill-session -t "$session_name" 2>/dev/null || true
@@ -354,11 +446,16 @@ fi
 for worker_entry in "${REGULAR_WORKERS[@]}"; do
     hostname="${worker_entry%%:*}"
     rank="${worker_entry##*:}"
-    
-    # Launch regular worker via SSH
-    WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $hostname"
-    launch_on_node "$hostname" "$WORKER_CMD" "mp_inference_worker$rank"
-    echo "   ✅ Rank $rank: $hostname (mp_inference_worker$rank)"
+
+    if is_local_ssh_target "$hostname"; then
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$PROJECT_DIR/src':\$PYTHONPATH && cd $PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $hostname"
+        launch_local "$WORKER_CMD" "mp_inference_worker$rank"
+        echo "   ✅ Local rank $rank: $hostname (mp_inference_worker$rank)"
+    else
+        WORKER_CMD="export WANDB_API_KEY='$WANDB_API_KEY' HF_TOKEN='$HF_TOKEN' PYTHONPATH='$REMOTE_PROJECT_DIR/src':\$PYTHONPATH && cd $REMOTE_PROJECT_DIR && .venv/bin/python src/smolcluster/algorithms/ModelParallelism/inference/worker.py $rank $hostname"
+        launch_on_node "$hostname" "$WORKER_CMD" "mp_inference_worker$rank"
+        echo "   ✅ Rank $rank: $hostname (mp_inference_worker$rank)"
+    fi
 done
 
 echo ""

@@ -1,28 +1,36 @@
 #!/bin/bash
 
-# set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_classicdp.yaml"
+REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
-# Load environment variables from .env
-if [[ -f "../../.env" ]]; then
-    export $(grep -v '^#' ../../.env | xargs)
-elif [[ -f ".env" ]]; then
-    export $(grep -v '^#' .env | xargs)
+ensure_wandb_login_on_node() {
+    local node="$1"
+
+    node_exec "$node" "cd $REMOTE_PROJECT_DIR && export WANDB_API_KEY='$WANDB_API_KEY' && if [[ -x .venv/bin/python ]]; then .venv/bin/python -c \"import os, sys, wandb; sys.exit(0 if wandb.login(key=os.environ['WANDB_API_KEY'], relogin=True) else 1)\" >/dev/null 2>&1; else python3 -c \"import os, sys, wandb; sys.exit(0 if wandb.login(key=os.environ['WANDB_API_KEY'], relogin=True) else 1)\" >/dev/null 2>&1; fi"
+}
+
+# Load environment variables from the repository .env
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$PROJECT_DIR/.env"
+    set +a
 fi
 
-# Set WANDB_API_KEY for wandb compatibility
-export WANDB_API_KEY="$WANDB_API_TOKEN"
+# Accept either WANDB_API_TOKEN or WANDB_API_KEY and normalise to WANDB_API_KEY for wandb.
+if [[ -n "$WANDB_API_TOKEN" && -z "$WANDB_API_KEY" ]]; then
+    export WANDB_API_KEY="$WANDB_API_TOKEN"
+elif [[ -n "$WANDB_API_KEY" && -z "$WANDB_API_TOKEN" ]]; then
+    export WANDB_API_TOKEN="$WANDB_API_KEY"
+fi
 
 # Set CUDA environment variables (for Jetson and other CUDA devices)
 if [[ -n "$CUDA_HOME" ]]; then
     export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
     export PATH="$CUDA_HOME/bin:$PATH"
 fi
-
-# Configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CONFIG_FILE="$PROJECT_DIR/src/smolcluster/configs/cluster_config_classicdp.yaml"
-REMOTE_PROJECT_DIR="~/Desktop/smolcluster"  # Adjust if your remote path is different
 
 # shellcheck disable=SC1091
 source "$PROJECT_DIR/scripts/lib/node_helpers.sh"
@@ -90,16 +98,27 @@ echo "🚀 SmolCluster Launch Script - Classic Data Parallelism (Ring-AllReduce)
 echo "📁 Project dir: $PROJECT_DIR"
 echo "⚙️  Config file: $CONFIG_FILE"
 
-# Verify the API key works by setting it as env var and testing
+if [[ -z "$WANDB_API_KEY" ]]; then
+    echo "❌ WANDB_API_KEY is not set. Add WANDB_API_KEY=... (or WANDB_API_TOKEN=...) to $PROJECT_DIR/.env"
+    exit 1
+fi
+
+# Verify login locally first (strict, no length-only fallback)
 export WANDB_API_KEY
-if WANDB_API_KEY="$WANDB_API_KEY" wandb login --relogin <<< "$WANDB_API_KEY" 2>&1 | grep -qE "(Successfully logged in|Logged in)"; then
-    echo "✅ wandb authentication successful"
-else
-    # Try alternative: just verify the key is valid format (40 hex chars typically)
-    if [[ ${#WANDB_API_KEY} -ge 32 ]]; then
-        echo "✅ API key accepted (will be set as WANDB_API_KEY on all nodes)"
+if [[ -x "$PROJECT_DIR/.venv/bin/python" ]]; then
+    if WANDB_API_KEY="$WANDB_API_KEY" "$PROJECT_DIR/.venv/bin/python" -c "import os, sys, wandb; sys.exit(0 if wandb.login(key=os.environ['WANDB_API_KEY'], relogin=True) else 1)" >/dev/null 2>&1; then
+        echo "✅ wandb authentication successful (local .venv)"
     else
-        echo "❌ Invalid API key format. Please check your API key."
+        echo "❌ W&B login failed with WANDB_API_KEY from $PROJECT_DIR/.env"
+        echo "   Fix the key and retry (current key is being rejected by W&B)."
+        exit 1
+    fi
+else
+    if WANDB_API_KEY="$WANDB_API_KEY" python3 -c "import os, sys, wandb; sys.exit(0 if wandb.login(key=os.environ['WANDB_API_KEY'], relogin=True) else 1)" >/dev/null 2>&1; then
+        echo "✅ wandb authentication successful (local python3)"
+    else
+        echo "❌ W&B login failed with WANDB_API_KEY from $PROJECT_DIR/.env"
+        echo "   Fix the key and retry (current key is being rejected by W&B)."
         exit 1
     fi
 fi
@@ -204,6 +223,15 @@ if [[ "$DRY_RUN" != "true" ]]; then
             node_exec "$node" "cd $REMOTE_PROJECT_DIR && bash scripts/installations/setup_jetson.sh"
             echo "   ✅ Jetson PyTorch installation complete"
         fi
+
+        echo "🔐 Ensuring W&B login on $node..."
+        if ensure_wandb_login_on_node "$node"; then
+            echo "✅ $node: W&B login verified"
+        else
+            echo "❌ Error: W&B login failed on $node using WANDB_API_KEY from .env"
+            echo "   Check the key in $PROJECT_DIR/.env and verify node internet access."
+            exit 1
+        fi
         
         echo "✅ $node: SSH OK, tmux OK, uv OK, venv OK"
     done
@@ -234,7 +262,7 @@ launch_on_node() {
         return 0
     fi
 
-    log_file="\$HOME/${session_name}.log"
+    log_file="$REMOTE_PROJECT_DIR/logging/cluster-logs/${session_name}__${node}.log"
     node_exec "$node" "cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
         echo "❌ Failed to launch on $node"
         return 1

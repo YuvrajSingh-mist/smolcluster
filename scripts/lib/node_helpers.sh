@@ -21,12 +21,32 @@ init_node_helpers() {
             ip -o -4 addr show up scope global 2>/dev/null | awk '{split($4, parts, "/"); print parts[1]}'
         } | awk 'NF'
     )
+
+    NODE_HELPERS_LOCAL_HOSTS=(
+        "$NODE_HELPERS_LOCAL_HOST_SHORT"
+        "$NODE_HELPERS_LOCAL_HOST_FULL"
+    )
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        case " ${NODE_HELPERS_LOCAL_HOSTS[*]} " in
+            *" $name "*) ;;
+            *) NODE_HELPERS_LOCAL_HOSTS+=("$name") ;;
+        esac
+    done < <(
+        {
+            hostname 2>/dev/null
+            hostname -s 2>/dev/null
+            hostname -f 2>/dev/null
+        } | awk 'NF'
+    )
 }
 
 node_is_local() {
     local node="$1"
     local configured_ip
     local local_ip
+    local local_host
+    local ssh_host
 
     [[ -n "$node" ]] || return 1
 
@@ -36,15 +56,33 @@ node_is_local() {
             ;;
     esac
 
-    if [[ "$node" == "$NODE_HELPERS_LOCAL_HOST_SHORT" || "$node" == "$NODE_HELPERS_LOCAL_HOST_FULL" ]]; then
-        return 0
-    fi
+    for local_host in "${NODE_HELPERS_LOCAL_HOSTS[@]}"; do
+        if [[ "$node" == "$local_host" ]]; then
+            return 0
+        fi
+    done
 
     if [[ -n "$NODE_HELPERS_CONFIG_FILE" ]] && command -v yq >/dev/null 2>&1; then
         configured_ip=$(yq ".host_ip.${node}" "$NODE_HELPERS_CONFIG_FILE" 2>/dev/null)
         if [[ -n "$configured_ip" && "$configured_ip" != "null" ]]; then
             for local_ip in "${NODE_HELPERS_LOCAL_IPS[@]}"; do
                 if [[ "$local_ip" == "$configured_ip" ]]; then
+                    return 0
+                fi
+            done
+        fi
+    fi
+
+    if command -v ssh >/dev/null 2>&1; then
+        ssh_host=$(ssh -G "$node" 2>/dev/null | awk '/^hostname / {print $2; exit}')
+        if [[ -n "$ssh_host" ]]; then
+            for local_host in "${NODE_HELPERS_LOCAL_HOSTS[@]}"; do
+                if [[ "$ssh_host" == "$local_host" ]]; then
+                    return 0
+                fi
+            done
+            for local_ip in "${NODE_HELPERS_LOCAL_IPS[@]}"; do
+                if [[ "$ssh_host" == "$local_ip" ]]; then
                     return 0
                 fi
             done

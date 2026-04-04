@@ -216,13 +216,13 @@ launch_on_node() {
     echo "🔗 Launching on $node: $command"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_file="\$HOME/${session_name}.log"
+        log_file="$REMOTE_PROJECT_DIR/logging/cluster-logs/${session_name}__${node}.log"
         echo "   [DRY RUN] Would launch $session_name on $node"
         return 0
     fi
 
     # SSH command with tmux and logging
-    log_file="\$HOME/${session_name}.log"
+    log_file="$REMOTE_PROJECT_DIR/logging/cluster-logs/${session_name}__${node}.log"
     node_exec "$node" "cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
         echo "❌ Failed to launch on $node"
         return 1

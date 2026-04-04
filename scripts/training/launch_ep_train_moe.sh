@@ -314,9 +314,6 @@ fi
 echo "All nodes: ${ALL_NODES[*]}"
 
 start_logging_stack "$PROJECT_DIR"
-else
-    echo "⚠️  Docker not available or logging not configured. Skipping centralized logging."
-fi
 
 # Function to launch on a node
 launch_on_node() {
@@ -331,7 +328,7 @@ launch_on_node() {
         return 0
     fi
 
-    log_file="\$HOME/${session_name}.log"
+    log_file="$REMOTE_PROJECT_DIR/logging/cluster-logs/${session_name}__${node}.log"
     node_exec "$node" "cd $REMOTE_PROJECT_DIR && tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\"" || {
         echo "❌ Failed to launch on $node"
         return 1

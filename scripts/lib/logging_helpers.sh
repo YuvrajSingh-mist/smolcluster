@@ -19,6 +19,8 @@ start_logging_stack() {
     local project_dir="$1"
     local compose_file="$project_dir/logging/docker-compose.yml"
 
+    mkdir -p "$project_dir/logging/cluster-logs"
+
     echo ""
     echo "📈 Starting logging infrastructure on controller..."
 

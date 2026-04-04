@@ -53,21 +53,19 @@ num_workers: 3
 allToAllTopology:
   workers:
     regular:
-      - hostname: mini1
-        rank: 0
-        port: 65432
-        ip: "10.10.0.1"
-      - hostname: mini2
-        rank: 1
-        port: 65433
-        ip: "10.10.0.2"
-      - hostname: mini3
-        rank: 2
-        port: 65434
-        ip: "10.10.0.3"
-
-
-#Model parallelism specific configs
+    - hostname: jetson
+      rank: 0
+      ip: 10.10.1.1
+      port: 65432
+    - hostname: jetson2
+      rank: 1
+      ip: 10.10.1.2
+      port: 65433
+    - hostname: jetson3
+      rank: 2
+      ip: 10.10.1.3
+      port: 65434
+    tablets: []
 num_nodes: 3
 num_layers: 6  # Number of transformer blocks (auto-detected from model, this is just for reference)
-model_name: causal_gpt2 
+model_name: causal_gpt2

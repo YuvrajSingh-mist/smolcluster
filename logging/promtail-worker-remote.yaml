@@ -9,33 +9,30 @@ clients:
   - url: http://10.10.0.4:3100/loki/api/v1/push
 
 scrape_configs:
-  # Worker logs on this machine
-  - job_name: smolcluster-worker
+  - job_name: smolcluster
     static_configs:
       - targets:
           - localhost
         labels:
-          job: smolcluster-worker
-          component: worker
-          __path__: /home/*/Desktop/smolcluster/logging/cluster-logs/worker-*.log
+          job: smolcluster
+          __path__: /home/*/Desktop/smolcluster/logging/cluster-logs/*.log
 
     pipeline_stages:
-      # Extract hostname from filename
+      - regex:
+          source: filename
+        expression: '.*/(?P<session>.+?)__(?P<host>[^/]+)\.log$'
+      - labels:
+          host:
+          session:
       - match:
-          selector: '{job="smolcluster-worker"}'
+          selector: '{job="smolcluster"}'
           stages:
             - regex:
-                source: filename
-                expression: '.*/(?P<host>[^/]+)\.log$'
+                expression: '^(?P<timestamp>\S+\s+\S+) \| (?P<level>\S+) \| rank:(?P<rank>\w+) \| (?P<message>.+)$'
             - labels:
-                host:
-      # Parse structured logs
-      - regex:
-          expression: '^(?P<timestamp>\S+\s+\S+) \| (?P<level>\S+) \| rank:(?P<rank>\w+) \| (?P<message>.+)$'
-      - labels:
-          rank:
-          level:
-      - timestamp:
-          source: timestamp
-          format: '2006-01-02 15:04:05,000'
-          location: Asia/Kolkata
+                rank:
+                level:
+            - timestamp:
+                source: timestamp
+                format: '2006-01-02 15:04:05,000'
+                location: Asia/Kolkata

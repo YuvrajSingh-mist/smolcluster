@@ -15,12 +15,14 @@ Endpoints:
     POST /api/inference/stop            → kill + clear file
     POST /api/connectivity/check        → TCP port-22 check (no SSH keys needed)
     GET  /api/training                  → latest metrics JSON
+    POST /chat                          → proxy to inference API chat (SSE)
 """
 
 import asyncio
 import getpass
 import json
 import logging
+import os
 import platform
 import re
 import socket
@@ -30,7 +32,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+import httpx
+import yaml
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -44,6 +48,9 @@ FRONTEND_DIR   = Path(__file__).parent / "frontend"
 METRICS_FILE   = Path("/tmp/smolcluster_metrics.json")
 INFERENCE_FILE = Path("/tmp/smolcluster_inference.json")
 TOKEN_PING     = Path("/tmp/smolcluster_token_ping")
+LAST_TOKEN     = Path("/tmp/smolcluster_last_token")
+LOKI_BASE_URL  = os.environ.get("SMOLCLUSTER_LOKI_URL", "http://127.0.0.1:3100")
+CLUSTER_LOG_DIR = Path(__file__).resolve().parents[3] / "logging" / "cluster-logs"
 
 
 # ── SSH config parsing ─────────────────────────────────────────────────────────
@@ -362,6 +369,46 @@ def _ssh_aliases_snapshot() -> dict:
     return aliases
 
 
+def _looks_like_server_session(session: str) -> bool:
+    session = (session or "").strip().lower()
+    return bool(re.search(r"(^|[-_])server($|[-_])", session))
+
+
+def _canonicalize_log_hostname(raw_hostname: str, session: str = "") -> str:
+    """Resolve log host labels back to the dashboard's canonical node hostname."""
+    hostname = (raw_hostname or "").strip().removesuffix(".local")
+    if not hostname:
+        return _server_hostname if _looks_like_server_session(session) else "unknown"
+
+    if hostname == _server_hostname:
+        return hostname
+
+    server_alias = (_get_server_alias(_server_hostname) or "").removesuffix(".local")
+    if _looks_like_server_session(session) and hostname == server_alias:
+        return _server_hostname
+
+    known_hosts = {
+        _server_hostname,
+        *discovery.snapshot().keys(),
+        *node_manager.snapshot_selected().keys(),
+        *node_manager.snapshot_processes().keys(),
+    }
+    if hostname in known_hosts:
+        return hostname
+
+    alias_matches = [
+        canonical
+        for canonical, alias in _ssh_aliases_snapshot().items()
+        if (alias or "").strip().removesuffix(".local") == hostname
+    ]
+    if len(alias_matches) == 1:
+        return alias_matches[0]
+    if len(alias_matches) > 1 and _looks_like_server_session(session) and _server_hostname in alias_matches:
+        return _server_hostname
+
+    return hostname
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/")
 async def index():
@@ -473,7 +520,13 @@ async def launch_inference_script(req: InferenceLaunchRequest):
             or hostname
         )
         preferred_ip = ssh_entry.get("hostname") or node_ip
-        user  = _probed.get(hostname, "")
+        # Prefer probed username; fall back to ~/.ssh/config User and selected ssh_user.
+        user  = (
+            _probed.get(hostname)
+            or ssh_entry.get("user")
+            or sel.get("ssh_user", "")
+            or ""
+        )
         nodes_info[hostname] = {
             "ssh_alias": alias,
             "user":      user,
@@ -524,7 +577,13 @@ async def launch_training_script(req: InferenceLaunchRequest):
             or hostname
         )
         preferred_ip = ssh_entry.get("hostname") or node_ip
-        user = _probed.get(hostname, "")
+        # Prefer probed username; fall back to ~/.ssh/config User and selected ssh_user.
+        user = (
+            _probed.get(hostname)
+            or ssh_entry.get("user")
+            or sel.get("ssh_user", "")
+            or ""
+        )
         nodes_info[hostname] = {
             "ssh_alias": alias,
             "user":      user,
@@ -587,6 +646,7 @@ async def sse_events():
                 "training":     _read_json(METRICS_FILE),
                 "connectivity": _read_json(INFERENCE_FILE),
                 "token_ts":     TOKEN_PING.stat().st_mtime if TOKEN_PING.exists() else 0,
+                "token_text":   LAST_TOKEN.read_text() if LAST_TOKEN.exists() else "",
             })
             yield f"data: {payload}\n\n"
             await asyncio.sleep(1)
@@ -596,15 +656,121 @@ async def sse_events():
 
 
 # ── SSE: logs (3 Hz) ───────────────────────────────────────────────────────────
+async def _fetch_loki_logs(start_ns: int) -> tuple[list[dict], int]:
+    """Fetch centralized worker/server logs from Loki from the given timestamp."""
+    query = '{job="smolcluster"}'
+    end_ns = time.time_ns()
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            response = await client.get(
+                f"{LOKI_BASE_URL}/loki/api/v1/query_range",
+                params={
+                    "query": query,
+                    "start": str(start_ns),
+                    "end": str(end_ns),
+                    "direction": "forward",
+                    "limit": "500",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return [], start_ns
+
+    results = payload.get("data", {}).get("result", [])
+    logs: list[dict] = []
+    max_seen_ns = start_ns
+    for stream in results:
+        labels = stream.get("stream", {}) or {}
+        session = labels.get("session") or ""
+        raw_hostname = labels.get("host") or labels.get("hostname") or labels.get("job") or "remote"
+        hostname = _canonicalize_log_hostname(raw_hostname, session)
+        for ts_text, line in stream.get("values", []) or []:
+            try:
+                ts_ns = int(ts_text)
+            except (TypeError, ValueError):
+                continue
+            max_seen_ns = max(max_seen_ns, ts_ns)
+            logs.append({
+                "hostname": hostname,
+                "line": line,
+                "session": session,
+                "ts": ts_ns / 1_000_000_000,
+            })
+
+    logs.sort(key=lambda item: (item["ts"], item["hostname"], item["line"]))
+    return logs, max_seen_ns + 1
+
+
+def _parse_cluster_log_path(path: Path) -> tuple[str, str]:
+    stem = path.stem
+    if "__" in stem:
+        session, hostname = stem.rsplit("__", 1)
+        return session, hostname
+    return stem, stem
+
+
+def _read_local_cluster_logs(offsets: dict[str, int]) -> list[dict]:
+    """Tail controller-local tmux logs so local workers stream even without Promtail."""
+    if not CLUSTER_LOG_DIR.exists():
+        offsets.clear()
+        return []
+
+    active_paths = {str(path) for path in CLUSTER_LOG_DIR.glob("*__*.log")}
+    for stale_path in [path for path in offsets if path not in active_paths]:
+        offsets.pop(stale_path, None)
+
+    logs: list[dict] = []
+    for path in sorted(CLUSTER_LOG_DIR.glob("*__*.log"), key=lambda item: (item.stat().st_mtime_ns, item.name)):
+        key = str(path)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+
+        offset = offsets.get(key, 0)
+        if offset > size:
+            offset = 0
+
+        session, hostname = _parse_cluster_log_path(path)
+        hostname = _canonicalize_log_hostname(hostname, session)
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(offset)
+                for raw_line in handle:
+                    logs.append({
+                        "hostname": hostname,
+                        "line": raw_line.rstrip("\n"),
+                        "session": session,
+                        "ts": time.time(),
+                    })
+                offsets[key] = handle.tell()
+        except OSError:
+            continue
+
+    return logs
+
+
 @app.get("/api/logs")
 async def sse_logs():
     async def gen():
         last_seq = 0
+        last_loki_ns = time.time_ns()
+        local_log_offsets: dict[str, int] = {}
         while True:
             lines = node_manager.logs_since(last_seq)
+            loki_lines, last_loki_ns = await _fetch_loki_logs(last_loki_ns)
+            local_lines = _read_local_cluster_logs(local_log_offsets)
+            merged: list[dict] = []
             if lines:
                 last_seq = lines[-1]["seq"]
-                yield f"data: {json.dumps(lines)}\n\n"
+                merged.extend(lines)
+            if loki_lines:
+                merged.extend(loki_lines)
+            if local_lines:
+                merged.extend(local_lines)
+            if merged:
+                yield f"data: {json.dumps(merged)}\n\n"
             await asyncio.sleep(0.35)
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
@@ -670,6 +836,95 @@ async def _run_tcp_checks(selected: dict, snap: dict):
         "message": (f"All {total} reachable ✓" if ok == total
                     else f"{ok}/{total} reachable"),
     }))
+
+
+
+# ── Chat proxy (forward to inference API) ──────────────────────────────────────
+def _get_inference_api_url() -> Optional[str]:
+    """Get the inference API URL from cluster config."""
+    # Try multiple paths for the config file
+    possible_paths = [
+        Path("/tmp/smolcluster_inference_config.yaml"),
+        Path.cwd() / "configs" / "inference" / "cluster_config_inference.yaml",
+        Path(__file__).parent.parent / "configs" / "inference" / "cluster_config_inference.yaml",
+    ]
+    
+    config_path = None
+    for path in possible_paths:
+        if path.exists():
+            config_path = path
+            break
+    
+    if not config_path:
+        return None
+    
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+        if not config:
+            return None
+        
+        server_hostname = config.get("server", "")
+        if not server_hostname:
+            return None
+        
+        # Try to get the server's IP/hostname
+        host_mapping = config.get("host_ip", {})
+        host = host_mapping.get(server_hostname, server_hostname)
+        
+        # Get API port
+        web_interface = config.get("web_interface", {})
+        api_port = web_interface.get("api_port", 8000)
+        
+        return f"http://{host}:{api_port}"
+    except Exception as e:
+        logger.warning(f"Could not get inference API URL: {e}")
+        return None
+
+
+@app.post("/chat")
+async def chat_proxy(request: Request):
+    """Proxy chat requests to the inference API server as a transparent SSE stream."""
+    api_url = _get_inference_api_url()
+    if not api_url:
+        raise HTTPException(503, "Inference API server not configured or unreachable")
+
+    chat_endpoint = f"{api_url}/chat"
+
+    body = await request.body()
+    content_type = request.headers.get("content-type", "application/json")
+
+    async def stream_from_api():
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    chat_endpoint,
+                    content=body,
+                    headers={"content-type": content_type},
+                ) as response:
+                    if response.status_code != 200:
+                        resp_text = (await response.aread()).decode(errors="ignore").strip()
+                        error_msg = f"Inference API error: {response.status_code}"
+                        if resp_text:
+                            error_msg = f"{error_msg} - {resp_text[:180]}"
+                        yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        return
+
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            yield chunk
+        except httpx.TimeoutException:
+            yield f"data: {json.dumps({'error': 'Inference API timeout', 'done': True})}\n\n"
+        except Exception as e:
+            logger.error(f"Error proxying chat request: {e}")
+            yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+
+    return StreamingResponse(
+        stream_from_api(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

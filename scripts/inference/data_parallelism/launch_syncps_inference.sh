@@ -10,6 +10,9 @@ REMOTE_PROJECT_DIR="~/Desktop/smolcluster"
 SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
 RSYNC_RSH="ssh $SSH_OPTS"
 
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/scripts/lib/logging_helpers.sh"
+
 DRY_RUN=false
 if [[ "$1" == "--dry-run" ]]; then
     DRY_RUN=true
@@ -160,6 +163,32 @@ if [[ "$DRY_RUN" != "true" ]]; then
             echo "❌ Error: uv is not installed on $node. Install deps on $node with: ssh $node 'bash $REMOTE_PROJECT_DIR/scripts/installations/installation.sh'"
             exit 1
         fi
+
+        if ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && (promtail --version || promtail.exe --version || which promtail || where promtail.exe || test -f /c/promtail/promtail.exe || test -f /mnt/c/promtail/promtail.exe || test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" || test -f \"C:\\\\promtail\\\\promtail.exe\")" &>/dev/null; then
+            echo "🧹 $node: Cleaning up any existing Promtail processes and old logs..."
+            ssh $SSH_OPTS "$node" "((pkill -f '[p]romtail' 2>/dev/null || (command -v sudo >/dev/null 2>&1 && sudo -n pkill -f '[p]romtail' 2>/dev/null) || true); (taskkill /F /IM promtail.exe >/dev/null 2>&1 || true))" &>/dev/null || true
+            ssh $SSH_OPTS "$node" "rm -f $REMOTE_PROJECT_DIR/logging/cluster-logs/*.log /tmp/promtail-positions.yaml /tmp/positions.yaml" &>/dev/null || true
+            ssh $SSH_OPTS "$node" "mkdir -p $REMOTE_PROJECT_DIR/logging/cluster-logs"
+            sleep 1
+
+            if [[ "$node" == "$SERVER" ]]; then
+                config_file="logging/promtail-server-remote.yaml"
+            else
+                config_file="logging/promtail-worker-remote.yaml"
+            fi
+
+            echo "🚀 $node: Starting Promtail..."
+            ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:\$HOME/bin:\$PATH && PROMTAIL_CMD=\$(command -v promtail || command -v promtail.exe || (test -f /c/promtail/promtail.exe && echo /c/promtail/promtail.exe) || (test -f /mnt/c/promtail/promtail.exe && echo /mnt/c/promtail/promtail.exe) || (test -f \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\" && echo \"/c/Program Files/GrafanaLabs/Promtail/promtail.exe\") || (test -f \"C:\\\\promtail\\\\promtail.exe\" && echo \"C:\\\\promtail\\\\promtail.exe\") || echo promtail.exe) && nohup \$PROMTAIL_CMD -config.file=\$HOME/Desktop/smolcluster/$config_file > /tmp/promtail.log 2>&1 </dev/null &" &
+            sleep 2
+
+            if ssh $SSH_OPTS "$node" "pgrep -f promtail || tasklist /FI 'IMAGENAME eq promtail.exe' 2>nul | findstr promtail"; then
+                echo "✅ $node: Promtail started successfully"
+            else
+                echo "⚠️  $node: Promtail may not have started. Check /tmp/promtail.log on $node"
+            fi
+        else
+            echo "⚠️  Warning: Promtail not found on $node. Centralized logging will not work."
+        fi
     done
 
     echo "🔧 Checking local requirements on launch machine..."
@@ -243,11 +272,13 @@ echo "📁 Project: $PROJECT_DIR"
 echo "⚙️  Config: $CONFIG_FILE"
 echo "🖥️  Server: $SERVER"
 
+start_logging_stack "$PROJECT_DIR"
+
 action_ssh() {
     local node=$1
     local command=$2
     local session_name=$3
-    local log_file="\$HOME/${session_name}.log"
+    local log_file="$REMOTE_PROJECT_DIR/logging/cluster-logs/${session_name}__${node}.log"
 
     if [[ "$DRY_RUN" == "true" ]]; then
         local safe_command="$command"
@@ -256,13 +287,15 @@ action_ssh() {
         return 0
     fi
 
-    ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && cd $REMOTE_PROJECT_DIR && tmux kill-session -t $session_name 2>/dev/null || true; tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\""
+    ssh $SSH_OPTS "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && mkdir -p $REMOTE_PROJECT_DIR/logging/cluster-logs && cd $REMOTE_PROJECT_DIR && tmux kill-session -t $session_name 2>/dev/null || true; tmux new -d -s $session_name \"bash -c '$command 2>&1 | tee $log_file; exec bash'\""
 }
 
 action_local() {
     local command=$1
     local session_name=$2
-    local log_file="$HOME/${session_name}.log"
+    local host_name
+    host_name="$(hostname -s 2>/dev/null || hostname)"
+    local log_file="$PROJECT_DIR/logging/cluster-logs/${session_name}__${host_name}.log"
 
     if [[ "$DRY_RUN" == "true" ]]; then
         local safe_command="$command"
@@ -271,6 +304,7 @@ action_local() {
         return 0
     fi
 
+    mkdir -p "$PROJECT_DIR/logging/cluster-logs"
     tmux kill-session -t "$session_name" 2>/dev/null || true
     tmux new -d -s "$session_name" "bash -c '$command 2>&1 | tee $log_file; exec bash'"
 }

@@ -135,6 +135,7 @@ else:
 SERVER_PORT = int(os.getenv("INFERENCE_SERVER_PORT", default_port))
 REDIS_URL = os.getenv("REDIS_URL", "redis://0.0.0.0:6379/0")
 _TOKEN_PING = Path("/tmp/smolcluster_token_ping")
+_LAST_TOKEN = Path("/tmp/smolcluster_last_token")
 
 # Get web interface port from cluster config
 API_PORT = cluster_config["web_interface"]["api_port"]
@@ -540,6 +541,10 @@ async def chat(chat_request: ChatRequest, http_request: Request):
                     try: _TOKEN_PING.touch()
                     except OSError: pass
                     token_text = result.get("text", "")
+                    try:
+                        _LAST_TOKEN.write_text(token_text)
+                    except OSError:
+                        pass
                     token_idx = result.get("token_idx", 0)
                     
                     full_text += token_text

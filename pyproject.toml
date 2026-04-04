@@ -24,6 +24,7 @@ dependencies = [
     "prometheus-client>=0.24.1",
     "fastapi>=0.128.0",
     "uvicorn>=0.39.0",
+    "httpx>=0.24.0",
     "coremltools>=9.0",
     "python-dotenv>=1.2.1",
     "redis>=5.0.0",

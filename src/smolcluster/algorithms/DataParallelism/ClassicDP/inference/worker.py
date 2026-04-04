@@ -50,6 +50,25 @@ def resolve_model_config(cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 MODEL_NAME, MODEL_CFG = resolve_model_config(model_configs)
 TOPOLOGY = cluster_config["workers"]["regular"]
+HOST_IP_MAP = cluster_config.get("host_ip", {})
+PORT_CFG = cluster_config.get("port", {})
+if isinstance(PORT_CFG, dict):
+    DEFAULT_PORT = int(PORT_CFG.get("default", 65432))
+else:
+    DEFAULT_PORT = int(PORT_CFG or 65432)
+
+
+def resolve_node_ip(node_cfg: dict) -> str:
+    return str(node_cfg.get("ip") or HOST_IP_MAP.get(node_cfg.get("hostname"), "")).strip()
+
+
+def resolve_node_port(node_cfg: dict) -> int:
+    if "port" in node_cfg and node_cfg["port"] not in (None, ""):
+        return int(node_cfg["port"])
+    hostname = node_cfg.get("hostname")
+    if isinstance(PORT_CFG, dict):
+        return int(PORT_CFG.get(hostname, DEFAULT_PORT))
+    return DEFAULT_PORT
 
 if len(sys.argv) > 1:
     WORKER_RANK = int(sys.argv[1])
@@ -290,7 +309,7 @@ def main() -> None:
         raise RuntimeError("Tokenizer is required for ClassicDP inference worker")
 
     my_cfg = get_worker_cfg(WORKER_RANK)
-    my_port = int(my_cfg["port"])
+    my_port = resolve_node_port(my_cfg)
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -305,10 +324,17 @@ def main() -> None:
             peer_rank = int(peer["rank"])
             if peer_rank == 0:
                 continue
-            peer_sock = connect_with_retry(peer["ip"], int(peer["port"]))
+            peer_ip = resolve_node_ip(peer)
+            peer_port = resolve_node_port(peer)
+            if not peer_ip:
+                raise RuntimeError(
+                    f"Missing IP for ClassicDP worker rank {peer_rank} ({peer.get('hostname')}). "
+                    "Populate workers.regular[].ip or host_ip mapping in cluster_config_inference.yaml"
+                )
+            peer_sock = connect_with_retry(peer_ip, peer_port)
             send_message(peer_sock, ("register_peer", 0))
             peer_sockets[peer_rank] = peer_sock
-            logger.info(f"Connected to worker {peer_rank} at {peer['ip']}:{peer['port']}")
+            logger.info(f"Connected to worker {peer_rank} at {peer_ip}:{peer_port}")
 
         run_rank_zero(model, tokenizer, listener, peer_sockets)
     else:
