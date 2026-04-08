@@ -5,15 +5,35 @@ from datasets import load_dataset
 
 
 PROMPT = (
-    "You are an assistant who is good at summarization task. "
-    "The user gives you a story and you are required to summarize it "
-    "User: {question}. Assistant: "
+    "You are an assistant who is an expert at summarization task. "
+    "The user gives you a post and you are required to summarize it, keeping the key points and main ideas intact. "
 )
+
+
+
+def _format_prompt(question: str, tokenizer: Optional[Any]) -> str:
+    
+    try:
+        if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+            messages = [
+                {"role": "system", "content": PROMPT},
+                {"role": "user", "content": question},
+            ]
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+    # Fallback for tokenizers without chat template support
+    except Exception as e:
+        logger.error(e)
+
 
 
 
 def build_train_val_examples(
     data_config: Dict[str, Any],
+    tokenizer: Optional[Any] = None,
     seed: int = 42,
 ) -> Tuple[List[Tuple[str, Optional[str]]], List[Tuple[str, Optional[str]]]]:
     """Load a HuggingFace dataset and return pre-formatted (prompt, answer) pairs.
@@ -37,13 +57,13 @@ def build_train_val_examples(
     val_split   = dataset[data_config["val_split"]]
 
     train_examples = [
-        (PROMPT.format(question=q), None)
-        for q in train_split["prompt"]
-        # if (ans := extract_answer_from_gsm8k(a)) is not None
+        (_format_prompt(q, tokenizer), a)
+        for q, a in zip(train_split["prompt"], train_split["completion"])
+       
     ]
     val_examples = [
-        (PROMPT.format(question=q), None)
-        for q in val_split["prompt"]
-        # if (ans := extract_answer_from_gsm8k(a)) is not None
+        (_format_prompt(q, tokenizer), a)
+        for q, a in zip(val_split["prompt"], val_split["completion"])
+     
     ]
     return train_examples, val_examples

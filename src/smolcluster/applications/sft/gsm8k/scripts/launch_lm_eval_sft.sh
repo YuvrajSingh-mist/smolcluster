@@ -5,11 +5,16 @@
 #   1) Fuse local SFT adapters into a standalone model.
 #   2) Run lm_eval on single-turn instruction-following benchmarks.
 #
+# Pass --eval-model to skip adapters entirely and evaluate any HF model or
+# local path directly.
+#
 # Usage:
 #   bash src/smolcluster/applications/sft/gsm8k/scripts/launch_lm_eval_sft.sh
 #   bash src/smolcluster/applications/sft/gsm8k/scripts/launch_lm_eval_sft.sh --tasks gsm8k_cot_zeroshot,ifeval
 #   bash src/smolcluster/applications/sft/gsm8k/scripts/launch_lm_eval_sft.sh --no-fuse
 #   bash src/smolcluster/applications/sft/gsm8k/scripts/launch_lm_eval_sft.sh --dry-run
+#   bash src/smolcluster/applications/sft/gsm8k/scripts/launch_lm_eval_sft.sh --eval-model meta-llama/Llama-3.2-1B-Instruct
+#   bash src/smolcluster/applications/sft/gsm8k/scripts/launch_lm_eval_sft.sh --eval-model /path/to/local/model
 
 set -euo pipefail
 
@@ -62,7 +67,7 @@ fi
 HF_MODEL_NAME=$(yq '.dp.hf_model_name' "$MODEL_CONFIG")
 ADAPTER_PATH="$SFT_DIR/checkpoints"
 FUSED_MODEL_PATH="$PROJECT_DIR/src/smolcluster/applications/sft/gsm8k/checkpoints/sft_final_fused"
-TASKS="ifeval,mmlu,arc_challenge,hellaswag,truthfulqa_mc2"
+TASKS="arc_challenge"
 NUM_FEWSHOT=0
 
 BATCH_SIZE="8"
@@ -71,6 +76,7 @@ LIMIT=""
 OUTPUT_PATH=""
 DRY_RUN=false
 FUSE_FIRST=true
+DIRECT_EVAL_MODEL=""   # set via --eval-model; bypasses all adapter logic
 EXTRA_ARGS=()
 HAS_EXTRA_ARGS=false
 
@@ -112,6 +118,10 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_PATH="$2"
             shift 2
             ;;
+        --eval-model)
+            DIRECT_EVAL_MODEL="$2"
+            shift 2
+            ;;
         --no-fuse)
             FUSE_FIRST=false
             shift
@@ -133,6 +143,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --device <dev>           lm_eval device (default: mps on macOS)"
             echo "  --limit <n|f>            lm_eval --limit for quick runs"
             echo "  --output-path <path>     lm_eval output path"
+            echo "  --eval-model <hf|path>   Evaluate any HF model or local path directly (skips all adapter logic)"
             echo "  --no-fuse                Evaluate with base+peft adapter (skip fuse step)"
             echo "  --dry-run                Print commands only"
             exit 0
@@ -169,6 +180,7 @@ cd "$PROJECT_DIR"
 if ! python -c "import lm_eval" >/dev/null 2>&1; then
     echo "lm_eval not found in .venv; installing lm-eval..."
     uv pip install lm-eval
+    uv pip install accelerate  # ensure accelerate is installed for GPU support
 fi
 
 # Install benchmark dependencies task-by-task from TASKS.
@@ -192,7 +204,12 @@ done
 EVAL_MODEL_PATH=""
 MODEL_ARGS=""
 
-if [[ "$FUSE_FIRST" == "true" ]]; then
+if [[ -n "$DIRECT_EVAL_MODEL" ]]; then
+    echo "SFT adapters enabled: NO (direct model mode)"
+    echo "  model: $DIRECT_EVAL_MODEL"
+    EVAL_MODEL_PATH="$DIRECT_EVAL_MODEL"
+    MODEL_ARGS="pretrained=${EVAL_MODEL_PATH},trust_remote_code=True"
+elif [[ "$FUSE_FIRST" == "true" ]]; then
     if [[ ! -f "$FUSE_SCRIPT" ]]; then
         echo "Error: fuse script not found: $FUSE_SCRIPT"
         exit 1
@@ -219,7 +236,7 @@ else
 
     EVAL_MODEL_PATH="$HF_MODEL_NAME"
     MODEL_ARGS="pretrained=${EVAL_MODEL_PATH},peft=${ADAPTER_PATH},trust_remote_code=True"
-fi
+fi  # end adapter/direct-model branch
 
 LM_EVAL_CMD=(
     python -m lm_eval

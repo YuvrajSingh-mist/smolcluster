@@ -75,6 +75,8 @@ _answers_log_path = _debug_dir / "rollout_answers.jsonl"
 _answers_log_lock = threading.Lock()
 
 
+MAX_LENGTH_OF_SUMMARIZATION = 64
+
 def _append_answers_log(record: dict) -> None:
     with _answers_log_lock:
         with _answers_log_path.open("a", encoding="utf-8") as f:
@@ -260,17 +262,18 @@ def _build_completion_mask(
 
 
 def _compute_single_reward(
-    args: Tuple[int, str, str, str, int],
+    args: Tuple[int, str, str, str],
 ) -> Tuple[int, float, dict]:
-    idx, question, generated_text, true_answer, max_output_tokens = args
+    idx, question, generated_text, true_answer = args
     quality_reward = calculate_summary_quality(generated_text, true_answer)
-    length_penalty = calculate_length_reward(generated_text, max_output_tokens)
-    total_reward = float(quality_reward + 2 * length_penalty)
+    length_penalty = calculate_length_reward(generated_text, MAX_LENGTH_OF_SUMMARIZATION)
+    total_reward = float(quality_reward + length_penalty)
+    total_reward = float(length_penalty)
     log_record = {
         "rollout_idx":    idx,
         "question":       question,
         "quality_reward": float(quality_reward),
-        "length_penalty": float(2 * length_penalty),
+        "length_penalty": float(length_penalty),
         "total_reward":   total_reward,
         "generated_text": generated_text,
         "true_answer":    true_answer,
@@ -281,7 +284,6 @@ def _compute_single_reward(
 def compute_rewards(
     rollout_texts: List[str],
     rollout_targets: List[str],
-    max_output_tokens: int,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
     max_workers: Optional[int] = None,
@@ -292,7 +294,7 @@ def compute_rewards(
     lists for each reward term (quality_reward, length_penalty, total_reward)."""
     questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
     indexed_args = [
-        (i, q, text, target, max_output_tokens)
+        (i, q, text, target)
         for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
     ]
 
@@ -365,7 +367,6 @@ def evaluate_batch(
         device=device,
         max_workers=config.get("reward_workers"),
         step=step,
-        max_output_tokens=config["max_output_tokens"],
         rollout_questions=rollout_questions,
     )
     rewards = rewards_flat.reshape(T, C)          # [T, C]
@@ -442,6 +443,7 @@ def train_step(
     scaler: Optional[GradScaler] = None,
     prefetched_rollouts: Optional[Tuple[List[str], List[str], List[str]]] = None,
     rollout_group_sizes: Optional[List[int]] = None,
+    
     step: Optional[int] = None,
 ) -> Optional[Tuple[Dict[str, float], Any]]:
     step_tag = f"[train_step epoch={epoch_idx + 1} step={step_in_epoch}/{total_steps_in_epoch}]"
@@ -505,7 +507,6 @@ def train_step(
         device=device,
         max_workers=config.get("reward_workers"),
         step=step,
-        max_output_tokens=config["max_output_tokens"],
         rollout_questions=rollout_questions,
     )
     rewards = rewards_flat.reshape(T, C)          # [T, C]
@@ -1004,7 +1005,7 @@ def main() -> None:
 
     model, ref_model, tokenizer = load_model(dtype, grpo_config, model_config)
     train_examples, val_examples = build_train_val_examples(
-        grpo_config["data"], seed=seed
+        grpo_config["data"], seed=seed, tokenizer=tokenizer
     )
     _lora_active = apply_lora_if_quantized(model, grpo_config)
     optimizer_name = grpo_config.get("optimizer", "adam").lower()
@@ -1034,7 +1035,7 @@ def main() -> None:
         )
 
     wandb.init(
-        project=grpo_config.get("wandb_project", "smolcluster-grpo"),
+        project=grpo_config.get("wandb", {}).get("project", "smolcluster-grpo"),
         config={
             **grpo_config,
             "seed": seed,
