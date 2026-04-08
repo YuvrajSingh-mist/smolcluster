@@ -49,6 +49,22 @@ So a fully correct, properly formatted response with reasoning tags gets a maxim
 
 Summarization uses a separate data loader and reward functions, but the GRPO training pattern is the same.
 
+## Rewarding in the Summarization Setup
+
+The summarization training path (`train_summarization.py`) uses four composable reward signals, all implemented in `rewards/summarization_rewards.py`.
+
+| Reward | Function | Range | What it measures |
+|---|---|---|---|
+| `rouge_l` | `calculate_rouge_l_reward` | [0, 1] | ROUGE-L F1 vs reference — fluency and phrase ordering via longest-common-subsequence overlap |
+| `format` | `calculate_format_reward` | {0, 1} | negative of how far the output deviates from the expected format length |
+
+The default total reward is a weighted sum:
+
+$$
+r =  \cdot r_{\text{ROUGE-L}} + \cdot r_{\text{format}}
+$$
+
+
 ## Folder Structure
 
 ```text
@@ -107,205 +123,6 @@ The most important GRPO settings live in `config.yaml`.
 - `weight_sync.save_every_steps`: how often to refresh `checkpoints/grpo/latest`
 - `weight_sync.sync_steps`: how often to push fresh weights to rollout workers
 - `vllm`: whether rollout generation is delegated to vLLM workers
-
-## How to Train
-
-### Option 1: Use the Launcher
-
-The launcher is the most complete way to run GRPO in this repo because it performs preflight checks, manages tmux sessions, and brings up rollout workers.
-
-Run GSM8K training:
-
-```bash
-bash src/smolcluster/applications/reasoning/grpo/scripts/launch_grpo_train.sh gsm8k
-```
-
-Run summarization training:
-
-```bash
-bash src/smolcluster/applications/reasoning/grpo/scripts/launch_grpo_train.sh summarization
-```
-
-Preview commands without executing them:
-
-```bash
-bash src/smolcluster/applications/reasoning/grpo/scripts/launch_grpo_train.sh --dry-run gsm8k
-```
-
-Clean up the tmux session and worker processes:
-
-```bash
-bash src/smolcluster/applications/reasoning/grpo/scripts/launch_grpo_train.sh --cleanup
-```
-
-The launcher expects:
-
-- `tmux`
-- `ssh`
-- `curl`
-- `yq`
-- valid cluster and model config files
-- `vllm: true` in the GRPO config when using the launcher
-
-### Option 2: Run the Training Script Directly
-
-If you want to run the MLX trainer directly without the launcher:
-
-```bash
-python src/smolcluster/applications/reasoning/grpo/train_gsm8k.py
-```
-
-or:
-
-```bash
-python src/smolcluster/applications/reasoning/grpo/train_summarization.py
-```
-
-The training scripts read configuration directly from:
-
-```text
-src/smolcluster/configs/inference/reasoning/grpo/config.yaml
-```
-
-So the normal workflow is:
-
-1. Edit `config.yaml`.
-2. Make sure the base model and cluster settings are correct.
-3. Start training.
-
-### Device Behavior
-
-Training explicitly resolves the MLX device from the GRPO config and calls `mx.set_default_device(...)` before loading the model.
-
-If you keep:
-
-```yaml
-device: "gpu"
-```
-
-then GRPO training runs on the MLX GPU path.
-
-## How Rollouts Work
-
-When `vllm: true`, the trainer does not sample rollouts from the local training process. Instead, it calls worker inference endpoints and asks each worker to generate multiple completions.
-
-The rollout utilities:
-
-- read worker topology from `cluster_config_inference.yaml`
-- build per-worker completion URLs
-- send requests concurrently
-- collect generated texts back into prompt groups
-
-This decouples policy optimization from high-throughput text generation.
-
-## Checkpoints
-
-Training can write two kinds of artifacts depending on the model setup.
-
-- Full weights: `model.safetensors`
-- LoRA adapters: `adapters/adapters.safetensors` plus `adapter_config.json`
-
-Checkpoint directories follow this pattern:
-
-```text
-checkpoints/grpo/
-├── latest/
-├── step_0/
-├── step_100/
-└── step_200/
-```
-
-In this repo, `latest/` is the rolling checkpoint used for worker syncing and the most recent evaluation target.
-
-## How to Evaluate
-
-The GSM8K evaluator supports two modes.
-
-### 1. pass@k-style sampling evaluation
-
-Evaluate one model with multiple sampled rollouts:
-
-```bash
-python src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_gsm8k.py \
-  --model-path Qwen/Qwen3-0.6B \
-  --num-rollouts 8 \
-  --temperature 0.9 \
-  --top-p 0.95 \
-  --device gpu
-```
-
-Evaluate the latest saved GRPO checkpoint:
-
-```bash
-python src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_gsm8k.py \
-  --model-path checkpoints/grpo/latest \
-  --num-rollouts 8 \
-  --device gpu
-```
-
-Evaluate through the same multi-worker vLLM rollout path used during training:
-
-```bash
-python src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_gsm8k.py \
-  --model-path checkpoints/grpo/latest \
-  --use-vllm \
-  --num-rollouts 4
-```
-
-In `--use-vllm` mode, `num_rollouts` is interpreted per worker. If you have 2 workers and set `--num-rollouts 4`, evaluation requests 8 total completions per prompt.
-
-To start the workers with the exact same setup used by training and then run evaluation in one command, use:
-
-```bash
-bash src/smolcluster/applications/reasoning/grpo/scripts/launch_grpo_eval.sh passk
-```
-
-That launcher:
-
-- reads the same GRPO, cluster, and model configs as training
-- starts worker-side vLLM with the same `weight_sync.vllm_start_cmd`
-- uses the same health checks as training
-- evaluates `checkpoints/grpo/latest` by default through the worker rollout path
-- writes worker rollout transport logs to `evaluation/eval-rollouts/vllm_rollouts.jsonl`
-- writes rollout answer logs (same schema as `.grpo_debug/rollout_answers.jsonl`) to `evaluation/eval-rollouts/rollout_answers.jsonl`
-
-### 2. before/after checkpoint comparison
-
-Compare `step_0` against the most recent checkpoint discovered under `checkpoints/grpo`:
-
-```bash
-python src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_gsm8k.py \
-  --checkpoint-dir checkpoints/grpo \
-  --device gpu
-```
-
-Compare explicit checkpoints:
-
-```bash
-python src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_gsm8k.py \
-  --step0 checkpoints/grpo/step_0 \
-  --final checkpoints/grpo/latest \
-  --device gpu
-```
-
-The evaluator now sets the MLX default device explicitly, and its default is `--device gpu`.
-
-## Typical Workflow
-
-For GSM8K, a practical loop is:
-
-1. Set the base model and GRPO hyperparameters in `config.yaml`.
-2. Launch rollout workers and training with `launch_grpo_train.sh`.
-3. Watch `checkpoints/grpo/latest/` for the newest synced policy.
-4. Run checkpoint comparison to measure accuracy gains over `step_0`.
-5. Tune rewards, `clip_ratio`, `num_rollouts`, or LoRA settings as needed.
-
-## Notes and Caveats
-
-- This implementation uses group-normalized rewards, so extremely low reward variance inside a group will shrink the effective learning signal.
-- If `vllm: true`, rollout quality and latency depend on worker health and cluster configuration.
-- LoRA is especially useful when training quantized models because it keeps the trainable parameter count small.
-- `checkpoints/grpo/latest/` may contain either full weights or adapter-only weights, depending on the active training setup.
 
 ## File Map for Further Reading
 
