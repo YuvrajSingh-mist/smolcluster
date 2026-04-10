@@ -28,14 +28,13 @@ dependencies = [
     "coremltools>=9.0",
     "python-dotenv>=1.2.1",
     "redis>=5.0.0",
-    "mlx-lm",
-    "mlx",
+    "accelerate>=0.31.1",
     "rouge-score>=0.1.2",
     "zeroconf>=0.132.0",
     "ruamel-yaml>=0.19.1",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "ruff",
     "mypy",
@@ -44,6 +43,14 @@ dev = [
     "twine",
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
+]
+eval = [
+    "deepeval>=3.9.6",
+    "google-genai>=1.71.0",
+]
+mlx = [
+    "mlx>=0.31.1",
+    "mlx-lm>=0.31.1",
 ]
 
 
@@ -108,7 +115,3 @@ exclude_lines = [
     "@abstractmethod",
 ]
 
-[dependency-groups]
-dev = [
-    "ruff>=0.14.10",
-]

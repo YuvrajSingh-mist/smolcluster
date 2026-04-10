@@ -49,7 +49,8 @@ data:
   dataset_name: "mlabonne/smoltldr"
   subset: "default"
   train_split: "train"
-  val_split: "test"
+  val_split: "validation"
+  test_split: "test"
 
 # Rollout generation
 max_input_tokens: 512
