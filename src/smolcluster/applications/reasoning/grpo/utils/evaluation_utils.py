@@ -1,8 +1,32 @@
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+from scipy import stats
+
 from deepeval.metrics import GEval
+
+
+def batch_items(items: List[Any], batch_size: int) -> List[List[Any]]:
+    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return (
+        "rate_limit" in error_text
+        or "too many requests" in error_text
+        or "429" in error_text
+        or "retryerror" in error_text
+    )
+
+
+def backoff_seconds(attempt_index: int, rate_limited: bool) -> float:
+    if rate_limited:
+        return min(60.0, 5.0 * math.pow(2, attempt_index - 1))
+    return min(10.0, float(attempt_index))
 
 
 def resolve_path(path: str, project_root: Path) -> Path:
@@ -166,6 +190,87 @@ def aggregate_metric_statistics(
     }
 
 
+def build_significance_report(
+    rollout_records: List[Dict[str, Any]],
+    metric_thresholds: Dict[str, float],
+    alpha: float = 0.05,
+) -> Dict[str, Any]:
+    metric_samples: Dict[str, List[float]] = {metric_name: [] for metric_name in metric_thresholds}
+    composite_samples: List[float] = []
+
+    for record in rollout_records:
+        scores = record.get("geval_scores", {})
+        for metric_name in metric_thresholds:
+            score = scores.get(metric_name)
+            if score is not None:
+                metric_samples[metric_name].append(float(score))
+
+        composite_score = record.get("geval_composite")
+        if composite_score is not None:
+            composite_samples.append(float(composite_score))
+
+    results: Dict[str, Any] = {}
+    for metric_name, threshold in metric_thresholds.items():
+        results[metric_name] = _one_sample_significance_test(
+            metric_samples[metric_name],
+            threshold,
+            alpha,
+            stats.ttest_1samp,
+        )
+
+    composite_threshold = float(sum(metric_thresholds.values()))
+    results["Composite"] = _one_sample_significance_test(
+        composite_samples,
+        composite_threshold,
+        alpha,
+        stats.ttest_1samp,
+    )
+
+    return {
+        "test_name": "one_sample_t_test",
+        "alternative": "greater",
+        "null_hypothesis": "mean score <= threshold",
+        "alpha": alpha,
+        "sample_unit": "example-level final averaged scores across successful judge rounds",
+        "num_examples": len(rollout_records),
+        "results": results,
+    }
+
+
+def _one_sample_significance_test(
+    samples: List[float],
+    threshold: float,
+    alpha: float,
+    ttest_fn: Any,
+) -> Dict[str, Any]:
+    sample_array = np.asarray(samples, dtype=float)
+    sample_size = int(sample_array.size)
+    if sample_size == 0:
+        return {
+            "sample_size": 0,
+            "threshold": threshold,
+            "mean": None,
+            "std": None,
+            "t_statistic": None,
+            "p_value": None,
+            "significant": None,
+        }
+
+    mean = float(sample_array.mean())
+    std = float(sample_array.std(ddof=1)) if sample_size > 1 else 0.0
+    t_statistic, p_value = ttest_fn(sample_array, popmean=threshold, alternative="greater")
+    
+    return {
+        "sample_size": sample_size,
+        "threshold": threshold,
+        "mean": mean,
+        "std": std,
+        "t_statistic": t_statistic,
+        "p_value": p_value,
+        "significant": p_value < alpha,
+    }
+
+
 def run_output_dir(base_dir: Path, run_tag: str) -> Path:
     out_dir = base_dir / run_tag
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -190,5 +295,14 @@ def save_summary(summary: Dict[str, Any], base_dir: Path, run_tag: str) -> Path:
     out_path = out_dir / "summary.json"
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return out_path
+
+
+def save_significance_report(report: Dict[str, Any], base_dir: Path, run_tag: str) -> Path:
+    out_dir = run_output_dir(base_dir, run_tag)
+    out_path = out_dir / "significance.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
         f.write("\n")
     return out_path

@@ -16,7 +16,6 @@ Usage:
 
 import argparse
 import logging
-import math
 import sys
 import time
 from pathlib import Path
@@ -42,10 +41,15 @@ from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 from smolcluster.applications.reasoning.grpo.data.summarization import PROMPT
 from smolcluster.applications.reasoning.grpo.utils.evaluation_utils import (
     aggregate_metric_statistics,
+    backoff_seconds,
+    batch_items,
+    build_significance_report,
     build_geval_metrics,
+    is_rate_limit_error,
     parse_test_results,
     resolve_path,
     save_rollouts,
+    save_significance_report,
     save_summary,
 )
 
@@ -116,26 +120,6 @@ _DEFAULT_EVAL_THROTTLE_SECONDS = 0.25
 _DEFAULT_INTER_BATCH_SLEEP_SECONDS = 1.0
 
 
-def _batched(items: List[Any], batch_size: int) -> List[List[Any]]:
-    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
-
-
-def _is_rate_limit_error(exc: Exception) -> bool:
-    error_text = str(exc).lower()
-    return (
-        "rate_limit" in error_text
-        or "too many requests" in error_text
-        or "429" in error_text
-        or "retryerror" in error_text
-    )
-
-
-def _backoff_seconds(attempt_index: int, rate_limited: bool) -> float:
-    if rate_limited:
-        return min(60.0, 5.0 * math.pow(2, attempt_index - 1))
-    return min(10.0, float(attempt_index))
-
-
 def _evaluate_round_attempt(
     test_cases: List[LLMTestCase],
     judge_model: str,
@@ -159,7 +143,7 @@ def _evaluate_round_attempt(
     total_judge_duration_seconds = 0.0
     batch_failures: List[Dict[str, Any]] = []
 
-    batches = _batched(test_cases, eval_batch_size)
+    batches = batch_items(test_cases, eval_batch_size)
     async_config = AsyncConfig(
         run_async=eval_max_concurrent > 1,
         throttle_value=eval_throttle_seconds,
@@ -233,7 +217,7 @@ def _evaluate_round_attempt(
                     batch_completed = True
                     break
             except Exception as exc:
-                rate_limited = _is_rate_limit_error(exc)
+                rate_limited = is_rate_limit_error(exc)
                 batch_duration_seconds = time.perf_counter() - batch_start_time
                 batch_failures.append(
                     {
@@ -254,7 +238,7 @@ def _evaluate_round_attempt(
                     exc,
                 )
 
-            sleep_seconds = _backoff_seconds(batch_attempt, rate_limited)
+            sleep_seconds = backoff_seconds(batch_attempt, rate_limited)
             logger.info(
                 "Sleeping %.1fs before retrying round %d attempt %d batch %d",
                 sleep_seconds,
@@ -435,7 +419,7 @@ def run_eval_pipeline(
                 round_completed = True
                 break
             except Exception as exc:
-                sleep_seconds = _backoff_seconds(attempt_index, _is_rate_limit_error(exc))
+                sleep_seconds = backoff_seconds(attempt_index, is_rate_limit_error(exc))
                 failed_round_attempts.append(
                     {
                         "round_index": round_index,
@@ -533,6 +517,10 @@ def run_eval_pipeline(
     rollouts_path = save_rollouts(rollout_records, _EVAL_ROLLOUTS_DIR, run_tag)
     logger.info("Saved %d rollout records to %s", len(rollout_records), rollouts_path)
 
+    significance_report = build_significance_report(rollout_records, metric_thresholds)
+    significance_path = save_significance_report(significance_report, _EVAL_ROLLOUTS_DIR, run_tag)
+    logger.info("Saved significance report to %s", significance_path)
+
     total_tests = len(test_cases)
     mean_test_passed = sum(round_result["test_passed"] for round_result in successful_rounds) / len(successful_rounds)
     mean_test_failed = sum(round_result["test_failed"] for round_result in successful_rounds) / len(successful_rounds)
@@ -580,6 +568,7 @@ def run_eval_pipeline(
         "metric_means": metric_means,
         "metric_pass_rates": metric_pass_rates,
         "composite": composite,
+        "significance_report_file": str(significance_path),
         "round_summaries": [
             {
                 "round_index": round_result["round_index"],

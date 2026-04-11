@@ -4,6 +4,12 @@ from .training_utils import (
     _add_grads,
     _log_mem,
     _scale_grads,
+    build_completion_mask,
+    compute_advantages,
+    compute_grpo_loss,
+    compute_logprobs,
+    compute_ratio_stats,
+    filter_to_uniform_groups,
     get_dtype_from_config,
     get_mlx_device,
     iterate_batches,
@@ -11,6 +17,8 @@ from .training_utils import (
     apply_lora_if_quantized,
     tokenize_rollouts,
     parse_answer,
+    RolloutPrefetcher,
+    set_global_seed,
 )
 from .amp import GradScaler, MasterWeightAdamW
 
@@ -18,6 +26,12 @@ __all__ = [
     "_add_grads",
     "_log_mem",
     "_scale_grads",
+    "build_completion_mask",
+    "compute_advantages",
+    "compute_grpo_loss",
+    "compute_logprobs",
+    "compute_ratio_stats",
+    "filter_to_uniform_groups",
     "get_dtype_from_config",
     "get_mlx_device",
     "iterate_batches",
@@ -25,6 +39,8 @@ __all__ = [
     "apply_lora_if_quantized",
     "tokenize_rollouts",
     "parse_answer",
+    "RolloutPrefetcher",
+    "set_global_seed",
     "GradScaler",
     "MasterWeightAdamW",
 ]

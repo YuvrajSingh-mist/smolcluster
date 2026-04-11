@@ -1,16 +1,29 @@
 """Generic MLX training utilities for GRPO — gradient helpers, tokenisation, data batching."""
 
 import logging
+import os
+import queue
+import random
+import threading
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 import re
 
 import mlx.core as mx
 import numpy as np
+from mlx.nn.utils import checkpoint as mlx_grad_checkpoint
 from mlx.utils import tree_flatten, tree_unflatten
 from mlx_lm import load as mlx_load
 
 logger = logging.getLogger(__name__)
+
+
+def set_global_seed(seed: int) -> None:
+    """Set Python/NumPy/MLX RNG seeds for reproducibility."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    mx.random.seed(seed)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +125,174 @@ def tokenize_rollouts(
             mx.array(batch["input_ids"], dtype=mx.int32),
             mx.array(batch["attention_mask"], dtype=mx.int32),
         )
+
+
+def build_completion_mask(
+    tokenizer: Any,
+    rollout_questions: List[str],
+    flat_mask: mx.array,
+    num_prompts: int,
+    num_rollouts: int,
+) -> mx.array:
+    """Return [T*C, D] mask that is 1 only for completion tokens."""
+    hf_tok = _unwrap_tokenizer(tokenizer)
+    prompt_lens_flat: List[int] = []
+    for prompt_index in range(num_prompts):
+        prompt_len = len(hf_tok.encode(rollout_questions[prompt_index * num_rollouts], add_special_tokens=False))
+        prompt_lens_flat.extend([prompt_len] * num_rollouts)
+
+    seq_len = flat_mask.shape[1]
+    prompt_lens = mx.array(prompt_lens_flat, dtype=mx.int32)
+    positions = mx.arange(seq_len, dtype=mx.int32)
+    completion_mask = (positions[None, :] >= prompt_lens[:, None]).astype(mx.int32) * flat_mask
+    mx.eval(completion_mask)
+    return completion_mask
+
+
+def filter_to_uniform_groups(
+    per_prompt: List[Tuple[List[str], str]],
+    num_rollouts: int,
+    log: Optional[logging.Logger] = None,
+) -> List[Tuple[List[str], str]]:
+    """Keep only prompts that produced exactly num_rollouts completions."""
+    active_logger = log or logger
+    filtered: List[Tuple[List[str], str]] = []
+    for index, (texts, answer) in enumerate(per_prompt):
+        if len(texts) == 0:
+            active_logger.warning("filter_to_uniform_groups: prompt %d produced 0 rollouts - dropping", index)
+        elif len(texts) < num_rollouts:
+            active_logger.warning(
+                "filter_to_uniform_groups: prompt %d has %d/%d rollouts - dropping",
+                index,
+                len(texts),
+                num_rollouts,
+            )
+        else:
+            filtered.append((texts[:num_rollouts], answer))
+    return filtered
+
+
+def compute_advantages(rewards: mx.array, dtype: type = mx.float32) -> mx.array:
+    """Normalize rewards into advantages within each prompt's rollout group."""
+    group_mean = mx.mean(rewards, axis=1, keepdims=True)
+    group_var = mx.mean((rewards - group_mean) ** 2, axis=1, keepdims=True)
+    group_std = mx.sqrt(group_var)
+    return (rewards - group_mean) / mx.maximum(group_std, mx.array(1e-6, dtype=dtype))
+
+
+def compute_grpo_loss(
+    curr_logprobs: mx.array,
+    advantages: mx.array,
+    config: Dict[str, Any],
+    old_logprobs: Optional[mx.array] = None,
+    ref_logprobs: Optional[mx.array] = None,
+) -> mx.array:
+    """GRPO macro-averaged loss."""
+    if old_logprobs is not None:
+        logprobs_ratio = mx.exp(curr_logprobs - old_logprobs)
+        clipped_ratio = mx.clip(
+            logprobs_ratio,
+            1 - config["clip_ratio"],
+            1 + config["clip_ratio"],
+        )
+        per_rollout = mx.minimum(logprobs_ratio * advantages, clipped_ratio * advantages)
+    else:
+        per_rollout = advantages * curr_logprobs
+
+    if ref_logprobs is not None and config.get("use_kl", True):
+        kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
+        per_rollout = per_rollout - config["kl_beta"] * kl
+
+    per_group = mx.mean(per_rollout, axis=1)
+    return -mx.mean(per_group)
+
+
+def compute_logprobs(
+    model: Any,
+    input_ids: mx.array,
+    attention_mask: mx.array,
+    dtype: type = mx.float32,
+    use_checkpoint: bool = False,
+    completion_mask: Optional[mx.array] = None,
+) -> mx.array:
+    """Compute per-sequence mean log-probs over completion tokens."""
+    num_prompts, num_rollouts, seq_len = input_ids.shape
+    flat_batch = num_prompts * num_rollouts
+    flat_ids = input_ids.reshape(flat_batch, seq_len)
+    flat_mask = attention_mask.reshape(flat_batch, seq_len)
+
+    score_flat = completion_mask.reshape(flat_batch, seq_len) if completion_mask is not None else flat_mask
+    shift_mask = score_flat[:, 1:]
+
+    def _forward(ids: mx.array) -> mx.array:
+        logits = model(ids)
+        shift_logits = logits[:, :-1, :]
+        shift_labels = ids[:, 1:]
+        target_logit = mx.take_along_axis(shift_logits, shift_labels[..., None], axis=-1).squeeze(-1)
+        log_z = mx.logsumexp(shift_logits, axis=-1)
+        return target_logit - log_z
+
+    if use_checkpoint:
+        token_logprobs = mlx_grad_checkpoint(model, _forward)(flat_ids)
+    else:
+        token_logprobs = _forward(flat_ids)
+
+    filtered_logprobs = mx.where(shift_mask > 0, token_logprobs, 0.0)
+    counts = mx.maximum(mx.sum(shift_mask, axis=1), mx.array(1.0, dtype=dtype))
+    flat_result = mx.sum(filtered_logprobs, axis=1) / counts
+    return flat_result.reshape(num_prompts, num_rollouts)
+
+
+def compute_ratio_stats(
+    curr_logprobs: mx.array,
+    ref_logprobs: mx.array,
+    config: Dict[str, Any],
+    dtype: type = mx.float32,
+) -> Dict[str, float]:
+    """Compute ratio/clip/KL diagnostics given already-computed logprob vectors."""
+    ratio = mx.exp(curr_logprobs - ref_logprobs)
+    lo = 1.0 - float(config["clip_ratio"])
+    hi = 1.0 + float(config["clip_ratio"])
+    clipped = mx.logical_or(ratio < lo, ratio > hi)
+    clip_frac = float(mx.mean(clipped.astype(dtype)).item())
+    kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
+    mx.eval(ratio, kl)
+    return {
+        "ratio_mean": float(mx.mean(ratio).item()),
+        "clip_frac": clip_frac,
+        "kl_mean": float(mx.mean(kl).item()),
+    }
+
+
+class RolloutPrefetcher:
+    """Fetch the next step's rollouts in a background thread while compute runs."""
+
+    def __init__(
+        self,
+        fetch_fn: Callable[[List[str], List[str], Optional[int]], List[Tuple[List[str], str]]],
+    ) -> None:
+        self._fetch_fn = fetch_fn
+        self._queue: queue.Queue = queue.Queue(maxsize=1)
+        self._thread: Optional[threading.Thread] = None
+
+    def submit(self, prompts: List[str], answers: List[str], step: Optional[int] = None) -> None:
+        def _run() -> None:
+            result = self._fetch_fn(prompts, answers, step)
+            self._queue.put(result)
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def get(self) -> List[Tuple[List[str], str]]:
+        return self._queue.get()
+
+    def flush(self) -> None:
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=120)
+        try:
+            self._queue.get_nowait()
+        except queue.Empty:
+            pass
 
 
 # ---------------------------------------------------------------------------

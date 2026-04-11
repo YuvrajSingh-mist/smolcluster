@@ -1,0 +1,71 @@
+{
+  "baseline_run": "grpo-summarization-length-only__latest__20260410_220413",
+  "candidate_run": "grpo-summarization-length-quality__latest__20260410_054815",
+  "alpha": 0.05,
+  "test_name": "paired_t_test",
+  "difference_direction": "candidate_minus_baseline",
+  "alternative_greater": "candidate mean > baseline mean",
+  "num_shared_examples": 200,
+  "results": {
+    "Faithfulness": {
+      "sample_size": 200,
+      "baseline_mean": 0.6778,
+      "candidate_mean": 0.725,
+      "mean_delta": 0.0472,
+      "std_delta": 0.27560105170062843,
+      "t_statistic": 2.42201108203746,
+      "p_value_greater": 0.008165565134204193,
+      "p_value_two_sided": 0.016331130268408385,
+      "significant_greater": true,
+      "significant_two_sided": true
+    },
+    "Coverage": {
+      "sample_size": 200,
+      "baseline_mean": 0.4072,
+      "candidate_mean": 0.41540000000000005,
+      "mean_delta": 0.00820000000000001,
+      "std_delta": 0.21271341042556383,
+      "t_statistic": 0.5451725487480467,
+      "p_value_greater": 0.29312267054022045,
+      "p_value_two_sided": 0.5862453410804409,
+      "significant_greater": false,
+      "significant_two_sided": false
+    },
+    "Conciseness": {
+      "sample_size": 200,
+      "baseline_mean": 0.5920000000000001,
+      "candidate_mean": 0.6365,
+      "mean_delta": 0.04449999999999999,
+      "std_delta": 0.2364344650879119,
+      "t_statistic": 2.661731380922106,
+      "p_value_greater": 0.0042045857817745195,
+      "p_value_two_sided": 0.008409171563549039,
+      "significant_greater": true,
+      "significant_two_sided": true
+    },
+    "Clarity": {
+      "sample_size": 200,
+      "baseline_mean": 0.7385,
+      "candidate_mean": 0.7778,
+      "mean_delta": 0.03930000000000001,
+      "std_delta": 0.187438458912244,
+      "t_statistic": 2.965164850575502,
+      "p_value_greater": 0.0016975109286205658,
+      "p_value_two_sided": 0.0033950218572411316,
+      "significant_greater": true,
+      "significant_two_sided": true
+    },
+    "Composite": {
+      "sample_size": 200,
+      "baseline_mean": 2.4154999999999998,
+      "candidate_mean": 2.5547,
+      "mean_delta": 0.1392,
+      "std_delta": 0.7402290559525354,
+      "t_statistic": 2.6594271908039997,
+      "p_value_greater": 0.004232439561510355,
+      "p_value_two_sided": 0.00846487912302071,
+      "significant_greater": true,
+      "significant_two_sided": true
+    }
+  }
+}

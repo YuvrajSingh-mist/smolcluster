@@ -2,10 +2,6 @@
 
 import json
 import logging
-import os
-import queue
-import random
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +14,6 @@ import mlx.optimizers as optim
 import numpy as np
 import wandb
 import yaml
-from mlx.nn.utils import checkpoint as mlx_grad_checkpoint
 from tqdm.auto import tqdm
 
 from smolcluster.applications.reasoning.grpo.data.summarization import build_train_val_examples
@@ -32,6 +27,12 @@ from smolcluster.applications.reasoning.grpo.utils import (
     _add_grads,
     _log_mem,
     _scale_grads,
+    build_completion_mask,
+    compute_advantages,
+    compute_grpo_loss,
+    compute_logprobs,
+    compute_ratio_stats,
+    filter_to_uniform_groups,
     get_dtype_from_config,
     get_mlx_device,
     iterate_batches,
@@ -41,6 +42,8 @@ from smolcluster.applications.reasoning.grpo.utils import (
     parse_answer,
     GradScaler,
     MasterWeightAdamW,
+    RolloutPrefetcher,
+    set_global_seed,
 )
 from smolcluster.applications.reasoning.grpo.utils.worker_sync import (
     save_policy_weights,
@@ -48,14 +51,6 @@ from smolcluster.applications.reasoning.grpo.utils.worker_sync import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _set_global_seed(seed: int) -> None:
-    """Set Python/NumPy/MLX RNG seeds for reproducibility."""
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    mx.random.seed(seed)
 
 
 _module_dir = Path(__file__).parent
@@ -81,184 +76,6 @@ def _append_answers_log(record: dict) -> None:
     with _answers_log_lock:
         with _answers_log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n\n")
-
-def compute_ratio_stats(
-    curr_logprobs: mx.array,
-    ref_logprobs: mx.array,
-    config: Dict[str, Any],
-    dtype: type = mx.float32,
-) -> Dict[str, float]:
-    """Compute ratio/clip/KL diagnostics given already-computed logprob vectors."""
-    ratio = mx.exp(curr_logprobs - ref_logprobs)
-    lo = 1.0 - float(config["clip_ratio"])
-    hi = 1.0 + float(config["clip_ratio"])
-    clipped = mx.logical_or(ratio < lo, ratio > hi)
-    clip_frac = float(mx.mean(clipped.astype(dtype)).item())
-    kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
-    mx.eval(ratio, kl)
-    return {
-        "ratio_mean": float(mx.mean(ratio).item()),
-        "clip_frac": clip_frac,
-        "kl_mean": float(mx.mean(kl).item()),
-    }
-
-
-def filter_to_uniform_groups(
-    per_prompt: List[Tuple[List[str], str]],
-    num_rollouts: int,
-) -> List[Tuple[List[str], str]]:
-    """Keep only prompts that produced exactly num_rollouts completions.
-
-    Prompts with fewer completions are dropped (logged as warnings).
-    Prompts with more completions are truncated to num_rollouts.
-    Returns a list where every entry has exactly num_rollouts rollout texts.
-    """
-    filtered = []
-    for i, (texts, answer) in enumerate(per_prompt):
-        if len(texts) == 0:
-            logger.warning("filter_to_uniform_groups: prompt %d produced 0 rollouts — dropping", i)
-        elif len(texts) < num_rollouts:
-            logger.warning(
-                "filter_to_uniform_groups: prompt %d has %d/%d rollouts — dropping",
-                i, len(texts), num_rollouts,
-            )
-        else:
-            filtered.append((texts[:num_rollouts], answer))
-    return filtered
-
-
-def compute_advantages(rewards: mx.array, dtype: type = mx.float32) -> mx.array:
-    """Normalize rewards into advantages within each prompt's rollout group.
-
-    Args:
-        rewards: [T, C] — T prompts, C rollouts each (uniform groups required)
-    Returns:
-        advantages: [T, C] — per-group z-score normalised
-    """
-    group_mean = mx.mean(rewards, axis=1, keepdims=True)           # [T, 1]
-    group_var  = mx.mean((rewards - group_mean) ** 2, axis=1, keepdims=True)
-    group_std  = mx.sqrt(group_var)                                # [T, 1]
-    return (rewards - group_mean) / mx.maximum(group_std, mx.array(1e-6, dtype=dtype))
-
-
-
-
-def compute_grpo_loss(
-    curr_logprobs: mx.array,
-    advantages: mx.array,
-    config: Dict[str, Any],
-    old_logprobs: Optional[mx.array] = None,
-    ref_logprobs: Optional[mx.array] = None,
-) -> mx.array:
-    """GRPO macro-averaged loss.
-
-    Args:
-        curr_logprobs: [T, C] — log-probs under the current (training) policy
-        advantages:    [T, C] — per-group z-score advantages
-        old_logprobs:  [T, C] — log-probs under the policy that generated the
-                                rollouts (pre-gradient snapshot); used for the
-                                PPO importance-sampling ratio and clip.
-                                If None, falls back to plain policy gradient.
-        ref_logprobs:  [T, C] — log-probs under the frozen reference model;
-                                used only for the KL penalty (use_kl=True).
-                                Independent of old_logprobs.
-    Returns:
-        scalar loss
-    """
-    if old_logprobs is not None:
-        logprobs_ratio = mx.exp(curr_logprobs - old_logprobs)   # [T, C]
-        clipped_ratio = mx.clip(
-            logprobs_ratio,
-            1 - config["clip_ratio"],
-            1 + config["clip_ratio"],
-        )
-        per_rollout = mx.minimum(
-            logprobs_ratio * advantages, clipped_ratio * advantages
-        )                                                        # [T, C]
-    else:
-        per_rollout = advantages * curr_logprobs                 # [T, C] — plain PG fallback
-
-    if ref_logprobs is not None and config.get("use_kl", True):
-        kl = mx.exp(ref_logprobs - curr_logprobs) - (ref_logprobs - curr_logprobs) - 1
-        per_rollout = per_rollout - config["kl_beta"] * kl      # [T, C]
-
-    per_group = mx.mean(per_rollout, axis=1)                     # [T] — mean within each prompt's group
-    return -mx.mean(per_group)                                   # scalar — macro-average across prompts
-
-
-def compute_logprobs(
-    model: Any,
-    input_ids: mx.array,
-    attention_mask: mx.array,
-    dtype: type = mx.float32,
-    use_checkpoint: bool = False,
-    completion_mask: Optional[mx.array] = None,
-) -> mx.array:
-    """Compute per-sequence mean log-probs over completion tokens.
-
-    Args:
-        input_ids:       [T, C, D] — T prompts, C rollouts, D tokens (prompt+completion)
-        attention_mask:  [T, C, D] — 1 for real tokens, 0 for padding
-        completion_mask: [T, C, D] — 1 only for completion tokens (0 for prompt + padding).
-                         When provided, the mean is taken only over completion tokens,
-                         giving p(completion | prompt). When None, averages over all tokens.
-    Returns:
-        [T, C] — mean log-prob for each rollout
-    """
-    T, C, D = input_ids.shape
-    N = T * C
-    flat_ids  = input_ids.reshape(N, D)
-    flat_mask = attention_mask.reshape(N, D)
-
-    # Score only completion tokens when mask is provided; fall back to all real tokens.
-    score_flat = completion_mask.reshape(N, D) if completion_mask is not None else flat_mask
-    shift_mask = score_flat[:, 1:]
-
-    def _forward(ids: mx.array) -> mx.array:
-        logits = model(ids)
-        shift_logits = logits[:, :-1, :]
-        shift_labels = ids[:, 1:]
-        # logsumexp trick: avoids materializing [N, D, vocab] log_softmax tensor
-        target_logit = mx.take_along_axis(shift_logits, shift_labels[..., None], axis=-1).squeeze(-1)
-        log_z = mx.logsumexp(shift_logits, axis=-1)
-        return target_logit - log_z
-
-    if use_checkpoint:
-        token_logprobs = mlx_grad_checkpoint(model, _forward)(flat_ids)
-    else:
-        token_logprobs = _forward(flat_ids)
-
-    filtered_logprobs = mx.where(shift_mask > 0, token_logprobs, 0.0)
-    counts = mx.maximum(mx.sum(shift_mask, axis=1), mx.array(1.0, dtype=dtype))
-    flat_result = mx.sum(filtered_logprobs, axis=1) / counts     # [T*C]
-    return flat_result.reshape(T, C)                             # [T, C]
-
-
-def _build_completion_mask(
-    tokenizer: Any,
-    rollout_questions: List[str],
-    flat_mask: mx.array,
-    T: int,
-    C: int,
-) -> mx.array:
-    """Return [T*C, D] mask that is 1 only for completion tokens (not prompt, not padding).
-
-    Encodes each unique prompt to find where the prompt ends in the tokenized
-    prompt+completion sequence, then zeros out those prefix positions.
-    """
-    hf_tok = getattr(tokenizer, "_tokenizer", tokenizer)
-    prompt_lens_flat: List[int] = []
-    for i in range(T):
-        p_len = len(hf_tok.encode(rollout_questions[i * C], add_special_tokens=False))
-        prompt_lens_flat.extend([p_len] * C)
-
-    D = flat_mask.shape[1]
-    p_lens = mx.array(prompt_lens_flat, dtype=mx.int32)   # [T*C]
-    positions = mx.arange(D, dtype=mx.int32)               # [D]
-    # 1 where position >= prompt_len (completion token) AND token is not padding
-    comp_mask = (positions[None, :] >= p_lens[:, None]).astype(mx.int32) * flat_mask
-    mx.eval(comp_mask)
-    return comp_mask
 
 
 def _compute_single_reward(
@@ -353,7 +170,7 @@ def evaluate_batch(
     D = flat_ids.shape[1]
     input_ids      = flat_ids.reshape(T, C, D)   # [T, C, D]
     attention_mask = flat_mask.reshape(T, C, D)
-    completion_mask = _build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
+    completion_mask = build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
 
     model.eval()
     old_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
@@ -390,44 +207,6 @@ def evaluate_batch(
         "reward": float(mx.mean(rewards).item()),
         "num_rollouts": float(T * C),
     }
-
-
-class RolloutPrefetcher:
-    """Fetches the next step's rollouts in a background thread while current compute runs.
-
-    Submit the next step's prompts immediately after this step's rollouts arrive.
-    The background fetch runs concurrently with tokenisation, forward/backward, and
-    the optimizer step. Call get() at the top of the next step — it blocks only if
-    compute finished faster than vLLM (rare).
-
-    Returns rollouts per-prompt (not flattened) so the train loop can slice by
-    micro-batch index and works correctly with any grad_accum_steps value.
-    """
-
-    def __init__(self, config: Dict[str, Any]) -> None:
-        self._config = config
-        self._queue: queue.Queue = queue.Queue(maxsize=1)
-        self._thread: Optional[threading.Thread] = None
-
-    def submit(self, prompts: List[str], answers: List[str], step: Optional[int] = None) -> None:
-        def _run() -> None:
-            result = build_rollouts_per_prompt(prompts, answers, self._config, step=step)
-            self._queue.put(result)
-        self._thread = threading.Thread(target=_run, daemon=True)
-        self._thread.start()
-
-    def get(self) -> List[Tuple[List[str], str]]:
-        """Return per-prompt rollouts: [(rollout_texts, true_answer), ...]."""
-        return self._queue.get()
-
-    def flush(self) -> None:
-        """Discard buffered result — call after weight sync so stale rollouts are dropped."""
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=120)
-        try:
-            self._queue.get_nowait()
-        except queue.Empty:
-            pass
 
 
 def train_step(
@@ -498,7 +277,7 @@ def train_step(
     D = flat_ids.shape[1]
     input_ids      = flat_ids.reshape(T, C, D)    # [T, C, D]
     attention_mask = flat_mask.reshape(T, C, D)   # [T, C, D]
-    completion_mask = _build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
+    completion_mask = build_completion_mask(tokenizer, rollout_questions, flat_mask, T, C).reshape(T, C, D)
     logger.info("%s input_ids shape: %s  (prompt+completion, D=%d)", step_tag, list(input_ids.shape), D)
     _log_mem("train_step: after tokenize_rollouts")
 
@@ -755,7 +534,18 @@ def train(
 
         total_steps_in_epoch = len(epoch_batches)
 
-        prefetcher = RolloutPrefetcher(config) if use_prefetch else None
+        prefetcher = (
+            RolloutPrefetcher(
+                lambda batch_prompts, batch_answers, step: build_rollouts_per_prompt(
+                    batch_prompts,
+                    batch_answers,
+                    config,
+                    step=step,
+                )
+            )
+            if use_prefetch
+            else None
+        )
         if prefetcher and epoch_batches:
             prefetcher.submit(*epoch_batches[0], step=rollout_step + 1)
             logger.info("Prefetcher armed for epoch %d step 0.", epoch + 1)
@@ -996,7 +786,7 @@ def main() -> None:
         mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
 
     seed = int(grpo_config.get("seed", 42))
-    _set_global_seed(seed)
+    set_global_seed(seed)
     logger.info("Reproducibility seed set to %d", seed)
 
     # Resolve device from config and set as MLX global default
