@@ -64,6 +64,44 @@ $$
 r =  \cdot r_{\text{ROUGE-L}} + \cdot r_{\text{format}}
 $$
 
+## Evaluation
+
+GRPO checkpoints in this directory are evaluated with task-specific scripts under `evaluation/`.
+
+Datasets used in this setup:
+
+- GSM8K for math reasoning.
+- `mlabonne/smoltldr` (`default` subset, `train` / `validation` splits) for summarization.
+
+- `evaluate_gsm8k.py`: computes sampled GSM8K accuracy-style metrics and supports checkpoint comparison.
+- `evaluate_summarization.py`: generates summaries on the validation split, then scores them with four LLM-judge metrics: Faithfulness, Coverage, Conciseness, and Clarity.
+- `compare_eval_runs.py`: compares two saved summarization eval runs with paired significance tests on per-example metric scores and composite score.
+
+### Hosted Eval Artifacts
+
+The uploaded Hugging Face dataset for these summarization eval runs is:
+
+- [YuvrajSingh9886/reddit-posts-summarization-grpo](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo)
+
+Viewer-friendly splits:
+
+- [length_only_reward](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo/viewer/length_only_reward)
+- [length_and_rouge_quality_reward](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo/viewer/length_and_rouge_quality_reward)
+
+Raw JSON artifacts hosted on Hugging Face:
+
+- [length_only rollouts.json](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo/resolve/main/raw/grpo-summarization-length-only__latest__20260410_220413/rollouts.json)
+- [length_only summary.json](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo/resolve/main/raw/grpo-summarization-length-only__latest__20260410_220413/summary.json)
+- [length_and_rouge_quality rollouts.json](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo/resolve/main/raw/grpo-summarization-length-quality__latest__20260410_054815/rollouts.json)
+- [length_and_rouge_quality summary.json](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo/resolve/main/raw/grpo-summarization-length-quality__latest__20260410_054815/summary.json)
+- [paired significance test JSON](https://huggingface.co/datasets/YuvrajSingh9886/reddit-posts-summarization-grpo/resolve/main/raw/length_only_vs_length_and_quality_rewards_significance_test.json)
+
+Summarization eval also writes local artifacts under `evaluation/eval-rollouts/<run_tag>/`, including:
+
+- `rollouts.json`: per-example prompts, generations, and judge outputs
+- `summary.json`: aggregate metric means, pass rates, and run metadata
+- comparison or significance JSON reports when statistical tests are run
+
 
 ## Folder Structure
 
@@ -79,7 +117,9 @@ src/smolcluster/applications/reasoning/grpo/
 │   ├── math_rewards.py        # GSM8K-style reward helpers
 │   └── summarization_rewards.py
 ├── evaluation/
-│   └── evaluate_gsm8k.py      # pass@k and checkpoint-comparison evaluation
+│   ├── compare_eval_runs.py   # paired run-vs-run summarization comparison
+│   ├── evaluate_gsm8k.py      # pass@k and checkpoint-comparison evaluation
+│   └── evaluate_summarization.py
 ├── scripts/
 │   └── launch_grpo_train.sh   # tmux + vLLM launcher with health checks
 └── utils/
@@ -131,3 +171,5 @@ The most important GRPO settings live in `config.yaml`.
 - `utils/rollouts.py`: rollout request fan-out to workers
 - `utils/worker_sync.py`: periodic checkpoint save and worker reload
 - `evaluation/evaluate_gsm8k.py`: sampled evaluation and checkpoint comparison
+- `evaluation/evaluate_summarization.py`: LLM-judge summarization evaluation and artifact writing
+- `evaluation/compare_eval_runs.py`: paired statistical comparison between saved summarization eval runs
