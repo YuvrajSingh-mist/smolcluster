@@ -54,7 +54,7 @@ from smolcluster.applications.reasoning.grpo.utils.evaluation_utils import (
 )
 from smolcluster.utils.logging_utils import setup_logging
 
-setup_logging()
+setup_logging(force=True)
 logger = logging.getLogger(__name__)
 
 _EVAL_ROLLOUTS_DIR = _script_dir / "eval-rollouts"
@@ -518,10 +518,6 @@ def run_eval_pipeline(
     rollouts_path = save_rollouts(rollout_records, _EVAL_ROLLOUTS_DIR, run_tag)
     logger.info("Saved %d rollout records to %s", len(rollout_records), rollouts_path)
 
-    significance_report = build_significance_report(rollout_records, metric_thresholds)
-    significance_path = save_significance_report(significance_report, _EVAL_ROLLOUTS_DIR, run_tag)
-    logger.info("Saved significance report to %s", significance_path)
-
     total_tests = len(test_cases)
     mean_test_passed = sum(round_result["test_passed"] for round_result in successful_rounds) / len(successful_rounds)
     mean_test_failed = sum(round_result["test_failed"] for round_result in successful_rounds) / len(successful_rounds)
@@ -569,7 +565,6 @@ def run_eval_pipeline(
         "metric_means": metric_means,
         "metric_pass_rates": metric_pass_rates,
         "composite": composite,
-        "significance_report_file": str(significance_path),
         "round_summaries": [
             {
                 "round_index": round_result["round_index"],
@@ -614,7 +609,7 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="G-Eval evaluation for summarization GRPO checkpoint")
     p.add_argument(
         "--checkpoint-dir",
-        default="checkpoints/grpo-summarization-length-only/latest",
+        default="checkpoints/grpo-summarization-length-quality-meteor/latest",
         help="Path to checkpoint dir containing model.safetensors (relative to project root or absolute)",
     )
     p.add_argument(

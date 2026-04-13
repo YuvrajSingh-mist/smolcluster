@@ -200,6 +200,39 @@ def _scp_model_files(
 
 
 # ---------------------------------------------------------------------------
+# HF cache helper
+# ---------------------------------------------------------------------------
+
+def _get_local_model_dir(model_name: str) -> Path:
+    """Return the local directory where HuggingFace cached *model_name*.
+
+    Tries (in order):
+      1. huggingface_hub snapshot_download (returns the cached snapshot dir
+         without re-downloading if it already exists).
+      2. The standard manual cache path layout as a fallback.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        path = snapshot_download(model_name, local_files_only=True)
+        return Path(path)
+    except Exception as e:
+        logger.warning("[weight_sync] snapshot_download failed for %s: %s, trying fallback ...", model_name, e)
+
+    # Fallback: reconstruct the standard cache path layout
+    cache_root = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    # HF converts "/" → "--" and prepends "models--"
+    safe_name = "models--" + model_name.replace("/", "--")
+    snapshots_dir = cache_root / safe_name / "snapshots"
+    if snapshots_dir.exists():
+        # Pick the most recently modified snapshot
+        candidates = sorted(snapshots_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        if candidates:
+            return candidates[0]
+
+    raise FileNotFoundError(f"No local cache found for model '{model_name}'")
+
+
+# ---------------------------------------------------------------------------
 # SSH / SCP helpers
 # ---------------------------------------------------------------------------
 

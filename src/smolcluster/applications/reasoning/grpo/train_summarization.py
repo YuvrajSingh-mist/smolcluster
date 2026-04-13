@@ -516,6 +516,7 @@ def train(
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
     scaler: Optional[GradScaler] = None,
+    model_cfg: Optional[Dict[str, Any]] = None,
 ) -> None:
     model.train()
   
@@ -869,6 +870,7 @@ def main() -> None:
             dtype=dtype,
             device=device,
             scaler=scaler,
+            model_cfg=model_cfg,
         )
     finally:
         wandb.finish()
