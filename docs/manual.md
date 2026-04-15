@@ -68,11 +68,13 @@ Gateway can be left empty for this private fabric.
 
 ### 3. Fill node inventory on `mini1`
 
-`setup_ssh.sh` reads worker details from `~/.config/smolcluster/nodes.yaml`. Copy the template and fill it in:
+`setup_ssh.sh` reads worker details from `~/.config/nodes.yaml`. Copy the template and fill it in:
 
 ```bash
-cp scripts/installations/nodes.yaml.example ~/.config/smolcluster/nodes.yaml
-${EDITOR:-nano} ~/.config/smolcluster/nodes.yaml
+
+mkdir .config
+cp scripts/installations/nodes.yaml.example ./.config/nodes.yaml
+${EDITOR:-nano} ./.config/nodes.yaml
 ```
 
 For a Thunderbolt Mac Mini cluster the file should look like:
@@ -191,8 +193,8 @@ ssh nvidia@192.168.50.101  # confirm password-based SSH works
 ### 5. On controller — fill node inventory
 
 ```bash
-cp scripts/installations/nodes.yaml.example ~/.config/smolcluster/nodes.yaml
-${EDITOR:-nano} ~/.config/smolcluster/nodes.yaml
+cp scripts/installations/nodes.yaml.example ~/.config/nodes.yaml
+${EDITOR:-nano} ~/.config/nodes.yaml
 ```
 
 Example for one Mac controller + two Jetson workers:
@@ -238,10 +240,10 @@ HF_TOKEN=your_huggingface_token_here
 EOF
 ```
 
-Or read the aliases directly from `~/.config/smolcluster/nodes.yaml`:
+Or read the aliases directly from `~/.config/nodes.yaml`:
 
 ```bash
-awk '/^[[:space:]]*-[[:space:]]*alias:/ {print $3}' ~/.config/smolcluster/nodes.yaml |
+awk '/^[[:space:]]*-[[:space:]]*alias:/ {print $3}' ~/.config/nodes.yaml |
 while read -r node; do
   scp .env "$node:~/Desktop/smolcluster/"
 done

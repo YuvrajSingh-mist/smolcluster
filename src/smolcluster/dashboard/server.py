@@ -19,7 +19,6 @@ Endpoints:
 """
 
 import asyncio
-import getpass
 import json
 import logging
 import os
@@ -40,8 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from smolcluster.dashboard.node_manager import NodeManager, _build_ssh_target
-from smolcluster.utils.discovery import NodeDiscovery, register_node
+from smolcluster.dashboard.node_manager import NodeManager
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +110,8 @@ def parse_ssh_config() -> dict:
 
 
 _SSH_CONFIG:  dict = parse_ssh_config()   # ip/hostname → {alias, user}
-_ssh_aliases: dict = {}                   # mDNS hostname → SSH alias e.g. "mini2"
+_ssh_aliases: dict = {}                   # hostname → SSH alias (usually the alias itself)
+_static_nodes: dict = {}                  # hostname → node info (ssh-config inventory)
 
 
 def _lookup_ssh_entry(hostname: str, node_ip: str) -> dict:
@@ -191,66 +190,218 @@ def _get_server_alias(server_hostname: str) -> str:
             return _SSH_CONFIG[key]["alias"]
     return server_hostname
 
+
+def _build_static_nodes_inventory(server_hostname: str, local_ips: set) -> dict:
+    """Build SSH-config-backed node inventory keyed by SSH alias."""
+    by_alias: dict = {}
+    for entry in _SSH_CONFIG.values():
+        alias = (entry.get("alias") or "").strip()
+        if not alias or alias in by_alias:
+            continue
+        by_alias[alias] = entry
+
+    nodes: dict = {}
+    for alias, entry in by_alias.items():
+        host_name = (entry.get("hostname") or "").strip()
+        host_name_no_local = host_name.removesuffix(".local")
+        if alias == server_hostname or host_name in local_ips or host_name_no_local == server_hostname:
+            continue
+        nodes[alias] = {
+            "hostname": alias,
+            "alias": alias,
+            "ip": host_name,
+            "port": 22,
+            "os": "",
+            "os_version": "",
+            "machine": "",
+            "role": "available",
+            "source": "ssh_config",
+        }
+    return nodes
+
+
+def _local_node_metadata() -> dict:
+    return {
+        "os": platform.system(),
+        "os_version": platform.mac_ver()[0] or platform.release(),
+        "machine": platform.machine(),
+    }
+
+
+def _canonicalize_node_hostname(hostname: str) -> str:
+    name = (hostname or "").strip().removesuffix(".local")
+    if not name:
+        return name
+    if name == _server_hostname:
+        return name
+    if name in _static_nodes:
+        return name
+
+    server_alias = (_get_server_alias(_server_hostname) or "").removesuffix(".local")
+    if name == server_alias:
+        return _server_hostname
+
+    ssh_entry = _SSH_CONFIG.get(name)
+    alias = (ssh_entry or {}).get("alias", "")
+    if alias in _static_nodes:
+        return alias
+
+    return name
+
 # ── App state ─────────────────────────────────────────────────────────────────
-discovery:        NodeDiscovery
 node_manager:     NodeManager
-_zc               = None
 _server_hostname: str = ""
-_loop:            asyncio.AbstractEventLoop = None
 _redis:           aioredis.Redis = None
 
 REDIS_URL = os.environ.get("SMOLCLUSTER_REDIS_URL", "redis://127.0.0.1:6379/0")
+REDIS_EVENTS_KEY = "smolcluster:events"
+
+_redis_diag: dict = {
+    "enabled": False,
+    "status": "disconnected",
+    "url": REDIS_URL,
+    "ops": {
+        "selected_restore": 0,
+        "selected_write": 0,
+        "selected_delete": 0,
+        "ui_get": 0,
+        "ui_set": 0,
+        "events_cache_writes": 0,
+        "logs_stream_writes": 0,
+    },
+    "last_action": "",
+    "last_ts": 0.0,
+}
 
 
-def _ensure_redis_running():
+def _redis_mark(action: str, *, op_key: Optional[str] = None, count: int = 1) -> None:
+    if op_key and op_key in _redis_diag["ops"]:
+        _redis_diag["ops"][op_key] += max(0, int(count))
+    _redis_diag["last_action"] = action
+    _redis_diag["last_ts"] = time.time()
+
+
+def _redis_snapshot() -> dict:
+    return {
+        "enabled": bool(_redis_diag.get("enabled", False)),
+        "status": _redis_diag.get("status", "unknown"),
+        "url": _redis_diag.get("url", REDIS_URL),
+        "ops": dict(_redis_diag.get("ops", {})),
+        "last_action": _redis_diag.get("last_action", ""),
+        "last_ts": _redis_diag.get("last_ts", 0.0),
+    }
+
+
+def _ensure_redis_running() -> str:
     """Start Redis via redis-server if not already reachable."""
-    import subprocess as _sp
     try:
-        _sp.run(["redis-cli", "-u", REDIS_URL.replace("/0",""), "ping"],
-                capture_output=True, timeout=1)
-        return
+        ping = subprocess.run(
+            ["redis-cli", "-u", REDIS_URL.replace("/0", ""), "ping"],
+            capture_output=True,
+            timeout=1,
+            text=True,
+        )
+        if ping.returncode == 0 and "PONG" in (ping.stdout or ""):
+            return "already-running"
     except Exception:
         pass
-    _sp.run(["redis-server", "--daemonize", "yes",
+    
+    subprocess.run(["redis-server", "--daemonize", "yes",
              "--logfile", "/tmp/redis.log", "--bind", "127.0.0.1"],
             capture_output=True, timeout=10)
-    import time as _t; _t.sleep(1)
+    
+    time.sleep(1)
+    return "started"
 
 
 async def _restore_state_from_redis():
     """Restore selected nodes from Redis so the dashboard survives restarts."""
     try:
         selected = await _redis.hgetall("smolcluster:selected")
+        restored = 0
+        skipped = 0
         for hostname, val in selected.items():
             data = json.loads(val)
-            node_manager.selected[hostname] = data
-            logger.info(f"[dashboard] Redis restored: {hostname} rank={data.get('rank')}")
+            canonical = _canonicalize_node_hostname(hostname)
+            if canonical != _server_hostname and canonical not in _static_nodes:
+                logger.info(f"[dashboard] Redis skipped stale node: {hostname}")
+                skipped += 1
+                continue
+            node_manager.selected[canonical] = data
+            restored += 1
+            logger.info(f"[dashboard] Redis restored: {hostname} -> {canonical} rank={data.get('rank')}")
+        _redis_mark(f"restore selected: restored={restored} skipped={skipped}", op_key="selected_restore", count=restored)
+        logger.info(f"[redis] restored selected nodes: restored={restored} skipped={skipped}")
     except Exception as exc:
+        _redis_diag["status"] = "error"
+        _redis_mark(f"restore selected failed: {exc}")
         logger.warning(f"[dashboard] Redis restore skipped: {exc}")
+
+
+async def _refresh_node_metadata(hostname: str, ssh_hint: str = ""):
+    canonical = _canonicalize_node_hostname(hostname)
+    if not canonical:
+        return
+
+    if canonical == _server_hostname:
+        _node_os[canonical] = _local_node_metadata()
+        return
+
+    node_ip = _static_nodes.get(canonical, {}).get("ip", "")
+    ssh_entry = _lookup_ssh_entry(canonical, node_ip)
+    target_hint = ssh_hint or ssh_entry.get("alias") or _ssh_aliases.get(canonical) or canonical
+    info = await NodeManager.probe_metadata(canonical, target_hint)
+    if not info:
+        return
+
+    username = (info.get("username") or "").strip()
+    if username:
+        _probed[canonical] = username
+
+    os_info = {
+        "os": (info.get("os") or "").strip(),
+        "os_version": (info.get("os_version") or "").strip(),
+        "machine": (info.get("machine") or "").strip(),
+    }
+    if any(os_info.values()):
+        _node_os[canonical] = os_info
+
+
+async def _prime_node_metadata():
+    await _refresh_node_metadata(_server_hostname)
+    tasks = [asyncio.create_task(_refresh_node_metadata(hostname)) for hostname in _static_nodes]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global discovery, node_manager, _zc, _server_hostname, _loop, _redis
-    _loop = asyncio.get_running_loop()
-    _ensure_redis_running()
+    global node_manager, _server_hostname, _redis, _static_nodes
+    redis_boot = _ensure_redis_running()
     _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
-    discovery    = NodeDiscovery(on_change=_on_node_change)
+    _redis_diag["enabled"] = True
+    _redis_diag["status"] = "connected"
+    _redis_mark(f"connected ({redis_boot})")
+    logger.info(f"[redis] connected ({redis_boot}) url={REDIS_URL}")
     node_manager = NodeManager()
     _server_hostname = socket.gethostname().removesuffix(".local")
+    _static_nodes = _build_static_nodes_inventory(_server_hostname, _LOCAL_IPS)
+    _ssh_aliases.clear()
+    _ssh_aliases.update({h: h for h in _static_nodes})
+    _node_os[_server_hostname] = _local_node_metadata()
+    for h in _static_nodes:
+        _probed[h] = _probed.get(h) or _lookup_ssh_entry(h, _static_nodes[h].get("ip", "")).get("user", "")
     await _restore_state_from_redis()
-    _zc = await asyncio.to_thread(register_node, 9090, "server", _server_hostname)
     logger.info(f"[dashboard] http://{_server_hostname}.local:9090")
     broadcast_task = asyncio.create_task(_events_broadcaster())
     log_task       = asyncio.create_task(_log_broadcaster())
+    metadata_task  = asyncio.create_task(_prime_node_metadata())
     yield
     broadcast_task.cancel()
     log_task.cancel()
-    await asyncio.gather(broadcast_task, log_task, return_exceptions=True)
+    metadata_task.cancel()
+    await asyncio.gather(broadcast_task, log_task, metadata_task, return_exceptions=True)
     await node_manager.stop_all()
-    discovery.close()
-    if _zc:
-        await asyncio.to_thread(_zc.close)
     await _redis.aclose()
 
 
@@ -259,21 +410,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 
-# ── Auto-probe usernames ───────────────────────────────────────────────────────
+# ── Node metadata cache ─────────────────────────────────────────────────────────
 _probed:   dict = {}  # hostname → SSH username
 _node_os:  dict = {}  # hostname → {os, os_version, machine}
 
-def _on_node_change():
-    for hostname, info in discovery.snapshot().items():
-        if hostname not in _probed:
-            _probed[hostname] = None
-            if _loop and _loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    _probe_and_store(hostname, info), _loop)
-
 # Cache local IPs at import time — used by _is_local_node to avoid re-probing.
 def _collect_local_ips() -> set:
-    import subprocess
     ips: set = set()
     try:
         out = subprocess.run(
@@ -294,83 +436,6 @@ def _collect_local_ips() -> set:
     return ips
 
 _LOCAL_IPS: set = _collect_local_ips()
-
-
-def _is_local_node(hostname: str, node_ip: str) -> bool:
-    """True if this node refers to the local machine (by hostname or by IP)."""
-    if hostname == _server_hostname:
-        return True
-    return bool(node_ip and node_ip in _LOCAL_IPS)
-
-
-async def _probe_and_store(hostname: str, info: dict):
-    node_ip = discovery.snapshot().get(hostname, {}).get("ip", "")
-    if _is_local_node(hostname, node_ip):
-        _probed[hostname] = getpass.getuser()
-        if hostname not in _node_os:
-            _node_os[hostname] = {
-                "os": platform.system(),
-                "os_version": platform.mac_ver()[0] or platform.release(),
-                "machine": platform.machine(),
-            }
-        return
-
-    # 1. Check ~/.ssh/config by IP / alias (fastest, most reliable)
-    ssh_entry = _lookup_ssh_entry(hostname, node_ip)
-    if ssh_entry:
-        _ssh_aliases[hostname] = ssh_entry["alias"]
-        _probed[hostname] = ssh_entry.get("user", "")
-        logger.info(f"[dashboard] {hostname} → SSH alias '{ssh_entry['alias']}' from ~/.ssh/config")
-        target = ssh_entry["alias"]
-    else:
-        # 2. Fall back to SSH probe (whoami) — only for mDNS-discovered nodes
-        #    whose hostname is resolvable (same LAN / .local).
-        if info.get("source") == "ssh_config":
-            # Cross-subnet node with no alias: can't probe without config
-            _probed[hostname] = ""
-            return
-        target = None
-        for attempt in [""]:
-            user = await NodeManager.probe_username(hostname, attempt)
-            if user:
-                _probed[hostname] = user
-                target = _build_ssh_target(attempt, hostname)
-                break
-        if _probed.get(hostname) is None:
-            _probed[hostname] = ""
-
-    # 3. Probe OS info via SSH — await directly so it's ready before next SSE tick
-    if target and hostname not in _node_os:
-        await _probe_os(hostname, target)
-
-
-async def _probe_os(hostname: str, target: str) -> None:
-    """SSH-probe OS info: uname -srm + sw_vers -productVersion (macOS)."""
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=no",
-           "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-           target,
-           "uname -s; uname -r; uname -m; sw_vers -productVersion 2>/dev/null || true"]
-    try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True),
-            timeout=12.0,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
-            os_name    = lines[0] if len(lines) > 0 else ""
-            kernel_ver = lines[1] if len(lines) > 1 else ""
-            machine    = lines[2] if len(lines) > 2 else ""
-            # sw_vers gives the human macOS version (e.g. "15.4.1"); prefer it
-            os_version = lines[3] if len(lines) > 3 else kernel_ver
-            if os_name:
-                _node_os[hostname] = {
-                    "os": os_name, "os_version": os_version, "machine": machine,
-                }
-                logger.info(f"[dashboard] {hostname} OS: {os_name} {os_version} {machine}")
-        else:
-            logger.warning(f"[dashboard] OS probe {hostname}: rc={result.returncode} stderr={result.stderr[:80]}")
-    except Exception as e:
-        logger.warning(f"[dashboard] OS probe {hostname}: {e}")
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
@@ -430,7 +495,7 @@ def _canonicalize_log_hostname(raw_hostname: str, session: str = "") -> str:
 
     known_hosts = {
         _server_hostname,
-        *discovery.snapshot().keys(),
+        *_static_nodes.keys(),
         *node_manager.snapshot_selected().keys(),
         *node_manager.snapshot_processes().keys(),
     }
@@ -458,7 +523,7 @@ async def index():
 
 @app.get("/api/nodes")
 async def get_nodes():
-    discovered = {_server_hostname: _self_node(), **discovery.snapshot()}
+    discovered = {_server_hostname: _self_node(), **dict(_static_nodes)}
     return {
         "discovered":  discovered,
         "selected":    node_manager.snapshot_selected(),
@@ -471,27 +536,44 @@ async def get_nodes():
 
 @app.get("/api/nodes/{hostname}/probe")
 async def probe_node(hostname: str, ssh_user: str = ""):
-    user = await NodeManager.probe_username(hostname, ssh_user)
-    if user is None:
+    canonical = _canonicalize_node_hostname(hostname)
+    node_ip = _static_nodes.get(canonical, {}).get("ip", "")
+    ssh_entry = _lookup_ssh_entry(canonical, node_ip)
+    target_hint = ssh_user or ssh_entry.get("alias") or _ssh_aliases.get(canonical) or canonical
+    info = await NodeManager.probe_metadata(canonical, target_hint)
+    if info is None:
         raise HTTPException(502, "Unreachable or SSH key not set up")
-    _probed[hostname] = user
-    return {"username": user}
+    if info.get("username"):
+        _probed[canonical] = info["username"]
+    _node_os[canonical] = {
+        "os": info.get("os", ""),
+        "os_version": info.get("os_version", ""),
+        "machine": info.get("machine", ""),
+    }
+    return info
 
 
 @app.post("/api/nodes/{hostname}/select")
 async def select_node(hostname: str, req: SelectRequest):
-    rank = await node_manager.select(hostname, req.ssh_user, req.rank)
+    canonical = _canonicalize_node_hostname(hostname)
+    rank = await node_manager.select(canonical, req.ssh_user, req.rank)
     if _redis:
-        await _redis.hset("smolcluster:selected", hostname,
+        await _redis.hset("smolcluster:selected", canonical,
                           json.dumps({"rank": rank, "ssh_user": req.ssh_user}))
+        _redis_mark(f"selected write: {canonical} rank={rank}", op_key="selected_write")
+        logger.info(f"[redis] HSET smolcluster:selected[{canonical}] rank={rank}")
+    asyncio.create_task(_refresh_node_metadata(canonical, req.ssh_user))
     return {"status": "selected", "rank": rank}
 
 
 @app.post("/api/nodes/{hostname}/deselect")
 async def deselect_node(hostname: str):
-    await node_manager.deselect(hostname)
+    canonical = _canonicalize_node_hostname(hostname)
+    await node_manager.deselect(canonical)
     if _redis:
-        await _redis.hdel("smolcluster:selected", hostname)
+        await _redis.hdel("smolcluster:selected", canonical)
+        _redis_mark(f"selected delete: {canonical}", op_key="selected_delete")
+        logger.info(f"[redis] HDEL smolcluster:selected[{canonical}]")
     return {"status": "deselected"}
 
 
@@ -508,16 +590,32 @@ async def start_training(req: StartRequest):
 
 @app.post("/api/training/stop")
 async def stop_training_endpoint():
+    running_before_stop = dict(node_manager.processes)
     log_label = next(iter(node_manager.processes), _server_hostname)
     await node_manager.stop_training()
     # Clear stale metric and ping files so a fresh page load or new run starts clean.
     METRICS_FILE.unlink(missing_ok=True)
     GRAD_PING.unlink(missing_ok=True)
     GRAD_INTERVAL.unlink(missing_ok=True)
+    if any(info.get("algorithm") == "grpo" for info in running_before_stop.values()):
+        asyncio.create_task(
+            node_manager.run_cleanup_script(str(GRPO_TRAIN_SCRIPT_FILE), log_label)
+        )
     # Also run inference cleanup in case sessions from a previous inference run survived
     asyncio.create_task(
         node_manager.run_cleanup_script(str(INFER_SCRIPT_FILE), log_label)
     )
+    if _redis:
+        try:
+            raw = await _redis.get(REDIS_UI_KEY)
+            cur = json.loads(raw) if raw else {}
+            if isinstance(cur, dict):
+                cur["logs"] = []
+                await _redis.set(REDIS_UI_KEY, json.dumps(cur))
+                _redis_mark("ui-state clear logs on stop", op_key="ui_set")
+                logger.info(f"[redis] SET {REDIS_UI_KEY} logs cleared on training stop")
+        except Exception:
+            pass
     return {"status": "stopped"}
 
 
@@ -543,6 +641,17 @@ async def stop_inference():
     asyncio.create_task(
         node_manager.run_cleanup_script(str(INFER_SCRIPT_FILE), log_label)
     )
+    if _redis:
+        try:
+            raw = await _redis.get(REDIS_UI_KEY)
+            cur = json.loads(raw) if raw else {}
+            if isinstance(cur, dict):
+                cur["logs"] = []
+                await _redis.set(REDIS_UI_KEY, json.dumps(cur))
+                _redis_mark("ui-state clear logs on stop", op_key="ui_set")
+                logger.info(f"[redis] SET {REDIS_UI_KEY} logs cleared on inference stop")
+        except Exception:
+            pass
     return {"status": "stopped"}
 
 
@@ -550,6 +659,8 @@ INFER_CONFIG_FILE = (Path(__file__).parent.parent /
                      "configs" / "inference" / "cluster_config_inference.yaml")
 INFER_SCRIPT_FILE = (Path(__file__).parent.parent.parent.parent /
                      "scripts" / "inference" / "launch_inference.sh")
+GRPO_TRAIN_SCRIPT_FILE = (Path(__file__).parent.parent / "applications" /
+                          "reasoning" / "grpo" / "scripts" / "launch_grpo_train.sh")
 
 TRAIN_CONFIGS_DIR = str(Path(__file__).parent.parent / "configs")
 TRAIN_SCRIPTS_DIR = str(Path(__file__).parent.parent.parent.parent / "scripts" / "training")
@@ -562,22 +673,29 @@ async def launch_inference_script(req: InferenceLaunchRequest):
         raise HTTPException(400, "No nodes selected")
 
     algorithm = req.algorithm
-    snap      = discovery.snapshot()
+    snap      = dict(_static_nodes)
 
     # Build nodes_info from selected nodes only — local machine is never included
     # (scripts run locally and rsync TO remote nodes; including self breaks rsync)
     nodes_info: dict = {}
     for hostname, sel in node_manager.selected.items():
-        node_ip = snap.get(hostname, {}).get("ip", "")
-        ssh_entry = _lookup_ssh_entry(hostname, node_ip)
+        if hostname == _server_hostname:
+            node_ip = _get_local_ip() or _self_node().get("ip", "")
+            ssh_entry = _lookup_ssh_entry(hostname, node_ip)
+            local_alias = _get_server_alias(hostname)
+        else:
+            node_ip = snap.get(hostname, {}).get("ip", "")
+            ssh_entry = _lookup_ssh_entry(hostname, node_ip)
+            local_alias = ""
         # Alias = SSH Host entry (e.g. "mini2") — try four ways in order:
         # 1. By LAN IP  (SSH config has HostName 10.x.x.x)
-        # 2. By mDNS FQDN  (SSH config has HostName macmini3-5.local)
+        # 2. By .local FQDN  (SSH config has HostName macmini3-5.local)
         # 3. By bare hostname  (SSH config has HostName macmini3-5)
-        # 4. Probed alias cache (populated by _probe_and_store after node discovery)
+        # 4. Alias cache populated from SSH inventory
         # Never use ssh_user (username) as the alias — they're different things.
         alias = (
             ssh_entry.get("alias")
+            or local_alias
             or _ssh_aliases.get(hostname)
             or hostname
         )
@@ -627,14 +745,21 @@ async def launch_training_script(req: InferenceLaunchRequest):
         raise HTTPException(400, "No nodes selected")
 
     algorithm = req.algorithm
-    snap      = discovery.snapshot()
+    snap      = dict(_static_nodes)
 
     nodes_info: dict = {}
     for hostname, sel in node_manager.selected.items():
-        node_ip = snap.get(hostname, {}).get("ip", "")
-        ssh_entry = _lookup_ssh_entry(hostname, node_ip)
+        if hostname == _server_hostname:
+            node_ip = _get_local_ip() or _self_node().get("ip", "")
+            ssh_entry = _lookup_ssh_entry(hostname, node_ip)
+            local_alias = _get_server_alias(hostname)
+        else:
+            node_ip = snap.get(hostname, {}).get("ip", "")
+            ssh_entry = _lookup_ssh_entry(hostname, node_ip)
+            local_alias = ""
         alias = (
             ssh_entry.get("alias")
+            or local_alias
             or _ssh_aliases.get(hostname)
             or hostname
         )
@@ -682,13 +807,48 @@ async def connectivity_check():
     selected = node_manager.snapshot_selected()
     if not selected:
         raise HTTPException(400, "No nodes selected")
-    asyncio.create_task(_run_tcp_checks(selected, discovery.snapshot()))
+    asyncio.create_task(_run_tcp_checks(selected, dict(_static_nodes)))
     return {"status": "checking"}
 
 
 @app.get("/api/training")
 async def get_training():
     return _read_json(METRICS_FILE)
+
+
+REDIS_UI_KEY = "smolcluster:ui_state"
+
+
+@app.get("/api/ui-state")
+async def get_ui_state():
+    """Return persisted UI state from Redis."""
+    if _redis:
+        try:
+            raw = await _redis.get(REDIS_UI_KEY)
+            _redis_mark("ui-state get", op_key="ui_get")
+            if raw:
+                return json.loads(raw)
+        except Exception:
+            pass
+    return {}
+
+
+@app.post("/api/ui-state")
+async def post_ui_state(request: Request):
+    """Merge a UI state patch into Redis."""
+    if _redis:
+        try:
+            patch = await request.json()
+            raw = await _redis.get(REDIS_UI_KEY)
+            cur = json.loads(raw) if raw else {}
+            cur.update(patch)
+            await _redis.set(REDIS_UI_KEY, json.dumps(cur))
+            keys = ",".join(sorted(str(k) for k in patch.keys())) if isinstance(patch, dict) else "unknown"
+            _redis_mark(f"ui-state set keys={keys}", op_key="ui_set")
+            logger.info(f"[redis] SET {REDIS_UI_KEY} keys={keys}")
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 # ── Background broadcasters (started in lifespan) ─────────────────────────────
@@ -705,24 +865,26 @@ async def _events_broadcaster():
             )
             payload = json.dumps({
                 "nodes": {
-                    "discovered":  {_server_hostname: _self_node(), **discovery.snapshot()},
-                    "selected":    node_manager.snapshot_selected(),
-                    "running":     _running_procs,
-                    "usernames":   dict(_probed),
+                    "discovered": {_server_hostname: _self_node(), **dict(_static_nodes)},
+                    "selected": node_manager.snapshot_selected(),
+                    "running": _running_procs,
+                    "usernames": dict(_probed),
                     "ssh_aliases": _ssh_aliases_snapshot(),
-                    "node_os":     dict(_node_os),
+                    "node_os": dict(_node_os),
                 },
                 # Don't serve stale METRICS_FILE when no training processes are running.
                 # A fresh page load after a stopped run must not show old values.
-                "training":     _read_json(METRICS_FILE) if _training_active else None,
+                "training": _read_json(METRICS_FILE) if _training_active else None,
                 "connectivity": _read_json(INFERENCE_FILE),
-                "token_ts":          TOKEN_PING.stat().st_mtime if TOKEN_PING.exists() else 0,
-                "token_text":        LAST_TOKEN.read_text() if LAST_TOKEN.exists() else "",
+                "token_ts": TOKEN_PING.stat().st_mtime if TOKEN_PING.exists() else 0,
+                "token_text": LAST_TOKEN.read_text() if LAST_TOKEN.exists() else "",
                 "token_interval_ms": float(TOKEN_INTERVAL.read_text()) if TOKEN_INTERVAL.exists() else None,
-                "grad_ts":           GRAD_PING.stat().st_mtime  if GRAD_PING.exists()  else 0,
-                "grad_interval_ms":  float(GRAD_INTERVAL.read_text()) if GRAD_INTERVAL.exists() else None,
+                "grad_ts": GRAD_PING.stat().st_mtime if GRAD_PING.exists() else 0,
+                "grad_interval_ms": float(GRAD_INTERVAL.read_text()) if GRAD_INTERVAL.exists() else None,
+                "redis": _redis_snapshot(),
             })
-            await _redis.set("smolcluster:events", payload, ex=5)
+            await _redis.set(REDIS_EVENTS_KEY, payload, ex=5)
+            _redis_mark("events cache write", op_key="events_cache_writes")
         except Exception as exc:
             logger.debug(f"[dashboard] events broadcaster: {exc}")
         await asyncio.sleep(0.2)  # 5 Hz — fast enough to track token-by-token inference
@@ -769,6 +931,7 @@ async def _log_broadcaster():
                         approximate=True,
                     )
                 await pipe.execute()
+                _redis_mark("logs stream write", op_key="logs_stream_writes", count=len(merged))
         except Exception as exc:
             logger.debug(f"[dashboard] log broadcaster: {exc}")
         await asyncio.sleep(0.35)
@@ -782,7 +945,7 @@ async def sse_events(request: Request):
             if await request.is_disconnected():
                 break
             try:
-                raw = await _redis.get("smolcluster:events")
+                raw = await _redis.get(REDIS_EVENTS_KEY)
                 if raw:
                     yield f"data: {raw}\n\n"
             except Exception:
@@ -943,7 +1106,7 @@ def _resolve_connectivity_target(hostname: str, snap: dict) -> str:
     Priority:
     1) SSH config HostName/IP (works for aliases like jetson2)
     2) discovered node IP
-    3) mDNS hostname.local
+    3) hostname.local
     """
     node_ip = snap.get(hostname, {}).get("ip", "")
     ssh_entry = _lookup_ssh_entry(hostname, node_ip)

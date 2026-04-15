@@ -15,7 +15,7 @@ set -euo pipefail
 KEY_NAME="smolcluster_key"
 KEY_PATH="$HOME/.ssh/$KEY_NAME"
 SSH_CONFIG="$HOME/.ssh/config"
-NODES_CACHE="$HOME/.config/smolcluster/nodes"
+NODES_CACHE="$HOME/Desktop/smolcluster/.config/nodes"
 
 log()  { echo "  [ssh-setup] $*"; }
 ok()   { echo "  [ssh-setup] ✓ $*"; }
@@ -44,10 +44,10 @@ echo ""
 # ─── STEP 2: Load cluster nodes from nodes.yaml ──────────────────────────────
 hr
 echo ""
-echo "  STEP 2 — Cluster nodes (from ~/.config/smolcluster/nodes.yaml)"
+echo "  STEP 2 — Cluster nodes (from ~/.config/nodes.yaml)"
 echo ""
 
-NODES_YAML="$HOME/.config/smolcluster/nodes.yaml"
+NODES_YAML="$HOME/Desktop/smolcluster/.config/nodes.yaml"
 if [[ ! -f "$NODES_YAML" ]]; then
     warn "nodes.yaml not found: $NODES_YAML"
     warn "Run discover_network.sh on each node, assign static IPs, then fill:"

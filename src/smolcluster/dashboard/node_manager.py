@@ -12,18 +12,29 @@ Flow:
 """
 
 import asyncio
+import io
 import logging
 import os
+import re
 import shlex
 import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ruamel.yaml import YAML as _YAML
+
 logger = logging.getLogger(__name__)
 
 REMOTE_REPO = "~/smolcluster"
 LOG_MAXLINES = 500  # global circular buffer
+
+# Strip C0 control chars except ESC so ANSI colors can be rendered in the UI.
+_CTRL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F\x7F]")
+
+
+def _sanitize_log_line(line: str) -> str:
+    return _CTRL_RE.sub("", line)
 
 # algorithm → (config_filename, script_filename, topology_type)
 # topology_type:
@@ -31,6 +42,7 @@ LOG_MAXLINES = 500  # global circular buffer
 #   "nested_server" — dedicated server (.server) + .workers.{regular,tablets}
 #   "allToAll"      — all nodes in .allToAllTopology.workers.regular (no dedicated server)
 #   "pipeline"      — all nodes in .pipelineTopology.workers.regular (no dedicated server)
+#   "grpo"          — dedicated server + inference-style workers.regular + total_num_nodes
 _TRAINING_ALGO_MAP: dict = {
     "syncps":      ("cluster_config_syncps.yaml",      "launch_syncps_train_gpt.sh",       "flat_server"),
     "mp":          ("cluster_config_mp.yaml",           "launch_mp_train_gpt.sh",           "nested_server"),
@@ -39,6 +51,7 @@ _TRAINING_ALGO_MAP: dict = {
     "ep":          ("cluster_config_ep.yaml",           "launch_ep_train_moe.sh",           "allToAll"),
     "mp_pipeline": ("cluster_config_mp_pipeline.yaml", "launch_mp_pipeline_train_gpt.sh",  "pipeline"),
     "edp":         ("cluster_config_edp.yaml",          "launch_edp_train_gpt.sh",          "flat_server"),
+    "grpo":        ("inference/cluster_config_inference.yaml", "../../src/smolcluster/applications/reasoning/grpo/scripts/launch_grpo_train.sh", "grpo"),
 }
 
 
@@ -242,7 +255,6 @@ class NodeManager:
         2. Run scripts/inference/launch_inference.sh --algorithm <algo>.
         3. Stream output to the log buffer.
         """
-        from ruamel.yaml import YAML as _YAML
         _yaml = _YAML()
         _yaml.preserve_quotes = True
         _yaml.default_flow_style = False
@@ -252,7 +264,6 @@ class NodeManager:
                 raise ValueError("Already running — stop it first")
 
         # ── Build the updated config ──────────────────────────────────────────
-        import io as _io
         p = Path(config_path)
         config = {}
         if p.exists():
@@ -345,7 +356,7 @@ class NodeManager:
             self._log(server_hostname, _msg)
             raise ValueError(_msg.strip())
 
-        _buf = _io.StringIO()
+        _buf = io.StringIO()
         _yaml.dump(config, _buf)
         p.write_text(_buf.getvalue())
         self._log(server_hostname, f"[dashboard] Wrote {config_path}")
@@ -387,8 +398,6 @@ class NodeManager:
         2. Run the matching training shell script.
         3. Stream output to the log buffer.
         """
-        import io as _io
-        from ruamel.yaml import YAML as _YAML
         _yaml = _YAML()
         _yaml.preserve_quotes = True
         _yaml.default_flow_style = False
@@ -411,7 +420,7 @@ class NodeManager:
         server_info  = nodes_info.get(server_hostname, {})
         server_alias = server_info.get("ssh_alias") or server_hostname
 
-        if topology in ("flat_server", "nested_server"):
+        if topology in ("flat_server", "nested_server", "grpo"):
             # Update top-level host_ip
             host_ip = dict(config.get("host_ip", {}))
             for hostname, info in nodes_info.items():
@@ -437,6 +446,9 @@ class NodeManager:
 
             if topology == "flat_server":
                 config["workers"]     = workers
+            elif topology == "grpo":
+                config["workers"]         = {"regular": workers, "tablets": []}
+                config["total_num_nodes"] = len(workers) + 1  # +1 server
             else:  # nested_server
                 config["workers"]     = {"regular": workers, "tablets": []}
             config["num_workers"] = len(workers)
@@ -466,7 +478,7 @@ class NodeManager:
 
         # ── IP validation: catch missing IPs before writing config ───────────
         _missing_ips: list[str] = []
-        if topology in ("flat_server", "nested_server"):
+        if topology in ("flat_server", "nested_server", "grpo"):
             for w in workers:
                 if not w.get("ip"):
                     _missing_ips.append(w["hostname"])
@@ -487,7 +499,7 @@ class NodeManager:
             self._log(server_hostname, _msg)
             raise ValueError(_msg.strip())
 
-        _buf = _io.StringIO()
+        _buf = io.StringIO()
         _yaml.dump(config, _buf)
         config_path.write_text(_buf.getvalue())
         self._log(server_hostname, f"[dashboard] Wrote {config_path}")
@@ -570,14 +582,15 @@ class NodeManager:
             "^(server|worker[0-9]*"
             "|classicdp_worker[0-9]*|fsdp_worker[0-9]*|ep_worker[0-9]*|mp_pipeline_worker[0-9]*"
             "|syncps_inf_.*|classicdp_inf_.*|mp_inference_.*|mp_tablet_proxy[0-9]*"
+            "|grpo_train|vllm_worker"
             "|syncps_api|syncps_frontend|classicdp_api|classicdp_frontend|mp_api|mp_frontend)$"
         )
-        # One-liner that lists+kills on any POSIX shell (no xargs -r, no GNU extensions)
+        # Only kill matching tmux sessions. Do not use a broad process-name kill,
+        # because the dashboard itself runs under the smolcluster module path.
         _kill_cmd = (
             "tmux ls 2>/dev/null | cut -d: -f1 | "
             f"grep -E '{tmux_pattern}' | "
-            "while IFS= read -r _s; do tmux kill-session -t \"$_s\" 2>/dev/null; echo \"killed:$_s\"; done; "
-            "pkill -f 'smolcluster' 2>/dev/null || true"
+            "while IFS= read -r _s; do tmux kill-session -t \"$_s\" 2>/dev/null; echo \"killed:$_s\"; done"
         )
 
         # ── Local cleanup ─────────────────────────────────────────────────────
@@ -628,17 +641,36 @@ class NodeManager:
 
     @staticmethod
     async def probe_username(hostname: str, ssh_user: str = "") -> Optional[str]:
+        info = await NodeManager.probe_metadata(hostname, ssh_user)
+        if info:
+            return info.get("username") or None
+        return None
+
+    @staticmethod
+    async def probe_metadata(hostname: str, ssh_user: str = "") -> Optional[dict]:
         target = _build_ssh_target(ssh_user, hostname)
+        remote = (
+            "sh -lc 'whoami; uname -s; uname -r; uname -m; "
+            "if command -v sw_vers >/dev/null 2>&1; then sw_vers -productVersion; else echo; fi'"
+        )
         cmd = ["ssh", "-o", "StrictHostKeyChecking=no",
                "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-               target, "whoami"]
+               target, remote]
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True),
                 timeout=8.0,
             )
             if result.returncode == 0:
-                return result.stdout.strip()
+                lines = [line.strip() for line in result.stdout.splitlines()]
+                if len(lines) >= 4:
+                    os_version = lines[4] if len(lines) >= 5 and lines[4] else lines[2]
+                    return {
+                        "username": lines[0],
+                        "os": lines[1],
+                        "os_version": os_version,
+                        "machine": lines[3],
+                    }
         except Exception as e:
             logger.debug(f"[node_manager] probe {hostname}: {e}")
         return None
@@ -679,7 +711,7 @@ class NodeManager:
                 raw = await proc.stdout.readline()
                 if not raw:
                     break
-                line = raw.decode(errors="replace").rstrip()
+                line = _sanitize_log_line(raw.decode(errors="replace")).rstrip()
                 if line:
                     self._log(hostname, line)
         except Exception as e:

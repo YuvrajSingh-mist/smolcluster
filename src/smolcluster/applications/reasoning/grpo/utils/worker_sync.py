@@ -446,7 +446,7 @@ def sync_and_reload_workers(
         local_weights_dir: The step directory returned by ``save_policy_weights``.
         grpo_config:        The loaded GRPO configuration dict (contains ``vllm_cluster``
                             and ``weight_sync`` sections).
-        model_config:       The loaded model configuration dict (contains model name for HF cache lookup).
+        model_config:       Backward-compatible arg; no longer used for file discovery.
     """
     sync_cfg = grpo_config.get("weight_sync", {})
     vllm_cluster = grpo_config["vllm_cluster"]
@@ -456,14 +456,12 @@ def sync_and_reload_workers(
     num_workers = int(_cluster_cfg["num_workers"])
     workers = _cluster_cfg["workers"]["regular"][:num_workers]
 
-    # Get the local model directory from HF cache
-    model_name = model_config["dp"]["hf_model_name"]
-    try:
-        local_model_dir = _get_local_model_dir(model_name)
-        logger.info("[weight_sync] Found local model at %s", local_model_dir)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[weight_sync] Could not find local model dir: %s, skipping model file sync", e)
-        local_model_dir = None
+    # Use the just-saved checkpoint directory as the source of config/tokenizer files.
+    # save_policy_weights() writes config.json from model_cfg and tokenizer files via
+    # tokenizer.save_pretrained(), so this is the freshest source of truth.
+    _ = model_config  # kept for call-site compatibility
+    local_model_dir = local_weights_dir
+    logger.info("[weight_sync] Using checkpoint files from %s for model/tokenizer sync", local_model_dir)
 
     logger.info(
         "[weight_sync] Distributing weights from %s to %d worker(s) ...",

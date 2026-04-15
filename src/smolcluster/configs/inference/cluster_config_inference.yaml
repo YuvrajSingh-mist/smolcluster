@@ -1,5 +1,5 @@
 host_ip:
-  mini1: "10.10.0.1"
+  mini1: 172.18.2.15
   mini2: 10.10.0.2
   mini3: 10.10.0.3
   pi4: "10.10.0.1"
@@ -49,19 +49,15 @@ metrics_log_interval: 50  # Log network metrics every N steps
 num_workers: 2
 total_num_nodes: 3
 
-server: mini1    # Server hostname (rank 0 for SyncPS inference)
+server: mini2    # Server hostname (rank 0 for SyncPS inference)
 workers:
   regular:
-  - hostname: mini2
-    user: yuvrajsingh1
-    rank: 1
-    ip: "10.10.0.2"
-    port: 65432
   - hostname: mini3
-    user: yuvrajsingh2
+    rank: 1
+    ip: 10.10.0.3
+  - hostname: mini1
     rank: 2
-    ip: "10.10.0.3"
-    port: 65432
+    ip: 172.18.2.15
   tablets: []
 
 num_nodes: 3

@@ -69,12 +69,79 @@ _debug_dir = _module_dir.parents[4] / ".grpo_debug"
 _debug_dir.mkdir(parents=True, exist_ok=True)
 _answers_log_path = _debug_dir / "rollout_answers.jsonl"
 _answers_log_lock = threading.Lock()
+_DASHBOARD_METRICS_FILE = Path("/tmp/smolcluster_metrics.json")
+_DASHBOARD_GRAD_PING = Path("/tmp/smolcluster_grad_ping")
+_DASHBOARD_GRAD_INTERVAL = Path("/tmp/smolcluster_grad_interval_ms")
+_LAST_DASHBOARD_GRAD_TS: Optional[float] = None
 
 
 def _append_answers_log(record: dict) -> None:
     with _answers_log_lock:
         with _answers_log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n\n")
+
+
+def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: int,
+                               grad_norm: float, lr: float, skipped_update: bool) -> None:
+    global _LAST_DASHBOARD_GRAD_TS
+    try:
+        now = time.time()
+        safe_grad_norm = grad_norm
+        if safe_grad_norm != safe_grad_norm or safe_grad_norm in (float("inf"), float("-inf")):
+            safe_grad_norm = "NaN"
+        step_time_s = None if _LAST_DASHBOARD_GRAD_TS is None else max(0.0, now - _LAST_DASHBOARD_GRAD_TS)
+        est_throughput = None
+        token_count = float(metrics.get("generation_token_len_mean", 0) or 0) * float(metrics.get("num_rollouts", 0) or 0)
+        if step_time_s and step_time_s > 0.0 and token_count > 0.0:
+            est_throughput = round(token_count / step_time_s, 1)
+        eta_remaining = None
+        if step_time_s and step_time_s > 0.0 and total_steps and total_steps > 0:
+            steps_left = max(0, int(total_steps) - int(global_step))
+            eta_seconds = int(max(0.0, steps_left * step_time_s))
+            h = eta_seconds // 3600
+            m = (eta_seconds % 3600) // 60
+            s = eta_seconds % 60
+            eta_remaining = f"{h:02d}:{m:02d}:{s:02d}"
+
+        payload = {
+            "step": global_step,
+            "total_steps": total_steps,
+            "loss": float(metrics.get("loss", 0.0)),
+            "throughput": est_throughput,
+            "tok_sec_in": est_throughput,
+            "tok_sec_out": est_throughput,
+            "grad_norm": safe_grad_norm,
+            "lr": lr,
+            "eta_remaining": eta_remaining,
+            "algorithm": "grpo",
+            "running": True,
+            "reward": float(metrics.get("reward", 0.0)),
+        }
+        _DASHBOARD_METRICS_FILE.write_text(json.dumps(payload))
+        print(f"[SMOL_METRICS] {json.dumps(payload)}", flush=True)
+        if not skipped_update:
+            _DASHBOARD_GRAD_PING.touch()
+            if step_time_s and step_time_s > 0.0:
+                _DASHBOARD_GRAD_INTERVAL.write_text(str(round(step_time_s * 1000, 1)))
+            _LAST_DASHBOARD_GRAD_TS = now
+    except Exception:
+        pass
+
+
+def _optimizer_lr(optimizer: Any, config: Dict[str, Any]) -> float:
+    """Return current LR for different optimizer wrappers without assuming attributes."""
+    lr_obj = getattr(optimizer, "learning_rate", None)
+    if lr_obj is not None:
+        try:
+            return float(lr_obj.item()) if hasattr(lr_obj, "item") else float(lr_obj)
+        except Exception:
+            pass
+    if hasattr(optimizer, "_lr"):
+        try:
+            return float(getattr(optimizer, "_lr"))
+        except Exception:
+            pass
+    return float(config.get("learning_rate", 0.0))
 
 
 def _compute_single_reward(
@@ -760,6 +827,14 @@ def train(
                     "train/step":             global_step,
                 },
                 step=global_step,
+            )
+            _publish_dashboard_metrics(
+                metrics,
+                global_step=global_step,
+                total_steps=total_epochs * total_steps_in_epoch,
+                grad_norm=grad_norm,
+                lr=_optimizer_lr(optimizer, config),
+                skipped_update=skipped_update,
             )
 
             if config.get("do_eval", False) and global_step % val_steps == 0:

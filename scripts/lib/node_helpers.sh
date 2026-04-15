@@ -104,7 +104,8 @@ node_exec() {
         local_command="${local_command//${NODE_HELPERS_REMOTE_PROJECT_DIR}/${NODE_HELPERS_PROJECT_DIR}}"
         bash -lc "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && $local_command"
     else
-        ssh "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && $command"
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            "$node" "export PATH=/opt/homebrew/bin:/usr/local/bin:\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH && $command"
     fi
 }
 

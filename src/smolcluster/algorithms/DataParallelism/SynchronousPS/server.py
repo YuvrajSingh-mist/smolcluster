@@ -477,13 +477,23 @@ def run_syncps_server(
             # Write live metrics for the dashboard
             try:
                 _safe_gn = round(_grad_norm, 4) if math.isfinite(_grad_norm) else 'NaN'
+                _total_steps = num_epochs * len(train_loader)
+                _remaining_steps = max(0, _total_steps - step)
+                _eta_s = int(max(0.0, _remaining_steps * batch_time)) if batch_time > 0 else 0
+                _eta_h = _eta_s // 3600
+                _eta_m = (_eta_s % 3600) // 60
+                _eta_sec = _eta_s % 60
+                _eta_str = f"{_eta_h:02d}:{_eta_m:02d}:{_eta_sec:02d}"
                 _metrics = {
                     "step": step,
-                    "total_steps": num_epochs * len(train_loader),
+                    "total_steps": _total_steps,
                     "loss": round(total_loss / (batch_idx + 1), 4),
                     "throughput": round(tok_per_sec, 1),
+                    "tok_sec_in": round(tok_per_sec, 1),
+                    "tok_sec_out": round(tok_per_sec, 1),
                     "grad_norm": _safe_gn,
                     "lr": _lr,
+                    "eta_remaining": _eta_str,
                     "algorithm": "syncps",
                     "running": True,
                 }

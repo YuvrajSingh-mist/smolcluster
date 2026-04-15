@@ -38,12 +38,11 @@ fi
 GRPO_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/reasoning/grpo/config.yaml"
 CLUSTER_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/cluster_config_inference.yaml"
 MODEL_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/model_config_inference.yaml"
-SESSION_NAME="grpo_train"
 VLLM_TMUX_SESSION="vllm_worker"
 
 DRY_RUN=false
 CLEANUP=false
-TRAIN_TARGET="gsm8k"
+TRAIN_TARGET="summarization"  # default target
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,7 +53,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --dry-run    Print commands without executing"
-            echo "  --cleanup    Kill the grpo_train tmux session and all vLLM worker processes"
+            echo "  --cleanup    Stop GRPO training auxiliaries and all vLLM worker processes"
             echo "  --help, -h   Show help"
             echo ""
             echo "Training targets:"
@@ -288,16 +287,10 @@ if [[ "$TOTAL_NUM_NODES" -ne "$EXPECTED_TOTAL" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# --cleanup: kill tmux session + kill all vLLM workers + confirm dead
+# --cleanup: kill all vLLM workers + confirm dead
 # ---------------------------------------------------------------------------
 
 if [[ "$CLEANUP" == "true" ]]; then
-    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        tmux kill-session -t "$SESSION_NAME"
-        echo "Killed tmux session: $SESSION_NAME"
-    else
-        echo "No tmux session found: $SESSION_NAME"
-    fi
     reset_all_vllm_workers
     exit 0
 fi
@@ -339,27 +332,21 @@ if [[ "$DRY_RUN" == "false" ]]; then
     # 2. Kill any stale vLLM instances + confirm they are down
     reset_all_vllm_workers
 
-    # 3. Kill stale tmux session
-    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        tmux kill-session -t "$SESSION_NAME"
-        echo "Killed stale tmux session: $SESSION_NAME"
-    fi
-
-    # 4. Start fresh vLLM on all workers (all fire concurrently, then we poll each)
+    # 3. Start fresh vLLM on all workers (all fire concurrently, then we poll each)
     echo ""
     echo "Starting vLLM on all workers ..."
     for i in "${!WORKER_HOSTS[@]}"; do
         start_vllm_on_worker "${WORKER_HOSTS[$i]}" "${WORKER_IPS[$i]}" "$VLLM_PORT" "${WORKER_RANKS[$i]}" "$HF_MODEL_NAME"
     done
 
-    # 5. Wait for each worker's vLLM to pass /health
+    # 4. Wait for each worker's vLLM to pass /health
     echo ""
     echo "Waiting for vLLM workers to become healthy ..."
     for i in "${!WORKER_HOSTS[@]}"; do
         wait_for_vllm_up "${WORKER_HOSTS[$i]}" "${WORKER_IPS[$i]}" "$VLLM_PORT" || exit 1
     done
 
-    # 6. Confirm with a real completion request ("hello") on each worker
+    # 5. Confirm with a real completion request ("hello") on each worker
     echo ""
     echo "Confirming vLLM completions ..."
     for i in "${!WORKER_HOSTS[@]}"; do
@@ -391,14 +378,11 @@ fi
 HF_ENV_SETUP+="export HF_HUB_ENABLE_HF_TRANSFER=1; "
 
 TRAIN_CMD="cd \"$PROJECT_DIR\" && ${HF_ENV_SETUP}uv run --group mlx python \"$TRAIN_SCRIPT\""
-TMUX_CMD="bash -lc '$TRAIN_CMD; status=\$?; echo; echo Training exited with status \$status.; echo Session kept open for inspection.; exec bash -i'"
 
 echo ""
 echo "Launching GRPO training ($SERVER_HOST, target=$TRAIN_TARGET) ..."
 if [[ "$DRY_RUN" == "true" ]]; then
-    echo "Dry run command: tmux new -d -s $SESSION_NAME \"$TMUX_CMD\""
+    echo "Dry run command: bash -lc '$TRAIN_CMD'"
 else
-    tmux new -d -s "$SESSION_NAME" "$TMUX_CMD"
-    echo "Started tmux session: $SESSION_NAME"
-    echo "Attach with: tmux attach -t $SESSION_NAME"
+    exec bash -lc "$TRAIN_CMD"
 fi

@@ -77,7 +77,6 @@ def calculate_length_reward(
     if tokenizer is not None:
         hf_tok = getattr(tokenizer, "_tokenizer", tokenizer)
         length = len(hf_tok.encode(predicted_answer, add_special_tokens=False))
-    else:
-        length = len(predicted_answer)
-
+        
+    # length = len(predicted_answer)
     return -((abs(length - max_length)) / max_length)
