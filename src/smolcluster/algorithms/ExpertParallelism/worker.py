@@ -576,6 +576,7 @@ def run_ep_worker(
         rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="ep",
     )
     logger.info(f"🚀 FSDP Worker rank {worker_rank} starting up (ZeRO Stage 0)")
 

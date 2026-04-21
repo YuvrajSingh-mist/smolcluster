@@ -328,6 +328,7 @@ def run_classicdp_worker(
         rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="classicdp",
     )
     logger.info(f"🚀 ClassicDP Worker rank {worker_rank} starting up")
 

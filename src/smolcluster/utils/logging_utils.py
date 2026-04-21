@@ -23,20 +23,62 @@ _LEVEL_COLOURS = {
 
 _TAG_COLOUR = "\033[35m"   # magenta — for bracketed tags like [MODEL], [LORA]
 _DIM = "\033[2m"
+_CTX_COLOUR = "\033[1;35m"  # bold magenta — for the context prefix
+
+# ---------------------------------------------------------------------------
+# Global log context — set once at process startup via set_log_context()
+# ---------------------------------------------------------------------------
+
+_CTX: dict[str, str] = {}
+_CTX_ORDER = ("arch", "algorithm", "role", "hardware")
+
+
+def _infer_hardware(hostname: str) -> str:
+    """Derive human-readable hardware label from hostname."""
+    if not hostname:
+        return ""
+    h = hostname.lower()
+    if re.match(r"(macmini|mini)\d*$", h):
+        return "Mac Mini"
+    if re.match(r"jetson\w*$", h):
+        return "Jetson"
+    if re.match(r"(rpi|raspi|pi)\d*$", h):
+        return "RPi"
+    if re.match(r"macbook\w*$", h):
+        return "MacBook"
+    return hostname
+
+
+def set_log_context(
+    *,
+    algorithm: str = "",
+    arch: str = "",
+    role: str = "",
+    hardware: str = "",
+) -> None:
+    """Set global context fields that appear on every log line.
+
+    Call once from the main entry-point after setup_logging().
+    Fields are shown as  [arch | algorithm | role | hardware]  in each line.
+    """
+    for key, val in (("algorithm", algorithm), ("arch", arch), ("role", role), ("hardware", hardware)):
+        if val:
+            _CTX[key] = val
 
 
 class ColourFormatter(logging.Formatter):
     """Single-line coloured formatter.
 
-    Format:  HH:MM:SS  LEVEL     logger.name  message
+    Format:  YYYY-MM-DD HH:MM:SS  LEVEL     [ctx]  logger.name  message
     Bracketed tags like [MODEL], [checkpoint], [vllm worker 0] are highlighted.
+    Context prefix (arch | algorithm | role | hardware) is shown when set via set_log_context().
     """
 
-    _FMT = "{dim}{asctime}{reset}  {level_col}{levelname:<8}{reset}  {dim}{name}{reset}  {msg}"
+    _FMT = "{dim}{asctime}{reset}  {level_col}{levelname:<8}{reset}  {ctx}{dim}{name}{reset}  {msg}"
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: A003
         record.message = record.getMessage()
-        record.asctime = self.formatTime(record, "%H:%M:%S")
+        record.asctime = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
 
         msg = re.sub(
             r"(\[[^\]]{1,40}\])",
@@ -44,12 +86,16 @@ class ColourFormatter(logging.Formatter):
             record.message,
         )
 
+        ctx_parts = [_CTX[k] for k in _CTX_ORDER if _CTX.get(k)]
+        ctx = f"{_CTX_COLOUR}[{' | '.join(ctx_parts)}]{_RESET}  " if ctx_parts else ""
+
         line = self._FMT.format(
             dim=_DIM,
             asctime=record.asctime,
             reset=_RESET,
             level_col=_LEVEL_COLOURS.get(record.levelno, ""),
             levelname=record.levelname,
+            ctx=ctx,
             name=record.name,
             msg=msg,
         )
@@ -89,7 +135,7 @@ def setup_logging(
 
 
 # ---------------------------------------------------------------------------
-# Cluster / Loki logging (file-based, structured for Promtail)
+# Cluster logging (file-based, structured)
 # ---------------------------------------------------------------------------
 
 class RankFilter(logging.Filter):
@@ -113,8 +159,10 @@ def setup_cluster_logging(
     hostname: Optional[str] = None,
     log_dir: Optional[str] = None,
     level: int = logging.INFO,
+    algorithm: str = "",
+    arch: str = "",
 ) -> None:
-    """Add structured file logging to an existing logger for Loki/Promtail ingestion."""
+    """Add structured file logging to an existing logger."""
 
     def _project_log_dir() -> Path:
         return Path(__file__).resolve().parents[3] / "logging" / "cluster-logs"
@@ -132,9 +180,20 @@ def setup_cluster_logging(
                 continue
         raise OSError("No writable directory found for cluster logs")
 
+    hardware = _infer_hardware(hostname or "")
+
+    # Set global context so ColourFormatter picks it up on every line
+    set_log_context(
+        algorithm=algorithm,
+        arch=arch,
+        role=("server" if component == "server" else f"worker-{rank}" if rank is not None else "worker"),
+        hardware=hardware,
+    )
+
+    algo_prefix = f"{algorithm}-" if algorithm else ""
     log_file = _pick_writable(log_dir) / (
-        f"server-{hostname or 'unknown'}.log" if component == "server"
-        else f"worker-rank{rank}-{hostname or 'unknown'}.log"
+        f"{algo_prefix}server-{hostname or 'unknown'}.log" if component == "server"
+        else f"{algo_prefix}worker-rank{rank}-{hostname or 'unknown'}.log"
     )
 
     # Avoid duplicate handlers
@@ -149,11 +208,19 @@ def setup_cluster_logging(
         fallback = _pick_writable(str(_project_log_dir().parent / "cluster-logs-fallback"))
         fh = logging.FileHandler(fallback / log_file.name, mode="a")
 
-    prefix = "rank:server" if component == "server" else f"rank:{rank}"
+    # Build a clean, human-readable format for the file (no ANSI colours)
+    ctx_parts = [p for p in (arch, algorithm, ("server" if component == "server" else f"worker-{rank}"), hardware) if p]
+    ctx_str = " | ".join(ctx_parts)
     fh.setLevel(level)
-    fh.setFormatter(logging.Formatter(f"%(asctime)s | %(levelname)s | {prefix} | %(message)s"))
+    fh.setFormatter(logging.Formatter(
+        f"%(asctime)s  %(levelname)-8s  [{ctx_str}]  %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
     logger.addHandler(fh)
-    logger.info("Logging initialised: %s (component=%s rank=%s hostname=%s)", log_file, component, rank, hostname)
+    logger.info(
+        "Logging initialised: %s  [algorithm=%s arch=%s role=%s hardware=%s]",
+        log_file, algorithm or "?", arch or "?", component, hardware or "?",
+    )
 
 
 def log_step(logger: logging.Logger, step: int, message: str, level: int = logging.INFO) -> None:

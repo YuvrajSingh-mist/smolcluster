@@ -74,6 +74,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# PID file for background SSH log-tail processes (one per vLLM worker).
+# Written during launch; read by --cleanup to stop the tails.
+GRPO_TAIL_PIDS_FILE="/tmp/smolcluster_grpo_tail_pids_${TRAIN_TARGET}.txt"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -292,6 +296,14 @@ fi
 
 if [[ "$CLEANUP" == "true" ]]; then
     reset_all_vllm_workers
+    # Kill any background SSH log-tail processes started during launch
+    if [[ -f "$GRPO_TAIL_PIDS_FILE" ]]; then
+        echo "Stopping worker log-tail processes ..."
+        while IFS= read -r _pid; do
+            kill "$_pid" 2>/dev/null && echo "  killed tail pid $_pid" || true
+        done < "$GRPO_TAIL_PIDS_FILE"
+        rm -f "$GRPO_TAIL_PIDS_FILE"
+    fi
     exit 0
 fi
 
@@ -369,6 +381,31 @@ if [[ ! -f "$TRAIN_SCRIPT" ]]; then
     exit 1
 fi
 
+CLUSTER_LOG_DIR="$PROJECT_DIR/logging/cluster-logs"
+mkdir -p "$CLUSTER_LOG_DIR"
+SESSION_TS=$(date +%Y%m%d_%H%M%S)
+TRAIN_LOG="$CLUSTER_LOG_DIR/grpo-${TRAIN_TARGET}__${SERVER_HOST}__${SESSION_TS}.log"
+
+# Stream each vLLM worker's log back to the server so the dashboard can display it.
+# Each worker writes to /tmp/vllm_<rank>.log in its own tmux session; we tail that
+# file over SSH and write to a local cluster-log file in the 3-part naming format
+# (grpo-<target>__<worker>__<ts>.log) that the dashboard parser understands.
+if [[ "$DRY_RUN" == "false" && ${#WORKER_HOSTS[@]} -gt 0 ]]; then
+    rm -f "$GRPO_TAIL_PIDS_FILE"
+    echo "Starting worker log streaming ..."
+    for i in "${!WORKER_HOSTS[@]}"; do
+        _w="${WORKER_HOSTS[$i]}"
+        _r="${WORKER_RANKS[$i]}"
+        _wlog="$CLUSTER_LOG_DIR/grpo-${TRAIN_TARGET}__${_w}__${SESSION_TS}.log"
+        ssh -o ConnectTimeout=10 -o BatchMode=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$_w" "${REMOTE_PATH}; tail -f -n +1 /tmp/vllm_${_r}.log 2>/dev/null" \
+            >> "$_wlog" 2>/dev/null &
+        echo $! >> "$GRPO_TAIL_PIDS_FILE"
+        echo "  [${_w}] streaming vLLM log → $(basename "$_wlog")"
+    done
+fi
+
 HF_ENV_SETUP=""
 if [[ -n "${HF_TOKEN:-}" ]]; then
     HF_ENV_SETUP="export HUGGING_FACE_HUB_TOKEN=\"${HF_TOKEN}\"; export HF_TOKEN=\"${HF_TOKEN}\"; "
@@ -381,8 +418,9 @@ TRAIN_CMD="cd \"$PROJECT_DIR\" && ${HF_ENV_SETUP}uv run --group mlx python \"$TR
 
 echo ""
 echo "Launching GRPO training ($SERVER_HOST, target=$TRAIN_TARGET) ..."
+echo "  Log file: $TRAIN_LOG"
 if [[ "$DRY_RUN" == "true" ]]; then
     echo "Dry run command: bash -lc '$TRAIN_CMD'"
 else
-    exec bash -lc "$TRAIN_CMD"
+    exec bash -lc "$TRAIN_CMD" 2>&1 | tee "$TRAIN_LOG"
 fi

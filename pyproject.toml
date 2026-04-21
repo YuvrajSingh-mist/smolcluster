@@ -49,6 +49,8 @@ eval = [
     "accelerate>=0.31.1",
     "deepeval>=3.9.6",
     "google-genai>=1.71.0",
+    "pandas>=2.3.3",
+    "pyarrow>=22.0.0",
     "scipy>=1.15.3",
 ]
 mlx = [

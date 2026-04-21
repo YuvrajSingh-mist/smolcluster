@@ -3840,6 +3840,8 @@ eval = [
     { name = "accelerate" },
     { name = "deepeval" },
     { name = "google-genai" },
+    { name = "pandas" },
+    { name = "pyarrow" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
@@ -3890,6 +3892,8 @@ eval = [
     { name = "accelerate", specifier = ">=0.31.1" },
     { name = "deepeval", specifier = ">=3.9.6" },
     { name = "google-genai", specifier = ">=1.71.0" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pyarrow", specifier = ">=22.0.0" },
     { name = "scipy", specifier = ">=1.15.3" },
 ]
 mlx = [

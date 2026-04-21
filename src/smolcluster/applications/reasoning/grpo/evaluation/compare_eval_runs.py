@@ -15,25 +15,16 @@ logger = logging.getLogger(__name__)
 import numpy as np
 from scipy import stats
 
-_SCRIPT_DIR = Path(__file__).parent
-_EVAL_ROLLOUTS_DIR = _SCRIPT_DIR / "eval-rollouts"
 _METRIC_NAMES = ["Faithfulness", "Coverage", "Conciseness", "Clarity"]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare two saved summarization eval runs with paired tests.")
-    parser.add_argument("--baseline-run", required=True, help="Baseline run directory name under eval-rollouts.")
-    parser.add_argument("--candidate-run", required=True, help="Candidate run directory name under eval-rollouts.")
+    parser.add_argument("--baseline-run", required=True, help="Path to the baseline run directory (relative or absolute).")
+    parser.add_argument("--candidate-run", required=True, help="Path to the candidate run directory (relative or absolute).")
     parser.add_argument("--alpha", type=float, default=0.05, help="Significance level.")
     parser.add_argument("--two-sided", action="store_true", help="Judge significance using the two-sided p-value instead of the one-sided (candidate > baseline) p-value.")
     return parser.parse_args()
-
-
-def resolve_run_dir(run_name: str) -> Path:
-    run_dir = _EVAL_ROLLOUTS_DIR / run_name
-    if not (run_dir / "rollouts.json").exists():
-        raise FileNotFoundError(f"No rollouts.json found for run: {run_name}")
-    return run_dir
 
 
 def final_scores_for_record(record: Dict[str, object]) -> Tuple[Dict[str, float], Optional[float]]:
@@ -149,8 +140,11 @@ def paired_test(baseline: List[float], candidate: List[float], alpha: float) -> 
 def main() -> None:
     setup_logging()
     args = parse_args()
-    baseline_dir = resolve_run_dir(args.baseline_run)
-    candidate_dir = resolve_run_dir(args.candidate_run)
+    baseline_dir = Path(args.baseline_run)
+    candidate_dir = Path(args.candidate_run)
+    for label, d in (("baseline", baseline_dir), ("candidate", candidate_dir)):
+        if not (d / "rollouts.json").exists():
+            raise FileNotFoundError(f"No rollouts.json found for {label} run: {d}")
 
     baseline_scores = load_scores_by_idx(baseline_dir)
     candidate_scores = load_scores_by_idx(candidate_dir)
@@ -173,8 +167,8 @@ def main() -> None:
 
     two_sided = args.two_sided
     report = {
-        "baseline_run": baseline_dir.name,
-        "candidate_run": candidate_dir.name,
+        "baseline_run": args.baseline_run,
+        "candidate_run": args.candidate_run,
         "alpha": args.alpha,
         "test_name": "paired_t_test",
         "difference_direction": "candidate_minus_baseline",

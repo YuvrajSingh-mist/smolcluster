@@ -319,6 +319,7 @@ def run_fsdp_worker(
         rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="fsdp",
     )
     logger.info(f"🚀 FSDP Worker rank {worker_rank} starting up (ZeRO Stage 1)")
 

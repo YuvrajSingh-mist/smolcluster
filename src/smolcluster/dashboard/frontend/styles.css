@@ -629,6 +629,16 @@ c    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
     .abtn.conn  { background: transparent; color: var(--ink-2);
                   border: 1.5px solid var(--line); }
     .abtn.stop  { background: var(--red);   color: #fff; }
+    .abtn.stopping { opacity: .72 !important; cursor: default; pointer-events: none; }
+    .abtn.stopping .stop-icon { display: none; }
+    .abtn.stopping .stop-spinner { display: block !important; }
+    .stop-spinner {
+      display: none;
+      width: 11px; height: 11px; flex-shrink: 0;
+      border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin .55s linear infinite;
+    }
 
     /* Training metrics strip */
     #metrics-strip {

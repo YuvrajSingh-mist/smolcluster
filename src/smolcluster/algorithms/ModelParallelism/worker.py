@@ -200,6 +200,7 @@ def run_modelparallelism_worker(
         rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="mp",
     )
     logger.info(f"🚀 ModelParallelism Worker {worker_rank} starting up")
 

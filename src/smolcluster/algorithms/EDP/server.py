@@ -363,6 +363,7 @@ def run_edp_server(
         rank=None,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="edp",
     )
     logger.info("🚀 EDP Server starting up")
 

@@ -27,7 +27,6 @@ from ruamel.yaml import YAML as _YAML
 logger = logging.getLogger(__name__)
 
 REMOTE_REPO = "~/smolcluster"
-LOG_MAXLINES = 500  # global circular buffer
 
 # Strip C0 control chars except ESC so ANSI colors can be rendered in the UI.
 _CTRL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F\x7F]")
@@ -83,21 +82,14 @@ class NodeManager:
         self.selected:  Dict[str, dict] = {}
         self.processes: Dict[str, dict] = {}
         self._lock = asyncio.Lock()
-        # Log streaming — global ordered list, trimmed to LOG_MAXLINES
-        self._logs: List[dict] = []
-        self._log_seq = 0
+        # Log streaming — unbounded queue, drained by _log_broadcaster into Redis Stream
+        self._queue: asyncio.Queue = asyncio.Queue()
 
     # ── Log helpers ────────────────────────────────────────────────────────────
 
     def _log(self, hostname: str, line: str):
-        self._log_seq += 1
-        self._logs.append({"seq": self._log_seq, "hostname": hostname,
-                            "line": line, "ts": time.time()})
-        if len(self._logs) > LOG_MAXLINES:
-            self._logs = self._logs[-LOG_MAXLINES:]
-
-    def logs_since(self, seq: int = 0) -> List[dict]:
-        return [l for l in self._logs if l["seq"] > seq]
+        self._queue.put_nowait({"hostname": hostname, "line": line,
+                                "session": "", "ts": time.time()})
 
     # ── Selection ──────────────────────────────────────────────────────────────
 

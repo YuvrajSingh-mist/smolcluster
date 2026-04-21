@@ -25,7 +25,6 @@
 - [Monitoring Training](#monitoring-training)
   - [Console Logs](#console-logs)
   - [Weights & Biases (W&B)](#weights--biases-wb)
-  - [Grafana (Centralized Logging)](#grafana-centralized-logging)
 
 ---
 
@@ -347,20 +346,4 @@ Automatic experiment tracking with detailed metrics:
 Format: `{Algorithm}-{role}-{hostname}_rank{X}_lr{Y}_bs{Z}`  
 Example: `Elastic Distributed Parallelism-worker-macbook_rank1_lr0.001_bs32`
 
-### Grafana (Centralized Logging)
-
-Real-time log aggregation from all nodes:
-
-**Dashboard:** [http://localhost:3000](http://localhost:3000)  
-**Credentials:** admin/admin
-
-**Query Examples:**
-```
-{job="smolcluster-worker"}           # All worker logs
-{job="smolcluster-server"}           # Server logs
-{host="worker-rank0-mini2"}          # Specific worker
-{level="ERROR"}                      # Only errors
-{level="INFO"} |= "Epoch"            # Training progress
-```
-
-See [logging.md](logging.md) for full setup instructions.
+See [logging.md](logging.md) for log monitoring setup.

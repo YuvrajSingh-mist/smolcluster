@@ -200,6 +200,7 @@ def run_edp_worker(
         rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="edp",
     )
     logger.info(f"🚀 EDP Worker {worker_rank} starting up")
 

@@ -327,4 +327,3 @@ done
 echo "   $(node_attach_hint "${WORKERS[0]}" "mp_pipeline_worker0")"
 echo ""
 echo "📈 Monitor training at: https://wandb.ai"
-echo "📊 View centralized logs at: http://localhost:3000 (Grafana)"

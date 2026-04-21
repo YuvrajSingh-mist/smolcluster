@@ -219,6 +219,7 @@ def run_modelparallelism_server(
         rank=None,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="mp",
     )
     logger.info("🚀 ModelParallelism Server starting up")
 

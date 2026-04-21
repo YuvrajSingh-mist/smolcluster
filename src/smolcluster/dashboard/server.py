@@ -51,7 +51,6 @@ LAST_TOKEN     = Path("/tmp/smolcluster_last_token")
 TOKEN_INTERVAL = Path("/tmp/smolcluster_token_interval_ms")  # real inter-token ms written by api.py
 GRAD_PING      = Path("/tmp/smolcluster_grad_ping")
 GRAD_INTERVAL  = Path("/tmp/smolcluster_grad_interval_ms")   # real inter-step ms written by training servers
-LOKI_BASE_URL  = os.environ.get("SMOLCLUSTER_LOKI_URL", "http://127.0.0.1:3100")
 CLUSTER_LOG_DIR = Path(__file__).resolve().parents[3] / "logging" / "cluster-logs"
 
 
@@ -325,7 +324,7 @@ def _ensure_redis_running() -> str:
 
 
 async def _restore_state_from_redis():
-    """Restore selected nodes from Redis so the dashboard survives restarts."""
+    """Restore selected nodes, probed usernames, and node OS info from Redis."""
     try:
         selected = await _redis.hgetall("smolcluster:selected")
         restored = 0
@@ -347,6 +346,27 @@ async def _restore_state_from_redis():
         _redis_mark(f"restore selected failed: {exc}")
         logger.warning(f"[dashboard] Redis restore skipped: {exc}")
 
+    # Restore probed SSH usernames
+    try:
+        for hostname, username in (await _redis.hgetall("smolcluster:probed")).items():
+            canonical = _canonicalize_node_hostname(hostname)
+            if canonical and username:
+                _probed[canonical] = username
+    except Exception:
+        pass
+
+    # Restore node OS metadata
+    try:
+        for hostname, json_str in (await _redis.hgetall("smolcluster:node_os")).items():
+            canonical = _canonicalize_node_hostname(hostname)
+            if canonical:
+                try:
+                    _node_os[canonical] = json.loads(json_str)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 async def _refresh_node_metadata(hostname: str, ssh_hint: str = ""):
     canonical = _canonicalize_node_hostname(hostname)
@@ -367,6 +387,7 @@ async def _refresh_node_metadata(hostname: str, ssh_hint: str = ""):
     username = (info.get("username") or "").strip()
     if username:
         _probed[canonical] = username
+        await _redis.hset("smolcluster:probed", canonical, username)
 
     os_info = {
         "os": (info.get("os") or "").strip(),
@@ -375,6 +396,7 @@ async def _refresh_node_metadata(hostname: str, ssh_hint: str = ""):
     }
     if any(os_info.values()):
         _node_os[canonical] = os_info
+        await _redis.hset("smolcluster:node_os", canonical, json.dumps(os_info))
 
 
 async def _prime_node_metadata():
@@ -399,9 +421,19 @@ async def lifespan(app: FastAPI):
     _ssh_aliases.clear()
     _ssh_aliases.update({h: h for h in _static_nodes})
     _node_os[_server_hostname] = _local_node_metadata()
-    for h in _static_nodes:
-        _probed[h] = _probed.get(h) or _lookup_ssh_entry(h, _static_nodes[h].get("ip", "")).get("user", "")
     await _restore_state_from_redis()
+    # Flush stale log stream entries (e.g. from a previous run with wrong hostnames)
+    # Local cluster-log files are the source of truth; the broadcaster re-tails from EOF.
+    await _redis.delete("smolcluster:logs")
+    # Seed any SSH usernames still missing after restore; persist new ones to Redis
+    _seed_pipe = _redis.pipeline()
+    for h in _static_nodes:
+        if not _probed.get(h):
+            user = _lookup_ssh_entry(h, _static_nodes[h].get("ip", "")).get("user", "")
+            if user:
+                _probed[h] = user
+                _seed_pipe.hset("smolcluster:probed", h, user)
+    await _seed_pipe.execute()
     logger.info(f"[dashboard] http://{_server_hostname}.local:9090")
     broadcast_task = asyncio.create_task(_events_broadcaster())
     log_task       = asyncio.create_task(_log_broadcaster())
@@ -566,11 +598,13 @@ async def probe_node(hostname: str, ssh_user: str = ""):
         raise HTTPException(502, "Unreachable or SSH key not set up")
     if info.get("username"):
         _probed[canonical] = info["username"]
+        await _redis.hset("smolcluster:probed", canonical, info["username"])
     _node_os[canonical] = {
         "os": info.get("os", ""),
         "os_version": info.get("os_version", ""),
         "machine": info.get("machine", ""),
     }
+    await _redis.hset("smolcluster:node_os", canonical, json.dumps(_node_os[canonical]))
     return info
 
 
@@ -948,20 +982,19 @@ _GRAD_SIGNAL_MARKERS = ("[SMOL_METRICS]", "[SMOL_PING]")
 
 
 async def _log_broadcaster():
-    """Drain NodeManager in-memory logs + cluster log files into a Redis Stream.
+    """Drain NodeManager queue + cluster log files into a Redis Stream.
     All SSE /api/logs connections consume via XREAD BLOCK — no file reads per
     connection and no history replay on reconnect."""
-    last_seq = 0
     local_log_offsets: dict[str, int] = {}
     while True:
         try:
-            lines = node_manager.logs_since(last_seq)
-            local_lines = _read_local_cluster_logs(local_log_offsets)
             merged: list[dict] = []
-            if lines:
-                last_seq = lines[-1]["seq"]
-                merged.extend(lines)
-            merged.extend(local_lines)
+            while True:
+                try:
+                    merged.append(node_manager._queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            merged.extend(_read_local_cluster_logs(local_log_offsets))
             if merged:
                 pipe = _redis.pipeline()
                 for entry in merged:
@@ -1010,57 +1043,16 @@ async def sse_events(request: Request):
 
 
 # ── SSE: logs (3 Hz) ───────────────────────────────────────────────────────────
-async def _fetch_loki_logs(start_ns: int) -> tuple[list[dict], int]:
-    """Fetch centralized worker/server logs from Loki from the given timestamp."""
-    query = '{job="smolcluster"}'
-    end_ns = time.time_ns()
-    try:
-        async with httpx.AsyncClient(timeout=2.5) as client:
-            response = await client.get(
-                f"{LOKI_BASE_URL}/loki/api/v1/query_range",
-                params={
-                    "query": query,
-                    "start": str(start_ns),
-                    "end": str(end_ns),
-                    "direction": "forward",
-                    "limit": "500",
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except Exception:
-        return [], start_ns
-
-    results = payload.get("data", {}).get("result", [])
-    logs: list[dict] = []
-    max_seen_ns = start_ns
-    for stream in results:
-        labels = stream.get("stream", {}) or {}
-        session = labels.get("session") or ""
-        raw_hostname = labels.get("host") or labels.get("hostname") or labels.get("job") or "remote"
-        hostname = _canonicalize_log_hostname(raw_hostname, session)
-        for ts_text, line in stream.get("values", []) or []:
-            try:
-                ts_ns = int(ts_text)
-            except (TypeError, ValueError):
-                continue
-            max_seen_ns = max(max_seen_ns, ts_ns)
-            logs.append({
-                "hostname": hostname,
-                "line": line,
-                "session": session,
-                "ts": ts_ns / 1_000_000_000,
-            })
-
-    logs.sort(key=lambda item: (item["ts"], item["hostname"], item["line"]))
-    return logs, max_seen_ns + 1
-
-
 def _parse_cluster_log_path(path: Path) -> tuple[str, str]:
     stem = path.stem
-    if "__" in stem:
-        session, hostname = stem.rsplit("__", 1)
-        return session, hostname
+    parts = stem.split("__")
+    if len(parts) >= 3:
+        # Format: <session>__<hostname>__<timestamp>
+        # e.g. grpo-summarization__mini1__20260419_155254
+        # The trailing segment is a rotation timestamp — skip it.
+        return parts[0], parts[-2]
+    if len(parts) == 2:
+        return parts[0], parts[1]
     return stem, stem
 
 

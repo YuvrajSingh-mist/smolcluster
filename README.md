@@ -10,7 +10,6 @@ A distributed deep learning library for training neural networks across heteroge
 - **Heterogeneous Hardware**: Mac minis, Raspberry Pis, MacBooks, and Windows machines
 - **Model Support**: MNIST, GPT-2, and custom neural networks
 - **Distributed Inference**: Model parallelism with streaming token generation
-- **Centralized Logging**: Grafana + Loki for real-time log aggregation
 - **Web Interface**: React-based chat UI for GPT inference
 - **Experiment Tracking**: W&B integration with automatic metrics logging
 
@@ -32,7 +31,7 @@ Refer to the [quickstart](https://www.smolcluster.com/quickstart.html) guide for
 - **[Configuration Guide](docs/configuration.md)** - Cluster and model configuration
 - **[Inference Guide](docs/inference.md)** - Model parallelism inference
 - **[Inference API Reference](docs/api.md)** - HTTP + SSE endpoints for MP and DP
-- **[Logging Setup](docs/logging.md)** - Grafana + Loki distributed logging
+- **[Logging Setup](docs/logging.md)** - Distributed log monitoring via the dashboard
 
 ## Training Algorithms
 
@@ -102,13 +101,7 @@ Real-time experiment tracking at [wandb.ai](https://wandb.ai)
 - Per-layer gradient norms
 - Hardware utilization
 
-### Grafana + Loki
-Centralized log aggregation at [http://localhost:3000](http://localhost:3000)
-- Distributed logs from all nodes
-- Real-time log queries
-- Error tracking
-
-See [logging.md](docs/logging.md) for setup instructions.
+See [logging.md](docs/logging.md) for log monitoring setup.
 
 ## Project Structure
 
@@ -137,7 +130,7 @@ smolcluster/
 │   ├── configs/                    # YAML configurations
 │   └── chat/                       # Web inference interface
 ├── scripts/                        # Launch scripts
-├── logging/                        # Grafana + Loki setup
+├── logging/                        # Cluster log files
 └── pyproject.toml                  # Dependencies
 ```
 

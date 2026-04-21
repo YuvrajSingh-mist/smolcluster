@@ -179,6 +179,7 @@ def run_syncps_server(
         rank=None,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="syncps",
     )
     logger.info("🚀 SyncPS Server starting up")
 

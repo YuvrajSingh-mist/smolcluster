@@ -498,6 +498,6 @@ Press `Ctrl+C` in the dashboard terminal.
 | All training algorithms (FSDP, EDP, EP, MP) | [docs/training.md](docs/training.md) |
 | Inference modes (MP, ClassicDP, SyncPS) | [docs/inference.md](docs/inference.md) |
 | Network configuration | [docs/networking.md](docs/networking.md) |
-| Centralized logging with Grafana + Loki | [docs/logging.md](docs/logging.md) |
+| Distributed logging | [docs/logging.md](docs/logging.md) |
 | Full config reference | [docs/configuration.md](docs/configuration.md) |
 | REST API reference | [docs/api.md](docs/api.md) |

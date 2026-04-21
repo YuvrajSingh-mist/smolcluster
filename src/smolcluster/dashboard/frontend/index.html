@@ -641,6 +641,16 @@
     .abtn.conn  { background: transparent; color: var(--ink-2);
                   border: 1.5px solid var(--line); }
     .abtn.stop  { background: var(--red);   color: #fff; }
+    .abtn.stopping { opacity: .72 !important; cursor: default; pointer-events: none; }
+    .abtn.stopping .stop-icon { display: none; }
+    .abtn.stopping .stop-spinner { display: block !important; }
+    .stop-spinner {
+      display: none;
+      width: 11px; height: 11px; flex-shrink: 0;
+      border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin .55s linear infinite;
+    }
 
     /* Training metrics strip */
     #metrics-strip {
@@ -1204,8 +1214,9 @@
           Reset Layout
         </button>
         <button class="abtn stop" id="btn-stop" onclick="stopAll()" disabled>
-          <svg width="9" height="9" viewBox="0 0 9 9"><rect width="9" height="9" fill="currentColor" rx="1.5"/></svg>
-          Stop
+          <svg class="stop-icon" width="9" height="9" viewBox="0 0 9 9"><rect width="9" height="9" fill="currentColor" rx="1.5"/></svg>
+          <span class="stop-spinner"></span>
+          <span class="stop-label">Stop</span>
         </button>
       </div>
 
@@ -2988,18 +2999,29 @@ function resetTopologyLayout() {
 }
 
 async function stopAll() {
+  const btn = $('btn-stop');
+  btn.classList.add('stopping');
+  const lbl = btn.querySelector('.stop-label');
+  if (lbl) lbl.textContent = 'Stopping…';
+
   // Close SSE streams to stop receiving log and state updates
   if (ssEventSource) { ssEventSource.close(); ssEventSource = null; }
   if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
   stopGenerationRequest();
-  
-  await fetch('/api/training/stop',  { method:'POST' });
-  await fetch('/api/inference/stop', { method:'POST' });
+
+  try {
+    await fetch('/api/training/stop',  { method:'POST' });
+    await fetch('/api/inference/stop', { method:'POST' });
+  } finally {
+    btn.classList.remove('stopping');
+    if (lbl) lbl.textContent = 'Stop';
+  }
+
   inferLocked    = false;
   selectedServer = null;
   trainingFallbackMetrics = {};
   clearLogs();
-  
+
   // Restart streams after a brief delay
   setTimeout(() => {
     if (!ssEventSource) startSSE();

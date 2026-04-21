@@ -96,6 +96,15 @@ def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: 
         token_count = float(metrics.get("generation_token_len_mean", 0) or 0) * float(metrics.get("num_rollouts", 0) or 0)
         if step_time_s and step_time_s > 0.0 and token_count > 0.0:
             est_throughput = round(token_count / step_time_s, 1)
+        # Use the measured vLLM generation time for accurate prefill / decode tok/sec.
+        # Prefill (input) = prompt tokens processed per second by vLLM.
+        # Decode (output) = new tokens generated per second by vLLM.
+        # Fall back to step_time_s if rollout_time_s was not captured (prefetch path).
+        rollout_time_s = float(metrics.get("rollout_time_s") or 0)
+        _tbase = rollout_time_s if rollout_time_s > 0.0 else step_time_s
+        prompt_count = float(metrics.get("prompt_token_len_mean", 0) or 0) * float(metrics.get("num_rollouts", 0) or 0)
+        tok_sec_in  = round(prompt_count / _tbase, 1) if (_tbase and prompt_count > 0.0) else est_throughput
+        tok_sec_out = round(token_count   / _tbase, 1) if (_tbase and token_count  > 0.0) else est_throughput
         eta_remaining = None
         if step_time_s and step_time_s > 0.0 and total_steps and total_steps > 0:
             steps_left = max(0, int(total_steps) - int(global_step))
@@ -110,8 +119,8 @@ def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: 
             "total_steps": total_steps,
             "loss": float(metrics.get("loss", 0.0)),
             "throughput": est_throughput,
-            "tok_sec_in": est_throughput,
-            "tok_sec_out": est_throughput,
+            "tok_sec_in": tok_sec_in,
+            "tok_sec_out": tok_sec_out,
             "grad_norm": safe_grad_norm,
             "lr": lr,
             "eta_remaining": eta_remaining,
@@ -320,11 +329,13 @@ def train_step(
             per_prompt_raw.append((flat_texts[idx : idx + size], flat_targets[idx] if idx < len(flat_targets) else ""))
             idx += size
         logger.info("\n%s Using prefetched rollouts (%d)", step_tag, len(flat_texts))
+        rollout_time_s: Optional[float] = None  # prefetched while previous step was running
     else:
         logger.info("\n%s Generating rollouts for %d prompt(s) ...", step_tag, len(prompts))
         _t0 = time.time()
         per_prompt_raw = build_rollouts_per_prompt(prompts, true_answers, config, step=step)
-        logger.info("%s [TIMING] rollout_gen: %.1fs", step_tag, time.time() - _t0)
+        rollout_time_s = max(0.001, time.time() - _t0)
+        logger.info("%s [TIMING] rollout_gen: %.1fs", step_tag, rollout_time_s)
 
     # Infer effective C from actual data: num_rollouts_per_worker × num_workers.
     # config["num_rollouts"] is per-worker; each prompt receives that many from EACH worker.
@@ -488,6 +499,8 @@ def train_step(
         "generation_token_len_mean": float(mx.mean(lengths).item()),
         "generation_token_len_min":  float(mx.min(lengths).item()),
         "generation_token_len_max":  float(mx.max(lengths).item()),
+        "prompt_token_len_mean":     max(0.0, D - float(mx.mean(lengths).item())),
+        "rollout_time_s":            rollout_time_s if rollout_time_s is not None else 0.0,
         "length_penalty_mean": float(mx.mean(lp).item()) if lp is not None else 0,
         "length_penalty_min":  float(mx.min(lp).item())  if lp is not None else 0,
         "length_penalty_max":  float(mx.max(lp).item())  if lp is not None else 0,

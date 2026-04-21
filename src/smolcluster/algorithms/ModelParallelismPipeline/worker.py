@@ -302,6 +302,7 @@ def run_modelparallelism_pipeline_worker(
         rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="mp-pipeline",
     )
     logger.info(f"🚀 ModelParallelism Worker rank {worker_rank} starting up")
 

@@ -178,6 +178,7 @@ def run_syncps_worker(
         rank=worker_rank,
         hostname=hostname,
         log_dir=config.get("log_dir", "/tmp/smolcluster-logs"),
+        algorithm="syncps",
     )
     logger.info(f"🚀 SyncPS Worker {worker_rank} starting up")
 

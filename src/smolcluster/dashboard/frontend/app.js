@@ -1633,18 +1633,29 @@ function resetTopologyLayout() {
 }
 
 async function stopAll() {
+  const btn = $('btn-stop');
+  btn.classList.add('stopping');
+  const lbl = btn.querySelector('.stop-label');
+  if (lbl) lbl.textContent = 'Stopping…';
+
   // Close SSE streams to stop receiving log and state updates
   if (ssEventSource) { ssEventSource.close(); ssEventSource = null; }
   if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
   stopGenerationRequest();
-  
-  await fetch('/api/training/stop',  { method:'POST' });
-  await fetch('/api/inference/stop', { method:'POST' });
+
+  try {
+    await fetch('/api/training/stop',  { method:'POST' });
+    await fetch('/api/inference/stop', { method:'POST' });
+  } finally {
+    btn.classList.remove('stopping');
+    if (lbl) lbl.textContent = 'Stop';
+  }
+
   inferLocked    = false;
   selectedServer = null;
   trainingFallbackMetrics = {};
   clearLogs();
-  
+
   // Restart streams after a brief delay
   setTimeout(() => {
     if (!ssEventSource) startSSE();
