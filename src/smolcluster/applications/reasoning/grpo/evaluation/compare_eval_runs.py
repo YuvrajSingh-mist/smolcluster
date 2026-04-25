@@ -177,7 +177,11 @@ def main() -> None:
         "results": results,
     }
 
-    out_path = candidate_dir / f"comparison-vs-{baseline_dir.name}.json"
+    _prefix = "grpo-summarization-"
+    def _short(p: Path) -> str:
+        n = p.name
+        return n[len(_prefix):].replace("-", "_") if n.startswith(_prefix) else n.replace("-", "_")
+    out_path = candidate_dir / f"comparison_{_short(baseline_dir)}_vs_{_short(candidate_dir)}.json"
     out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(f"Baseline: {baseline_dir.name}")

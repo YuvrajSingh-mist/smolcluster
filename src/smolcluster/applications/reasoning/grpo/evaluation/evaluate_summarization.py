@@ -609,12 +609,12 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="G-Eval evaluation for summarization GRPO checkpoint")
     p.add_argument(
         "--checkpoint-dir",
-        default="checkpoints/grpo-summarization-length-quality-rouge/latest",
+        default="checkpoints/LFM2.5-350M-bf16/grpo-summarization-length-quality-bleu-rouge/latest",
         help="Path to checkpoint dir containing model.safetensors (relative to project root or absolute)",
     )
     p.add_argument(
         "--model-name",
-        default="mlx-community/Qwen2.5-0.5B-Instruct-bf16",
+        default="LiquidAI/LFM2.5-350M-MLX-bf16",
         help="Base HuggingFace model ID (must match the checkpoint architecture)",
     )
     p.add_argument(
