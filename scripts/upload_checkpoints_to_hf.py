@@ -152,7 +152,6 @@ A distributed deep learning library for training neural networks across heteroge
 - Distributed Training: FSDP (ZeRO-optimised), Classic Data Parallelism, Elastic DP, SyncPS, Expert Parallelism, Model Parallelism
 - Heterogeneous hardware: Mac minis, Raspberry Pis, MacBooks, Windows machines
 - Experiment tracking: W&B integration
-- Centralised logging: Grafana + Loki
 - MLX GRPO training on Apple Silicon
 
 **Website:** [smolcluster.com](https://smolcluster.com)

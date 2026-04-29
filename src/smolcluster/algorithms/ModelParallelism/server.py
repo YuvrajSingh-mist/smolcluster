@@ -429,6 +429,7 @@ def run_modelparallelism_server(
 
     # Create epoch progress bar
     epoch_pbar = tqdm(range(start_epoch, num_epochs), desc="Training Epochs", ncols=100)
+    train_start_time = time.time()
 
     for epoch in epoch_pbar:
         model_layers.train()
@@ -436,6 +437,7 @@ def run_modelparallelism_server(
         epoch_pbar.set_description(f"Epoch {epoch + 1}/{num_epochs}")
         logger.info(f"Starting epoch {epoch + 1}/{num_epochs}")
 
+        grad_norm = 0.0
         # Create batch progress bar for this epoch
         batch_pbar = tqdm(
             enumerate(train_loader),
@@ -654,7 +656,9 @@ def run_modelparallelism_server(
             clear_gpu_cache(device)
 
             # Update batch progress bar with current metrics
-            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step})
+            _elapsed = int(time.time() - train_start_time)
+            _eh, _em, _es = _elapsed // 3600, (_elapsed % 3600) // 60, _elapsed % 60
+            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "grad_norm": f"{grad_norm:.3f}", "step": step, "elapsed": f"{_eh:02d}:{_em:02d}:{_es:02d}"})
 
             # Log training metrics
             wandb.log(

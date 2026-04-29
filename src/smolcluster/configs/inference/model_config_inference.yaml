@@ -28,8 +28,7 @@ mp:
         k: 40
 
 dp:
-  hf_model_name: LiquidAI/LFM2.5-350M-MLX-bf16
-  # hf_model_name: meta-llama/Llama-3.2-1B-Instruct
+  hf_model_name: YuvrajSingh9886/LFM2.5-350M-grpo-summarization-length-only
 
   # Max tokens to generate per inference request.
   max_new_tokens: 256

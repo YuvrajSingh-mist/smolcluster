@@ -1,36 +1,71 @@
-# Python-generated files
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[oc]
+*.pyo
 build/
 dist/
 wheels/
-*.egg-info
+**/*.egg-info/
+.eggs/
+*.egg
 
-# Virtual environments
-.venv
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
 
-# Data and logs
+# ── Environment variables ──────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Model checkpoints (large binary weights) ──────────────────────────────────
+checkpoints/
+
+# ── Experiment / run artefacts ────────────────────────────────────────────────
 wandb/
-*/wandb/
+**/wandb/
+.grpo_logs/
+.grpo_debug/
+logging/cluster-logs/
+
+# ── Datasets (downloaded at runtime) ──────────────────────────────────────────
+src/smolcluster/data/
+
+# ── Redis dump ────────────────────────────────────────────────────────────────
+dump.rdb
+**/dump.rdb
+
+# ── Tool / cache dirs ─────────────────────────────────────────────────────────
 .ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.cache/
+.config/
+.claude/
+.deepeval/
 
-# User-specific configuration
-devices.json
-*.log
-
-# OS-specific files
+# ── OS-specific ───────────────────────────────────────────────────────────────
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+ehthumbs.db
 
-# IDE files
-.vscode/
+# ── IDE / editor ──────────────────────────────────────────────────────────────
 .idea/
 *.swp
 *.swo
+*.swn
+*~
 
-# Temporary files
+# ── Temporary files ───────────────────────────────────────────────────────────
 *.tmp
 *.bak
+*.orig
 
-# Environment variables
-.env
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+*.log.*
+smolcluster-web/

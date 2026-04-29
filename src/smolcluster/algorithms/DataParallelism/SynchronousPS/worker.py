@@ -258,6 +258,7 @@ def run_syncps_worker(
     logger.info("Starting training loop...")
     model = model.to(device)
     total_steps = num_epochs * len(train_loader)
+    train_start_time = time.time()
 
     for epoch in range(start_epoch, num_epochs):
         model.train()
@@ -370,7 +371,9 @@ def run_syncps_worker(
                         )
 
             # Update progress bar
-            batch_pbar.set_postfix({"step": step, "tok/s": f"{tok_per_sec:.0f}"})
+            _elapsed = int(time.time() - train_start_time)
+            _eh, _em, _es = _elapsed // 3600, (_elapsed % 3600) // 60, _elapsed % 60
+            batch_pbar.set_postfix({"step": step, "tok/s": f"{tok_per_sec:.0f}", "elapsed": f"{_eh:02d}:{_em:02d}:{_es:02d}"})
 
             # Evaluation
             if step % eval_steps == 0:

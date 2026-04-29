@@ -39,7 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from smolcluster.dashboard.node_manager import NodeManager, _build_ssh_target
+from dashboard.node_manager import NodeManager, _build_ssh_target
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ LAST_TOKEN     = Path("/tmp/smolcluster_last_token")
 TOKEN_INTERVAL = Path("/tmp/smolcluster_token_interval_ms")  # real inter-token ms written by api.py
 GRAD_PING      = Path("/tmp/smolcluster_grad_ping")
 GRAD_INTERVAL  = Path("/tmp/smolcluster_grad_interval_ms")   # real inter-step ms written by training servers
-CLUSTER_LOG_DIR = Path(__file__).resolve().parents[3] / "logging" / "cluster-logs"
+CLUSTER_LOG_DIR = Path(__file__).resolve().parents[1] / "logging" / "cluster-logs"
 
 
 # ── SSH config parsing ─────────────────────────────────────────────────────────
@@ -742,15 +742,16 @@ async def stop_inference():
     return {"status": "stopped"}
 
 
-INFER_CONFIG_FILE = (Path(__file__).parent.parent /
+# After move: dashboard/server.py → parent = dashboard/, parent.parent = workspace root
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+INFER_CONFIG_FILE = (_REPO_ROOT / "src" / "smolcluster" /
                      "configs" / "inference" / "cluster_config_inference.yaml")
-INFER_SCRIPT_FILE = (Path(__file__).parent.parent.parent.parent /
-                     "scripts" / "inference" / "launch_inference.sh")
-GRPO_TRAIN_SCRIPT_FILE = (Path(__file__).parent.parent / "applications" /
+INFER_SCRIPT_FILE = (_REPO_ROOT / "scripts" / "inference" / "launch_inference.sh")
+GRPO_TRAIN_SCRIPT_FILE = (_REPO_ROOT / "src" / "smolcluster" / "applications" /
                           "reasoning" / "grpo" / "scripts" / "launch_grpo_train.sh")
 
-TRAIN_CONFIGS_DIR = str(Path(__file__).parent.parent / "configs")
-TRAIN_SCRIPTS_DIR = str(Path(__file__).parent.parent.parent.parent / "scripts" / "training")
+TRAIN_CONFIGS_DIR = str(_REPO_ROOT / "src" / "smolcluster" / "configs")
+TRAIN_SCRIPTS_DIR = str(_REPO_ROOT / "scripts" / "training")
 
 
 @app.post("/api/inference/launch")
@@ -1236,7 +1237,7 @@ def _get_inference_api_url() -> Optional[str]:
     launch_api.sh always runs on the dashboard machine (localhost), so we only
     need the port from the config — never a remote IP.
     """
-    config_path = Path(__file__).parent.parent / "configs" / "inference" / "cluster_config_inference.yaml"
+    config_path = _REPO_ROOT / "src" / "smolcluster" / "configs" / "inference" / "cluster_config_inference.yaml"
     api_port = 8080  # default from cluster_config_inference.yaml
     if config_path.exists():
         try:

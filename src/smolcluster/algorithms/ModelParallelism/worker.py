@@ -336,6 +336,7 @@ def run_modelparallelism_worker(
     epoch_pbar = tqdm(
         range(start_epoch, num_epochs), desc=f"Worker {local_rank} Epochs", ncols=100
     )
+    train_start_time = time.time()
 
     for epoch in epoch_pbar:
         model_layers.train()
@@ -518,8 +519,10 @@ def run_modelparallelism_worker(
                 )
 
                 # Update progress bars
-                batch_pbar.set_postfix({"loss": f"{avg_loss:.4f}", "step": step})
-                epoch_pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
+                _elapsed = int(time.time() - train_start_time)
+                _eh, _em, _es = _elapsed // 3600, (_elapsed % 3600) // 60, _elapsed % 60
+                batch_pbar.set_postfix({"loss": f"{avg_loss:.4f}", "step": step, "elapsed": f"{_eh:02d}:{_em:02d}:{_es:02d}"})
+                epoch_pbar.set_postfix({"loss": f"{avg_loss:.4f}", "elapsed": f"{_eh:02d}:{_em:02d}:{_es:02d}"})
 
                 # Save checkpoint at regular intervals
                 if save_checkpoints and should_save_checkpoint(

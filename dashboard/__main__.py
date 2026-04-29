@@ -2,8 +2,8 @@
 smolcluster Dashboard entry point.
 
 Usage:
-    python -m smolcluster.dashboard
-    python -m smolcluster.dashboard --port 9090
+    python -m dashboard
+    python -m dashboard --port 9090
 """
 
 import argparse
@@ -47,7 +47,7 @@ def main():
 
     socks = _make_sockets(args.port)
     config = uvicorn.Config(
-        "smolcluster.dashboard.server:app",
+        "dashboard.server:app",
         host="0.0.0.0",
         port=args.port,
         reload=args.reload,

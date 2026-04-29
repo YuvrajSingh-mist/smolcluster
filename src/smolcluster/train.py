@@ -668,7 +668,7 @@ def main():
 
     # Dashboard shortcut — no further args needed
     if len(sys.argv) >= 2 and sys.argv[1] == "dashboard":
-        from smolcluster.dashboard.__main__ import main as dashboard_main
+        from dashboard.__main__ import main as dashboard_main
         import sys as _sys
         _sys.argv = [_sys.argv[0]] + _sys.argv[2:]  # strip "dashboard" so argparse in __main__ works
         dashboard_main()

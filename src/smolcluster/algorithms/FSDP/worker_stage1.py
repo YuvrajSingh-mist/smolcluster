@@ -567,9 +567,11 @@ def run_fsdp_worker(
     )
 
     logger.info(f"All workers connected. Starting training for {num_epochs} epochs.")
+    train_start_time = time.time()
 
     for epoch in range(start_epoch, num_epochs):
         total_loss = 0.0
+        grad_norm = 0.0
         val_loss = None #to make the ckpt manager happy at the end of the epoch when it tries to save the checkpoint and log the val_loss in the metadata
         
         model.train()
@@ -898,7 +900,9 @@ def run_fsdp_worker(
             tok_per_sec = tokens_processed / batch_time if batch_time > 0 else 0
 
             # Update batch progress bar with current metrics
-            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "step": step, "tok/s": f"{tok_per_sec:.0f}"})
+            _elapsed = int(time.time() - train_start_time)
+            _eh, _em, _es = _elapsed // 3600, (_elapsed % 3600) // 60, _elapsed % 60
+            batch_pbar.set_postfix({"lr": f"{current_lr:.2e}", "grad_norm": f"{grad_norm:.3f}", "step": step, "tok/s": f"{tok_per_sec:.0f}", "elapsed": f"{_eh:02d}:{_em:02d}:{_es:02d}"})
 
             # Log training metrics
             wandb_metrics = {

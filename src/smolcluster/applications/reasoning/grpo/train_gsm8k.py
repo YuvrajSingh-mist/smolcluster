@@ -587,6 +587,7 @@ def train(
         total_epochs, grad_accum_steps, use_prefetch,
     )
     rollout_step = 0
+    train_start_time = time.time()
 
     for epoch in range(total_epochs):
         epoch_batches = list(
@@ -789,6 +790,8 @@ def train(
                             global_step, sync_exc,
                         )
 
+            _elapsed = int(time.time() - train_start_time)
+            _eh, _em, _es = _elapsed // 3600, (_elapsed % 3600) // 60, _elapsed % 60
             epoch_bar.set_postfix(
                 epoch=epoch + 1,
                 step=global_step,
@@ -796,6 +799,7 @@ def train(
                 grad_norm=f"{grad_norm:.4f}",
                 amp_scale=f"{(scaler.get_scale() if scaler else 1.0):.0f}",
                 skipped=int(skipped_update),
+                elapsed=f"{_eh:02d}:{_em:02d}:{_es:02d}",
             )
             wandb.log(
                 {

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+*.sock
+.DS_Store
+DerivedData/
+*.o
+uv.lock
+bench/
+tools/

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "grove-ml"
+version = "0.1.0"
+description = "Distributed ML training across MacBooks. Zero config."
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Swarnim Jain"}]
+readme = "README.md"
+keywords = ["distributed", "training", "mlx", "apple-silicon", "diloco"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "numpy>=1.24",
+    "mlx>=0.5",
+    "zeroconf>=0.131",
+    "rich>=13",
+    "textual>=0.50",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://swarnimjain.com/grove"
+GitHub = "https://github.com/swarnim-j/grove"
+
+[tool.hatch.build.targets.sdist]
+include = ["grove/", "examples/", "README.md", "LICENSE"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["grove"]
+
+[project.scripts]
+grove = "grove.cli:main"

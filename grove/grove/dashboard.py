@@ -1,0 +1,104 @@
+"""Training dashboard launchers."""
+
+import logging
+import os
+import sys
+import threading
+from .tui import DashboardApp, LogCapture
+
+
+def _disable_tqdm_locks() -> None:
+    os.environ["TQDM_DISABLE"] = "1"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    try:
+        import tqdm.std
+        class _DummyLock:
+            def __init__(self, *a, **kw): pass
+            def acquire(self, *a, **kw): return True
+            def release(self, *a, **kw): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        tqdm.std.TqdmDefaultWriteLock = _DummyLock
+    except ImportError:
+        pass
+
+
+def _setup_log_capture() -> LogCapture:
+    _disable_tqdm_locks()
+    capture = LogCapture()
+    sys.stdout = capture
+    for name in list(logging.Logger.manager.loggerDict):
+        if name.startswith("grove"):
+            logging.getLogger(name).setLevel(logging.WARNING)
+    return capture
+
+
+class Dashboard:
+    def __init__(self, coordinator: "CoordinatorServer", cluster_name: str, uid: str) -> None:
+        self._coord = coordinator
+        self._cluster = cluster_name
+        self._uid = uid
+
+    def run_with_training(self, train_fn) -> None:
+        capture = _setup_log_capture()
+        done = threading.Event()
+
+        def _train():
+            try:
+                train_fn()
+                capture.write("[bold green]Training complete.[/bold green] Press q to exit.")
+            except Exception as e:
+                import traceback
+                capture.write(f"[bold red]ERROR: {e}[/bold red]")
+                capture.write(traceback.format_exc())
+            finally:
+                done.set()
+
+        train_thread = threading.Thread(target=_train, daemon=True)
+        train_thread.start()
+
+        app = DashboardApp(
+            self._coord._build_stats,
+            self._cluster,
+            self._uid,
+            my_rank=0,
+            log_capture=capture,
+            done_event=done,
+        )
+        app.run()
+
+
+class WorkerDashboard:
+    def __init__(self, worker_client: "WorkerClient", cluster_name: str, uid: str, rank: int) -> None:
+        self._client = worker_client
+        self._cluster = cluster_name
+        self._uid = uid
+        self._rank = rank
+
+    def run_with_training(self, train_fn) -> None:
+        capture = _setup_log_capture()
+        done = threading.Event()
+
+        def _train():
+            try:
+                train_fn()
+                capture.write("[bold green]Training complete.[/bold green] Press q to exit.")
+            except Exception as e:
+                import traceback
+                capture.write(f"[bold red]ERROR: {e}[/bold red]")
+                capture.write(traceback.format_exc())
+            finally:
+                done.set()
+
+        train_thread = threading.Thread(target=_train, daemon=True)
+        train_thread.start()
+
+        app = DashboardApp(
+            self._client.get_cluster_stats,
+            self._cluster,
+            self._uid,
+            my_rank=self._rank,
+            log_capture=capture,
+            done_event=done,
+        )
+        app.run()

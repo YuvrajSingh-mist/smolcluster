@@ -156,14 +156,14 @@ def _optimizer_lr(optimizer: Any, config: Dict[str, Any]) -> float:
 
 
 def _compute_single_reward(
-    args: Tuple[int, str, str, str, Any, bool, bool, bool],
+    args: Tuple[int, str, str, str, Any, bool, bool, bool, bool],
 ) -> Tuple[int, float, dict]:
-    idx, question, generated_text, true_answer, tokenizer, use_rouge, use_meteor, use_bleu = args
+    idx, question, generated_text, true_answer, tokenizer, use_rouge, use_meteor, use_bleu, use_length_penalty = args
     quality_scores = calculate_summary_quality(
         generated_text, true_answer,
         use_rouge=use_rouge, use_meteor=use_meteor, use_bleu=use_bleu,
     )
-    length_penalty = calculate_length_reward(generated_text, MAX_LENGTH_OF_SUMMARIZATION, tokenizer=tokenizer)
+    length_penalty = calculate_length_reward(generated_text, MAX_LENGTH_OF_SUMMARIZATION, tokenizer=tokenizer) if use_length_penalty else 0.0
     total_reward = float(sum(quality_scores.values()) + length_penalty)
     log_record = {
         "rollout_idx":    idx,
@@ -189,12 +189,13 @@ def compute_rewards(
     use_rouge: bool = False,
     use_meteor: bool = False,
     use_bleu: bool = False,
+    use_length_penalty: bool = True,
 ) -> Tuple[mx.array, Dict[str, List[float]]]:
     """Returns (reward_tensor [T*C], components) where components has per-rollout
     lists for each enabled quality metric plus length_penalty and total_reward."""
     questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
     indexed_args = [
-        (i, q, text, target, tokenizer, use_rouge, use_meteor, use_bleu)
+        (i, q, text, target, tokenizer, use_rouge, use_meteor, use_bleu, use_length_penalty)
         for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
     ]
 
@@ -275,6 +276,7 @@ def evaluate_batch(
         use_rouge=bool(_qm.get("rouge", False)),
         use_meteor=bool(_qm.get("meteor", False)),
         use_bleu=bool(_qm.get("bleu", False)),
+        use_length_penalty=bool(_qm.get("length_penalty", True)),
     )
     rewards = rewards_flat.reshape(T, C)          # [T, C]
     advantages = compute_advantages(rewards, dtype=dtype)  # [T, C]
@@ -384,6 +386,7 @@ def train_step(
         use_rouge=bool(_qm.get("rouge", False)),
         use_meteor=bool(_qm.get("meteor", False)),
         use_bleu=bool(_qm.get("bleu", False)),
+        use_length_penalty=bool(_qm.get("length_penalty", True)),
     )
     rewards = rewards_flat.reshape(T, C)          # [T, C]
     logger.info(
@@ -615,6 +618,7 @@ def train(
         total_epochs, grad_accum_steps, use_prefetch,
     )
     rollout_step = 0
+    train_start_time = time.time()
 
     for epoch in range(total_epochs):
         epoch_batches = list(
@@ -816,6 +820,8 @@ def train(
                             global_step, sync_exc,
                         )
 
+            _elapsed = int(time.time() - train_start_time)
+            _eh, _em, _es = _elapsed // 3600, (_elapsed % 3600) // 60, _elapsed % 60
             epoch_bar.set_postfix(
                 epoch=epoch + 1,
                 step=global_step,
@@ -823,6 +829,7 @@ def train(
                 grad_norm=f"{grad_norm:.4f}",
                 amp_scale=f"{(scaler.get_scale() if scaler else 1.0):.0f}",
                 skipped=int(skipped_update),
+                elapsed=f"{_eh:02d}:{_em:02d}:{_es:02d}",
             )
             quality_wandb = {
                 f"rewards/{k}": metrics.get(k, 0)
