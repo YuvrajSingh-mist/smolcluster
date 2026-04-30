@@ -34,11 +34,12 @@ def main():
 
     loss_and_grad = nn.value_and_grad(model, lambda m, x, y: mx.mean((m(x) - y) ** 2))
 
-    for step in range(50):
+    for step in range(1000):
         loss, grads = loss_and_grad(model, X, y)
         grads = grove.average_gradients(grads)
         optimizer.update(model, grads)
         mx.eval(model.state, optimizer.state)
+        grove.report(loss=loss.item())
         if world.rank() == 0 and step % 10 == 0:
             print(f"  Step {step:>3}: loss = {loss.item():.4f}")
 

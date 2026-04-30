@@ -46,6 +46,10 @@ from smolcluster.utils.layers import get_model_per_node
 # Configuration and Data Loading
 # -----------------------------------------------------------------------------
 
+# Populated by run_discover(); merged into every load_configs() call so that
+# run_worker (which re-calls load_configs internally) sees the live IPs.
+_discovered_config: dict = {}
+
 
 def load_configs(algorithm: str = "syncps"):
     """Load configuration files.
@@ -69,6 +73,10 @@ def load_configs(algorithm: str = "syncps"):
     config_file = f"cluster_config_{algorithm}.yaml"
     with open(CONFIG_DIR / config_file) as f:
         cluster_config = yaml.safe_load(f)
+
+    # Overlay any IPs discovered at runtime (set by run_discover)
+    if _discovered_config:
+        cluster_config.update(_discovered_config)
 
     return model_config, cluster_config
 
@@ -643,11 +651,57 @@ def run_worker(
     wandb.finish()
 
 
+def run_discover(algorithm: str, cluster: str, world_size: int, resume_checkpoint_path: str = None):
+    """Discover peers via grove mDNS/AWDL, patch cluster_config with real IPs, then train.
+
+    Activated only when running through grove (grove start/join).
+    Existing server/worker paths are untouched.
+    """
+    global _discovered_config
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    from smolcluster.discovery import discover
+
+    logger = logging.getLogger("[DISCOVER]")
+    logger.info(f"Discovering {world_size} peers for cluster '{cluster}'...")
+
+    my_rank, peers, zc = discover(cluster, world_size, timeout=120.0)
+    hostname = peers[my_rank]["hostname"]
+    logger.info(f"Rank {my_rank} / {world_size} — peers: { {r: p['host'] for r, p in peers.items()} }")
+
+    # Build the discovered config overlay — run_worker's load_configs will merge this in
+    if algorithm == "classicdp":
+        base_port = int(os.environ.get("SMOLCLUSTER_PORT", "65432"))
+        workers = [
+            {"hostname": p["hostname"], "rank": r, "ip": p["host"], "port": base_port + r}
+            for r, p in peers.items()
+        ]
+        _discovered_config = {
+            "num_workers": world_size,
+            "allToAllTopology": {"workers": {"regular": workers, "tablets": []}},
+            "port": {p["hostname"]: base_port + r for r, p in peers.items()},
+        }
+
+    # extend here for other algos:
+    # elif algorithm == "syncps":
+    #     _discovered_config = {"host_ip": {peers[0]["hostname"]: peers[0]["host"]}}
+    # elif algorithm == "fsdp": ...
+
+    try:
+        run_worker(my_rank, hostname, algorithm, resume_checkpoint_path)
+    finally:
+        zc.close()
+
+
 def main():
     """Main entry point for distributed training."""
     parser = argparse.ArgumentParser(description="Distributed GPT Training")
     parser.add_argument(
-        "mode", choices=["server", "worker", "dashboard"], help="Run as server, worker, or dashboard"
+        "mode", choices=["server", "worker", "dashboard", "grove", "discover"],
+        help="Run as server, worker, dashboard, grove, or discover (auto-discovery via grove)"
     )
     parser.add_argument("arg1", help="Hostname (server mode) or rank (worker mode)")
     parser.add_argument("arg2", nargs="?", help="Hostname (worker mode only)")
@@ -672,6 +726,18 @@ def main():
         import sys as _sys
         _sys.argv = [_sys.argv[0]] + _sys.argv[2:]  # strip "dashboard" so argparse in __main__ works
         dashboard_main()
+        return
+
+    # Discover mode: grove start/join passes argv like ['train.py', 'discover', '-a', 'classicdp']
+    if len(sys.argv) >= 2 and sys.argv[1] == "discover":
+        alg_parser = argparse.ArgumentParser(add_help=False)
+        alg_parser.add_argument("-a", "--algorithm",
+                                 default=os.environ.get("SMOLCLUSTER_ALGO", "syncps"))
+        alg_parser.add_argument("-r", "--resume-checkpoint", default=None)
+        alg_args, _ = alg_parser.parse_known_args(sys.argv[2:])
+        cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
+        world_size = int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
+        run_discover(alg_args.algorithm, cluster, world_size, alg_args.resume_checkpoint)
         return
 
     # Handle both new argparse format and legacy positional format
@@ -738,6 +804,10 @@ def main():
             parser.print_help()
             sys.exit(1)
         run_worker(worker_rank, hostname, algorithm, resume_checkpoint_path)
+    elif mode == "grove":
+        cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
+        world_size = int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
+        run_discover(algorithm, cluster, world_size, resume_checkpoint_path)
 
 
 if __name__ == "__main__":

@@ -56,8 +56,14 @@ def update_cluster_count(zc, info, count: int) -> None:
     from zeroconf import ServiceInfo
     props = dict(info.properties)
     props[b"current"] = str(count).encode()
-    info.properties = props
-    zc.update_service(info)
+    updated = ServiceInfo(
+        info.type, info.name,
+        addresses=info.addresses,
+        port=info.port,
+        properties=props,
+        server=info.server,
+    )
+    zc.update_service(updated)
 
 
 class LiveBrowser:

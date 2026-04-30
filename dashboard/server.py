@@ -37,6 +37,7 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from dashboard.node_manager import NodeManager, _build_ssh_target
@@ -569,6 +570,12 @@ def _canonicalize_log_hostname(raw_hostname: str, session: str = "") -> str:
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+# Serve static assets — must be declared BEFORE the API routes so FastAPI
+# registers the mount, but explicit @app.get routes always take priority.
+app.mount("/css", StaticFiles(directory=FRONTEND_DIR / "css"), name="css")
+app.mount("/js",  StaticFiles(directory=FRONTEND_DIR / "js"),  name="js")
+
+
 @app.get("/")
 async def index():
     return FileResponse(FRONTEND_DIR / "index.html")

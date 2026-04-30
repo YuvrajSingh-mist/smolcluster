@@ -34,7 +34,7 @@ Homepage = "https://swarnimjain.com/grove"
 GitHub = "https://github.com/swarnim-j/grove"
 
 [tool.hatch.build.targets.sdist]
-include = ["grove/", "examples/", "README.md", "LICENSE"]
+include = ["grove/", "examples/", "README.md"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["grove"]
