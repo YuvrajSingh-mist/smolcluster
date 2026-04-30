@@ -728,15 +728,16 @@ def main():
         dashboard_main()
         return
 
-    # Discover mode: grove start/join passes argv like ['train.py', 'discover', '-a', 'classicdp']
+    # Discover mode: grove sets sys.argv = [script, 'discover', '-a', ALGO] before calling main().
+    # grove.world_size is already set by grove.init() at this point.
     if len(sys.argv) >= 2 and sys.argv[1] == "discover":
         alg_parser = argparse.ArgumentParser(add_help=False)
-        alg_parser.add_argument("-a", "--algorithm",
-                                 default=os.environ.get("SMOLCLUSTER_ALGO", "syncps"))
+        alg_parser.add_argument("-a", "--algorithm", default="syncps")
         alg_parser.add_argument("-r", "--resume-checkpoint", default=None)
         alg_args, _ = alg_parser.parse_known_args(sys.argv[2:])
+        import grove as _grove
         cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
-        world_size = int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
+        world_size = _grove.world_size if _grove.world_size > 1 else int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
         run_discover(alg_args.algorithm, cluster, world_size, alg_args.resume_checkpoint)
         return
 
@@ -806,7 +807,11 @@ def main():
         run_worker(worker_rank, hostname, algorithm, resume_checkpoint_path)
     elif mode == "grove":
         cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
-        world_size = int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
+        try:
+            import grove as _grove
+            world_size = _grove.world_size if _grove.world_size > 1 else int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
+        except ImportError:
+            world_size = int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
         run_discover(algorithm, cluster, world_size, resume_checkpoint_path)
 
 

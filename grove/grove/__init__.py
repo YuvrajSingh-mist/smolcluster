@@ -20,6 +20,7 @@ _packer = None
 _coordinator = None
 _worker_client = None
 _received_script: tuple[str, str] | None = None
+_received_argv: list = []
 _sync_every: int = 1
 
 

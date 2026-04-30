@@ -84,12 +84,16 @@ def _init_p2p(cluster: str, ws: int, timeout: float) -> None:
 
 
 def _distribute_script(grove, transport, script, ws, encode_ctrl, decode_ctrl, MsgType):
+    import json
     if grove.rank == 0 and script and os.path.exists(script):
         with open(script) as f:
             content = f.read()
+        # include sys.argv[1:] so workers can reconstruct the exact argv
+        import sys as _sys
         msg = encode_ctrl(MsgType.SCRIPT_RESPONSE, {
             "name": os.path.basename(script),
             "content": content,
+            "argv": json.dumps(_sys.argv[1:]),
         })
         for r in range(1, ws):
             transport.send_raw(r, msg)
@@ -99,6 +103,7 @@ def _distribute_script(grove, transport, script, ws, encode_ctrl, decode_ctrl, M
         if msg_type != MsgType.SCRIPT_RESPONSE:
             raise ValueError(f"Expected script, got {msg_type}")
         grove._received_script = (payload["name"], payload["content"])
+        grove._received_argv = json.loads(payload.get("argv", "[]"))
 
 
 def _init_packer() -> None:

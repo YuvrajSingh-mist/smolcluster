@@ -116,7 +116,7 @@ def cmd_run(args):
         _run_with_dashboard(worker_fn, coord, os.path.basename(args.script), "local", )
 
 
-def cmd_start(args):
+def cmd_start(args, passthrough=None):
     import logging
     if not args.logs:
         from .dashboard import _disable_tqdm_locks
@@ -157,6 +157,11 @@ def cmd_start(args):
             else:
                 console.print(f"  [dim]awdl[/] peer-to-peer data plane")
 
+    # Apply passthrough args so the script's main() sees them in sys.argv.
+    # On workers, _distribute_script will transmit these and cmd_join restores them.
+    if passthrough:
+        sys.argv = [os.path.abspath(args.script)] + passthrough
+
     if args.logs:
         logging.disable(logging.NOTSET)
         worker_fn()
@@ -171,7 +176,7 @@ def cmd_start(args):
         zc.close()
 
 
-def cmd_join(args):
+def cmd_join(args, passthrough=None):
     import logging
     import time
     if not args.logs:
@@ -225,6 +230,11 @@ def cmd_join(args):
     console.print(f"  [dim]received {script_name} ({len(script_content)} bytes)[/]")
 
     worker_fn = _load_main(script_path)
+
+    # Restore the argv the coordinator was called with so the script's main()
+    # sees the same arguments on every node.
+    if grove._received_argv:
+        sys.argv = [script_path] + grove._received_argv
 
     if args.logs or not grove._worker_client:
         logging.disable(logging.NOTSET)
@@ -325,6 +335,17 @@ def cmd_status(_args):
 
 
 def main():
+    # Split off passthrough args (everything after --) before argparse sees them.
+    # This lets `grove start train.py -n 2 -- discover -a classicdp` work cleanly.
+    argv = sys.argv[1:]
+    try:
+        sep = argv.index("--")
+        grove_argv = argv[:sep]
+        passthrough = argv[sep + 1:]
+    except ValueError:
+        grove_argv = argv
+        passthrough = []
+
     parser = argparse.ArgumentParser(prog="grove", description="grove — distributed ML for Apple Silicon")
     sub = parser.add_subparsers(dest="command")
 
@@ -344,11 +365,11 @@ def main():
 
     sub.add_parser("status", help="System info and nearby clusters")
 
-    args = parser.parse_args()
+    args = parser.parse_args(grove_argv)
     match args.command:
         case "run": cmd_run(args)
-        case "start": cmd_start(args)
-        case "join": cmd_join(args)
+        case "start": cmd_start(args, passthrough)
+        case "join": cmd_join(args, passthrough)
         case "status": cmd_status(args)
         case _: parser.print_help()
 
