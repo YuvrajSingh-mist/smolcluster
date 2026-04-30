@@ -23,6 +23,11 @@ from smolcluster.utils.common_utils import (
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
+try:
+    import grove as _grove
+except ImportError:
+    _grove = None
+
 step = 0  # Global step counter to track training progress across threads
 
 
@@ -749,6 +754,10 @@ def run_classicdp_worker(
 
                 set_gradients(grads_reduced, model)
                 optimizer.step()
+
+                # Report to grove TUI (no-op if not running under grove)
+                if _grove is not None:
+                    _grove.report(local_loss.item(), step=step)
 
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} model updated with averaged gradients"

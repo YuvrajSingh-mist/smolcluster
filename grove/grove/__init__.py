@@ -91,12 +91,16 @@ def average_gradients(grads: dict) -> dict:
     return result
 
 
-def report(loss: float) -> None:
+def report(loss: float, step: int | None = None) -> None:
     if _worker_client is not None:
         _worker_client._loss = loss
+        if step is not None:
+            _worker_client._step = step
     if _coordinator is not None:
         with _coordinator._lock:
             _coordinator._loss[rank] = loss
+            if step is not None:
+                _coordinator._step_counts[rank] = step
 
 
 def demo(model, lr: float = 1e-3, decay: float = 0.999, topk: int = 32, chunk: int = 64) -> "DeMo":
