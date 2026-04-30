@@ -1,7 +1,9 @@
 """Coordinator server and worker clients for fault tolerance."""
 
+import json
 import os
 import socket
+import sys
 import threading
 import time
 from .control import MsgType, send_msg, recv_msg, encode_ctrl, decode_ctrl
@@ -33,6 +35,9 @@ class CoordinatorServer:
         self._loss: dict[int, float] = {}
         self._sync_ms: dict[int, float] = {}
         self._hostnames: dict[int, str] = {}
+        _h0 = socket.gethostname()
+        self._hostnames[0] = _h0 if "." in _h0 else _h0 + ".local"
+        self._peer_ips: dict[int, str] = {0: get_local_ip()}
         self._status_map: dict[int, str] = {}
         self._start_time = time.monotonic()
         self._dead_ranks: set[int] = set()
@@ -86,7 +91,10 @@ class CoordinatorServer:
                 self._worker_socks[rank] = conn
                 self._last_heartbeat[rank] = time.monotonic()
                 self._step_counts[rank] = payload.get("step", 0)
-                self._hostnames[rank] = payload.get("hostname", f"rank-{rank}")
+                _hn = payload.get("hostname", f"rank-{rank}")
+                self._hostnames[rank] = _hn if "." in _hn else _hn + ".local"
+                if "ip" in payload:
+                    self._peer_ips[rank] = payload["ip"]
             send_msg(conn, MsgType.HEARTBEAT_ACK, {"epoch": self._epoch})
             log.info(f"Worker {rank} connected ({self._hostnames[rank]})")
 
@@ -103,11 +111,16 @@ class CoordinatorServer:
                             self._sync_ms[rank] = payload["sync_ms"]
                         if "status" in payload:
                             self._status_map[rank] = payload["status"]
+                        if "ip" in payload:
+                            self._peer_ips[rank] = payload["ip"]
                     send_msg(conn, MsgType.HEARTBEAT_ACK, {"epoch": self._epoch})
                 elif msg_type == MsgType.SCRIPT_REQUEST:
+                    if not self._script_content:
+                        log.warning(f"Worker {rank} requested script but none is set on coordinator")
                     send_msg(conn, MsgType.SCRIPT_RESPONSE, {
                         "name": self._script_name,
                         "content": self._script_content,
+                        "argv": json.dumps(sys.argv[1:]),
                     })
                 elif msg_type == MsgType.REFORM_ACK:
                     epoch = payload["epoch"]
@@ -137,6 +150,7 @@ class CoordinatorServer:
                 "loss": dict(self._loss),
                 "sync_ms": dict(self._sync_ms),
                 "hostnames": dict(self._hostnames),
+                "ips": dict(self._peer_ips),
                 "status": dict(self._status_map),
             }
 
@@ -280,6 +294,7 @@ class WorkerClient:
                 send_msg(sock, MsgType.HEARTBEAT, {
                     "rank": self._rank, "step": 0, "ts": time.time(),
                     "loss": 0.0, "sync_ms": 0.0, "hostname": self._hostname,
+                    "ip": get_local_ip(),
                 })
                 recv_msg(sock)
                 return sock
@@ -296,7 +311,8 @@ class WorkerClient:
                         "rank": self._rank, "step": self._step, "ts": time.time(),
                         "loss": self._loss, "sync_ms": self._sync_ms,
                         "hostname": self._hostname, "status": self._status,
-                    })
+                        "ip": get_local_ip(),
+                })
             except (ConnectionError, OSError):
                 log.warning("Lost connection to coordinator")
                 break
@@ -369,16 +385,18 @@ class WorkerClient:
         with self._lock:
             self._status = msg
 
-    def fetch_script(self) -> tuple[str, str]:
+    def fetch_script(self) -> tuple[str, str, list]:
+        """Returns (name, content, argv). Blocks up to 10s for coordinator response."""
         self._script_event = threading.Event()
         with self._lock:
             send_msg(self._sock, MsgType.SCRIPT_REQUEST, {})
         if not self._script_event.wait(timeout=10.0):
-            raise TimeoutError("No script response from coordinator")
+            raise TimeoutError("No script response from coordinator after 10s")
         with self._lock:
             resp = self._script_response
             self._script_response = None
-        return resp["name"], resp["content"]
+        argv = json.loads(resp.get("argv", "[]"))
+        return resp["name"], resp["content"], argv
 
     def get_cluster_stats(self) -> dict | None:
         with self._lock:

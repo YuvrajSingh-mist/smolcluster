@@ -1,6 +1,11 @@
-"""Initialization paths for grove.init()."""
+"""Initialization paths for grove.init."""
 
+import json
+import logging
 import os
+import sys
+
+log = logging.getLogger("grove.init")
 
 
 def _init_cluster(cluster: str, ws: int, timeout: float) -> None:
@@ -36,6 +41,12 @@ def _init_cluster(cluster: str, ws: int, timeout: float) -> None:
     grove._worker_client = worker_client
     grove._comm = Communicator(group, worker_client)
     _init_packer()
+
+    if my_rank != 0:
+        name, content, argv = worker_client.fetch_script()
+        grove._received_script = (name, content)
+        grove._received_argv = argv
+        log.info(f"TCP: received script '{name}' ({len(content)} bytes), argv={argv}")
 
 
 def _init_p2p(cluster: str, ws: int, timeout: float) -> None:
@@ -84,16 +95,13 @@ def _init_p2p(cluster: str, ws: int, timeout: float) -> None:
 
 
 def _distribute_script(grove, transport, script, ws, encode_ctrl, decode_ctrl, MsgType):
-    import json
     if grove.rank == 0 and script and os.path.exists(script):
         with open(script) as f:
             content = f.read()
-        # include sys.argv[1:] so workers can reconstruct the exact argv
-        import sys as _sys
         msg = encode_ctrl(MsgType.SCRIPT_RESPONSE, {
             "name": os.path.basename(script),
             "content": content,
-            "argv": json.dumps(_sys.argv[1:]),
+            "argv": json.dumps(sys.argv[1:]),
         })
         for r in range(1, ws):
             transport.send_raw(r, msg)
