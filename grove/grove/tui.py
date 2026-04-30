@@ -262,15 +262,13 @@ class DashboardApp(App):
 
         n_live = len(live_ranks)
         n_dead = len(dead_ranks)
-        ring = " → ".join(str(r) for r in live_ranks)
-        if len(live_ranks) > 1:
-            ring += f" → {live_ranks[0]}"
 
         parts = [f"  {n_live} node{'s' if n_live != 1 else ''}"]
         if n_dead:
             parts.append(f"  {n_dead} dead")
-        if ring:
-            parts.append(f"  ring: {ring}")
+        if len(live_ranks) > 1:
+            mesh = " ─ ".join(str(r) for r in live_ranks)
+            parts.append(f"  {mesh}  (all-to-all)")
         if epoch:
             parts.append(f"  epoch {epoch}")
 
