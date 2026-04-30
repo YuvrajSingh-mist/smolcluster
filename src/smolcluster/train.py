@@ -17,6 +17,12 @@ import os
 import sys
 from pathlib import Path
 
+# Load .env before anything else so WANDB_API_KEY and HF_TOKEN are set
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv(Path.home() / ".env", override=False)  # ~/.env for remote nodes
+_load_dotenv(override=False)                         # CWD/.env for local runs
+
+
 import torch
 import torchinfo
 import wandb
@@ -51,13 +57,31 @@ from smolcluster.utils.layers import get_model_per_node
 _discovered_config: dict = {}
 
 
+def peer_addr(hostname: str) -> str:
+    """Return a routable address for a peer hostname.
+
+    - Already contains a dot (FQDN or bare IP) → returned unchanged.
+      Works for plain IPs (192.168.1.5), .local Bonjour names,
+      or any fully-qualified DNS name on a real network.
+    - No dot (short hostname like 'macmini2-2') → appends '.local' so
+      macOS Bonjour resolves it over whichever interface is live,
+      sidestepping Docker/VPN IP ambiguity.
+    """
+    if "." in hostname:
+        return hostname
+    return hostname + ".local"
+
+
 def load_configs(algorithm: str = "syncps"):
     """Load configuration files.
 
     Args:
         algorithm: Training algorithm to determine which configs to load
     """
-    CONFIG_DIR = Path(__file__).parent / "configs"
+    # Use the installed smolcluster package path, not __file__, so this works
+    # even when grove copies train.py to a temp directory to run on workers.
+    import smolcluster as _sm_pkg
+    CONFIG_DIR = Path(_sm_pkg.__file__).parent / "configs"
 
     # Load appropriate model config based on algorithm
     if algorithm == 'ep':
@@ -288,6 +312,13 @@ def run_worker(
     # Load configs
     gpt_config, cluster_config = load_configs(algorithm)
 
+    # Report phase progress to grove TUI (no-op if not running under grove)
+    try:
+        import grove as _grove_status
+        def _status(msg): _grove_status.status(msg)
+    except ImportError:
+        def _status(msg): pass
+
     # Validate batch_size configuration for EDP
     if algorithm == "edp":
         if "batch_size" not in cluster_config or not isinstance(
@@ -390,6 +421,7 @@ def run_worker(
         port = port_config
 
     # Load data with worker's batch size
+    _status("loading data")
     logger.info(f"Loading {gpt_config.get('dataset_name', 'dataset')} dataset...")
     train_loader, val_loader, vocab_size, pad_token_id = load_data(
         gpt_config, world_size, seed, local_rank, worker_batch_size
@@ -402,6 +434,7 @@ def run_worker(
     device = get_device()
 
     # Create model
+    _status("building model")
     if algorithm == 'ep':
         # EP: create the Mixtral transformer (last rank will use it; get_model_per_node handles assignment)
         model = Mixtral(
@@ -471,6 +504,7 @@ def run_worker(
     )
 
     # Run worker with selected algorithm
+    _status("connecting")
     logger.info(f"Starting {algo_name} worker {local_rank}...")
     if algorithm == "edp":
         run_edp_worker(
@@ -665,18 +699,30 @@ def run_discover(algorithm: str, cluster: str, world_size: int, resume_checkpoin
     )
     from smolcluster.discovery import discover
 
+    try:
+        import grove as _grove_status
+    except ImportError:
+        _grove_status = None
+
+    def _status(msg):
+        if _grove_status:
+            _grove_status.status(msg)
+
     logger = logging.getLogger("[DISCOVER]")
     logger.info(f"Discovering {world_size} peers for cluster '{cluster}'...")
+    _status("discovering")
 
     my_rank, peers, zc = discover(cluster, world_size, timeout=120.0)
     hostname = peers[my_rank]["hostname"]
     logger.info(f"Rank {my_rank} / {world_size} — peers: { {r: p['host'] for r, p in peers.items()} }")
 
     # Build the discovered config overlay — run_worker's load_configs will merge this in
+    _status("configuring")
+    base_port = int(os.environ.get("SMOLCLUSTER_PORT", "65432"))
     if algorithm == "classicdp":
-        base_port = int(os.environ.get("SMOLCLUSTER_PORT", "65432"))
         workers = [
-            {"hostname": p["hostname"], "rank": r, "ip": p["host"], "port": base_port + r}
+            {"hostname": p["hostname"], "rank": r,
+             "ip": peer_addr(p["hostname"]), "port": base_port + r}
             for r, p in peers.items()
         ]
         _discovered_config = {
@@ -684,11 +730,28 @@ def run_discover(algorithm: str, cluster: str, world_size: int, resume_checkpoin
             "allToAllTopology": {"workers": {"regular": workers, "tablets": []}},
             "port": {p["hostname"]: base_port + r for r, p in peers.items()},
         }
-
-    # extend here for other algos:
-    # elif algorithm == "syncps":
-    #     _discovered_config = {"host_ip": {peers[0]["hostname"]: peers[0]["host"]}}
-    # elif algorithm == "fsdp": ...
+    elif algorithm == "syncps":
+        # SyncPS uses host_ip dict keyed by hostname to locate the parameter server
+        _discovered_config = {
+            "host_ip": {p["hostname"]: peer_addr(p["hostname"]) for p in peers.values()},
+        }
+    elif algorithm in ("edp", "mp", "mp_pipeline"):
+        # Point-to-point: just need host_ip so run_worker can resolve addresses
+        _discovered_config = {
+            "host_ip": {p["hostname"]: peer_addr(p["hostname"]) for p in peers.values()},
+        }
+    elif algorithm in ("fsdp", "ep"):
+        workers = [
+            {"hostname": p["hostname"], "rank": r,
+             "ip": peer_addr(p["hostname"]), "port": base_port + r}
+            for r, p in peers.items()
+        ]
+        _discovered_config = {
+            "num_workers": world_size,
+            "host_ip": {p["hostname"]: peer_addr(p["hostname"]) for p in peers.values()},
+            "allToAllTopology": {"workers": {"regular": workers, "tablets": []}},
+            "port": {p["hostname"]: base_port + r for r, p in peers.items()},
+        }
 
     try:
         run_worker(my_rank, hostname, algorithm, resume_checkpoint_path)
@@ -740,6 +803,20 @@ def main():
         world_size = _grove.world_size if _grove.world_size > 1 else int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
         run_discover(alg_args.algorithm, cluster, world_size, alg_args.resume_checkpoint)
         return
+
+    # Auto-discover mode: running under grove with no mode arg → default to discover
+    try:
+        import grove as _grove
+        if _grove.world_size > 1 and (len(sys.argv) < 2 or sys.argv[1] not in ["server", "worker", "dashboard", "grove", "discover"]):
+            alg_parser = argparse.ArgumentParser(add_help=False)
+            alg_parser.add_argument("-a", "--algorithm", default="classicdp")
+            alg_parser.add_argument("-r", "--resume-checkpoint", default=None)
+            alg_args, _ = alg_parser.parse_known_args(sys.argv[1:])
+            cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
+            run_discover(alg_args.algorithm, cluster, _grove.world_size, alg_args.resume_checkpoint)
+            return
+    except ImportError:
+        pass
 
     # Handle both new argparse format and legacy positional format
     if len(sys.argv) >= 2 and sys.argv[1] in ["server", "worker"]:

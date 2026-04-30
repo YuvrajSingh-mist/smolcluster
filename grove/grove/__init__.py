@@ -103,6 +103,61 @@ def report(loss: float, step: int | None = None) -> None:
                 _coordinator._step_counts[rank] = step
 
 
+def status(msg: str) -> None:
+    """Report a phase/status string visible in the grove TUI Status column."""
+    if _worker_client is not None:
+        _worker_client.set_status(msg)  # thread-safe; works for both TCP and P2P clients
+    if _coordinator is not None:
+        with _coordinator._lock:
+            _coordinator._status_map[rank] = msg
+
+
+def peers(timeout: float = 30.0) -> dict:
+    """Return {rank: {"host": ip, "hostname": name}} for all nodes.
+
+    Bypasses mDNS—uses grove's already-established P2P connection to exchange
+    IPs.  Blocks until all world_size entries are available (up to *timeout* s).
+    Falls back to an empty dict on single-node runs.
+    """
+    import time as _time
+    from ._utils import get_local_ip  # lazy import avoids circular deps
+
+    if world_size <= 1:
+        return {0: {"host": get_local_ip(), "hostname": __import__("socket").gethostname()}}
+
+    deadline = _time.monotonic() + timeout
+
+    if _coordinator is not None:
+        # Rank 0: wait until heartbeats from all workers arrived
+        while _time.monotonic() < deadline:
+            with _coordinator._lock:
+                ips = dict(_coordinator._peer_ips)
+                hostnames = dict(_coordinator._hostnames)
+            # Rank 0 hostname is known locally
+            hostnames.setdefault(0, __import__("socket").gethostname())
+            if len(ips) >= world_size:
+                return {r: {"host": ips[r], "hostname": hostnames.get(r, f"rank-{r}")}
+                        for r in range(world_size)}
+            _time.sleep(0.2)
+        raise TimeoutError(f"grove.peers(): only got IPs for {len(ips)}/{world_size} nodes within {timeout}s")
+
+    if _worker_client is not None:
+        # Rank 1+: wait for coordinator stats broadcast which includes "ips"
+        while _time.monotonic() < deadline:
+            stats = _worker_client.get_cluster_stats()
+            if stats and "ips" in stats and len(stats["ips"]) >= world_size:
+                ips = stats["ips"]
+                hostnames = stats.get("hostnames", {})
+                return {int(r): {"host": ips[r], "hostname": hostnames.get(r, f"rank-{r}")}
+                        for r in ips}
+            _time.sleep(0.2)
+        stats = _worker_client.get_cluster_stats() or {}
+        got = len(stats.get("ips", {}))
+        raise TimeoutError(f"grove.peers(): only got IPs for {got}/{world_size} nodes within {timeout}s")
+
+    return {}
+
+
 def demo(model, lr: float = 1e-3, decay: float = 0.999, topk: int = 32, chunk: int = 64) -> "DeMo":
     from .demo import DeMo
     return DeMo(model, lr=lr, decay=decay, topk=topk, chunk=chunk)

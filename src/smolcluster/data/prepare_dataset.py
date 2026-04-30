@@ -5,19 +5,25 @@ the WikiText-2 dataset for causal language modeling tasks.
 """
 
 import os
+from pathlib import Path
 
 from datasets import load_dataset
+from dotenv import load_dotenv
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 # Partition training data across workers
 from smolcluster.utils.data import get_data_indices
 
-TOKEN = os.getenv("HF_TOKEN")
+# Try ~/.env first (works on remote nodes where CWD may be grove's temp dir),
+# then fall back to CWD/.env (works on the coordinator/local runs).
+load_dotenv(Path.home() / ".env", override=False)
+load_dotenv(override=False)
 
 def _build_tokenizer(config):
     tokenizer_name = config.get("tokenizer", "openai-community/gpt2")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, token=TOKEN)
+    token = os.getenv("HF_TOKEN")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, token=token)
     if tokenizer.pad_token_id is None:
         if tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token

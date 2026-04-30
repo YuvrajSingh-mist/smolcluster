@@ -478,6 +478,8 @@ def run_classicdp_worker(
             logger.warning("No checkpoint found to resume from, starting fresh")
 
     logger.info("Starting all-to-all topology setup for ClassicDP AllReduce.")
+    if _grove is not None:
+        _grove.status("connecting")
 
     # Get my worker configuration from allToAllTopology
     workers_list = cluster_config["allToAllTopology"]["workers"]["regular"]
@@ -549,6 +551,8 @@ def run_classicdp_worker(
     )
 
     logger.info(f"All workers connected. Starting training for {num_epochs} epochs.")
+    if _grove is not None:
+        _grove.status("training")
     train_start_time = time.time()
 
     for epoch in range(start_epoch, num_epochs):
@@ -758,6 +762,7 @@ def run_classicdp_worker(
                 # Report to grove TUI (no-op if not running under grove)
                 if _grove is not None:
                     _grove.report(local_loss.item(), step=step)
+                    _grove.status("training")
 
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} model updated with averaged gradients"

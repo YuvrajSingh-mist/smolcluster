@@ -32,8 +32,22 @@ def discover(
     Returns (my_rank, peers, zc) where:
         my_rank  — this node's rank (0 = coordinator)
         peers    — {rank: {"host": ip, "hostname": name}}
-        zc       — Zeroconf handle, call zc.close() after training starts
+        zc       — Zeroconf handle (or no-op), call zc.close() after training starts
     """
+    # When running under grove the P2P channel is already established —
+    # skip mDNS entirely and exchange IPs through grove's existing connection.
+    try:
+        import grove as _grove
+        if _grove.world_size > 1:
+            peer_map = _grove.peers(timeout=timeout)
+            my_rank = _grove.rank
+            # Return a no-op zc handle so caller code stays uniform
+            class _Noop:
+                def close(self): pass
+            return my_rank, {int(r): v for r, v in peer_map.items()}, _Noop()
+    except ImportError:
+        pass
+
     transport = os.environ.get("SMOLCLUSTER_TRANSPORT", "mdns").lower()
 
     if transport == "awdl" and platform.system() == "Darwin":

@@ -26,7 +26,27 @@ def _disable_tqdm_locks() -> None:
 def _setup_log_capture() -> LogCapture:
     _disable_tqdm_locks()
     capture = LogCapture()
+
+    # Redirect both stdout and stderr so nothing leaks to the raw terminal
     sys.stdout = capture
+    sys.stderr = capture
+
+    # Replace all existing logging handlers with one that writes to capture
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record):
+            try:
+                capture.write(self.format(record))
+            except Exception:
+                pass
+
+    handler = _CaptureHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+    # Suppress noisy grove internals
     for name in list(logging.Logger.manager.loggerDict):
         if name.startswith("grove"):
             logging.getLogger(name).setLevel(logging.WARNING)
@@ -42,13 +62,19 @@ class Dashboard:
     def run_with_training(self, train_fn) -> None:
         capture = _setup_log_capture()
         done = threading.Event()
+        error = threading.Event()
 
         def _train():
             try:
                 train_fn()
                 capture.write("[bold green]Training complete.[/bold green] Press q to exit.")
+            except SystemExit as e:
+                if e.code not in (None, 0):
+                    error.set()
+                    capture.write(f"[bold red]Exited with code {e.code}[/bold red]")
             except Exception as e:
                 import traceback
+                error.set()
                 capture.write(f"[bold red]ERROR: {e}[/bold red]")
                 capture.write(traceback.format_exc())
             finally:
@@ -64,6 +90,7 @@ class Dashboard:
             my_rank=0,
             log_capture=capture,
             done_event=done,
+            error_event=error,
         )
         app.run()
 
@@ -78,13 +105,19 @@ class WorkerDashboard:
     def run_with_training(self, train_fn) -> None:
         capture = _setup_log_capture()
         done = threading.Event()
+        error = threading.Event()
 
         def _train():
             try:
                 train_fn()
                 capture.write("[bold green]Training complete.[/bold green] Press q to exit.")
+            except SystemExit as e:
+                if e.code not in (None, 0):
+                    error.set()
+                    capture.write(f"[bold red]Exited with code {e.code}[/bold red]")
             except Exception as e:
                 import traceback
+                error.set()
                 capture.write(f"[bold red]ERROR: {e}[/bold red]")
                 capture.write(traceback.format_exc())
             finally:
@@ -100,5 +133,6 @@ class WorkerDashboard:
             my_rank=self._rank,
             log_capture=capture,
             done_event=done,
+            error_event=error,
         )
         app.run()

@@ -6,7 +6,7 @@ import threading
 import time
 from .control import MsgType, send_msg, recv_msg, encode_ctrl, decode_ctrl
 from .membership import Membership
-from ._utils import get_logger, configure_socket
+from ._utils import get_logger, configure_socket, get_local_ip
 
 log = get_logger("coordinator")
 
@@ -33,6 +33,7 @@ class CoordinatorServer:
         self._loss: dict[int, float] = {}
         self._sync_ms: dict[int, float] = {}
         self._hostnames: dict[int, str] = {}
+        self._status_map: dict[int, str] = {}
         self._start_time = time.monotonic()
         self._dead_ranks: set[int] = set()
         self._script_content: str = ""
@@ -100,6 +101,8 @@ class CoordinatorServer:
                             self._loss[rank] = payload["loss"]
                         if "sync_ms" in payload:
                             self._sync_ms[rank] = payload["sync_ms"]
+                        if "status" in payload:
+                            self._status_map[rank] = payload["status"]
                     send_msg(conn, MsgType.HEARTBEAT_ACK, {"epoch": self._epoch})
                 elif msg_type == MsgType.SCRIPT_REQUEST:
                     send_msg(conn, MsgType.SCRIPT_RESPONSE, {
@@ -134,6 +137,7 @@ class CoordinatorServer:
                 "loss": dict(self._loss),
                 "sync_ms": dict(self._sync_ms),
                 "hostnames": dict(self._hostnames),
+                "status": dict(self._status_map),
             }
 
     def _broadcast_stats(self) -> None:
@@ -245,7 +249,9 @@ class WorkerClient:
         self._step = 0
         self._loss = 0.0
         self._sync_ms = 0.0
-        self._hostname = os.environ.get("GROVE_HOSTNAME", socket.gethostname())
+        self._status = ""
+        _h = os.environ.get("GROVE_HOSTNAME", socket.gethostname())
+        self._hostname = _h if "." in _h else _h + ".local"
         self._running = True
         self._lock = threading.Lock()
         self._pending_membership: Membership | None = None
@@ -289,7 +295,7 @@ class WorkerClient:
                     send_msg(self._sock, MsgType.HEARTBEAT, {
                         "rank": self._rank, "step": self._step, "ts": time.time(),
                         "loss": self._loss, "sync_ms": self._sync_ms,
-                        "hostname": self._hostname,
+                        "hostname": self._hostname, "status": self._status,
                     })
             except (ConnectionError, OSError):
                 log.warning("Lost connection to coordinator")
@@ -359,6 +365,10 @@ class WorkerClient:
             self._loss = loss
             self._sync_ms = sync_ms
 
+    def set_status(self, msg: str) -> None:
+        with self._lock:
+            self._status = msg
+
     def fetch_script(self) -> tuple[str, str]:
         self._script_event = threading.Event()
         with self._lock:
@@ -400,7 +410,10 @@ class P2PCoordinatorServer:
         self._step_counts: dict[int, int] = {}
         self._loss: dict[int, float] = {}
         self._sync_ms: dict[int, float] = {}
-        self._hostnames: dict[int, str] = {}
+        _h0 = socket.gethostname()
+        self._hostnames: dict[int, str] = {0: _h0 if "." in _h0 else _h0 + ".local"}
+        self._peer_ips: dict[int, str] = {0: get_local_ip()}
+        self._status_map: dict[int, str] = {}
         self._dead_ranks: set[int] = set()
         self._start_time = time.monotonic()
         self._script_content: str = ""
@@ -458,6 +471,10 @@ class P2PCoordinatorServer:
                     self._sync_ms[rank] = payload["sync_ms"]
                 if "hostname" in payload:
                     self._hostnames[rank] = payload["hostname"]
+                if "status" in payload:
+                    self._status_map[rank] = payload["status"]
+                if "ip" in payload:
+                    self._peer_ips[rank] = payload["ip"]
         elif msg_type == MsgType.SCRIPT_REQUEST:
             resp = encode_ctrl(MsgType.SCRIPT_RESPONSE, {
                 "name": self._script_name,
@@ -601,6 +618,8 @@ class P2PCoordinatorServer:
                 "loss": dict(self._loss),
                 "sync_ms": dict(self._sync_ms),
                 "hostnames": dict(self._hostnames),
+                "ips": dict(self._peer_ips),
+                "status": dict(self._status_map),
             }
 
     def close(self) -> None:
@@ -614,7 +633,9 @@ class P2PWorkerClient:
         self._step = 0
         self._loss = 0.0
         self._sync_ms = 0.0
-        self._hostname = os.environ.get("GROVE_HOSTNAME", socket.gethostname())
+        self._status = ""
+        _h = os.environ.get("GROVE_HOSTNAME", socket.gethostname())
+        self._hostname = _h if "." in _h else _h + ".local"
         self._running = True
         self._lock = threading.Lock()
         self._cluster_stats: dict | None = None
@@ -637,11 +658,13 @@ class P2PWorkerClient:
         while self._running:
             time.sleep(2.0)
             try:
-                msg = encode_ctrl(MsgType.HEARTBEAT, {
-                    "rank": self._rank, "step": self._step, "ts": time.time(),
-                    "loss": self._loss, "sync_ms": self._sync_ms,
-                    "hostname": self._hostname,
-                })
+                with self._lock:
+                    msg = encode_ctrl(MsgType.HEARTBEAT, {
+                        "rank": self._rank, "step": self._step, "ts": time.time(),
+                        "loss": self._loss, "sync_ms": self._sync_ms,
+                        "hostname": self._hostname, "status": self._status,
+                        "ip": get_local_ip(),
+                    })
                 self._transport.send_raw(0, msg)
             except (ConnectionError, OSError):
                 break
@@ -720,6 +743,10 @@ class P2PWorkerClient:
             self._step = step
             self._loss = loss
             self._sync_ms = sync_ms
+
+    def set_status(self, msg: str) -> None:
+        with self._lock:
+            self._status = msg
 
     def fetch_script(self) -> tuple[str, str]:
         self._script_event = threading.Event()

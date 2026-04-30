@@ -155,6 +155,7 @@ class DashboardApp(App):
         my_rank: int | None = None,
         log_capture: "LogCapture | None" = None,
         done_event: "threading.Event | None" = None,
+        error_event: "threading.Event | None" = None,
     ):
         super().__init__()
         self._get_state = get_state
@@ -163,6 +164,7 @@ class DashboardApp(App):
         self._my_rank = my_rank
         self._log_capture = log_capture
         self._done_event = done_event
+        self._error_event = error_event
         self._training_done = False
         self._start_time = time.monotonic()
 
@@ -177,7 +179,7 @@ class DashboardApp(App):
         table.add_columns("Rank", "Host", "Status", "Step", "Loss", "Sync")
         yield table
         yield Static("", id="stats")
-        log = RichLog(id="logs", wrap=True, markup=True)
+        log = RichLog(id="logs", wrap=True, markup=False)
         log.show_vertical_scrollbar = False
         yield log
         yield Static("  [dim]q quit[/]", id="footer")
@@ -195,9 +197,14 @@ class DashboardApp(App):
         elapsed = _format_elapsed(time.monotonic() - self._start_time)
         role = f"rank {self._my_rank}" if self._my_rank is not None else "coordinator"
         if self._training_done:
-            self.query_one("#header", Static).update(
-                f"[bold green]training complete[/]  {self._cluster}  [dim]{elapsed}[/]  press q to exit"
-            )
+            if self._error_event and self._error_event.is_set():
+                self.query_one("#header", Static).update(
+                    f"[bold red]exited with error[/]  {self._cluster}  [dim]{elapsed}[/]  press q to exit"
+                )
+            else:
+                self.query_one("#header", Static).update(
+                    f"[bold green]training complete[/]  {self._cluster}  [dim]{elapsed}[/]  press q to exit"
+                )
         else:
             self.query_one("#header", Static).update(
                 f"[b]grove[/]  {self._cluster}  [dim cyan]{self._uid}[/]  {role}  [dim]{elapsed}[/]"
@@ -222,6 +229,7 @@ class DashboardApp(App):
         losses = state.get("loss", {})
         syncs = state.get("sync_ms", {})
         hostnames = state.get("hostnames", {})
+        statuses = state.get("status", {})
         epoch = state.get("epoch", 0)
 
         def _get(d, rank):
@@ -250,12 +258,17 @@ class DashboardApp(App):
                 sync_str = f"{float(sync_val):.0f}ms" if sync_val else "—"
                 style = "bold cyan" if is_me else ""
                 marker = " ◀" if is_me else ""
+                phase = _get(statuses, rank) or ""
+                if phase and phase != "training":
+                    status_text = Text(phase, style="yellow")
+                else:
+                    status_text = Text("ok", style="green")
 
                 table.add_row(
                     Text(str(rank), style=style),
                     Text(str(hostname) + marker, style=style),
-                    Text("ok", style="green"),
-                    Text(str(step_val), style=style),
+                    status_text,
+                    Text(str(step_val) if step_val else "—", style=style),
                     Text(loss_str, style=style),
                     Text(sync_str, style=style),
                 )
