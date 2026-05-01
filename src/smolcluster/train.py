@@ -12,6 +12,7 @@ Examples:
 """
 
 import argparse
+import gc
 import logging
 import os
 import sys
@@ -27,6 +28,19 @@ import torch
 import torchinfo
 import wandb
 import yaml
+import grove
+
+import smolcluster as _sm_pkg
+from smolcluster.utils.cli import (
+    ALGORITHMS as _ALGORITHMS,
+    MODES as _MODES,
+    build_main_parser,
+    build_discover_parser,
+    grove_world_size,
+    run_dashboard,
+    should_autodiscover,
+    parse_server_worker_mode,
+)
 
 from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
@@ -57,6 +71,19 @@ from smolcluster.utils.layers import get_model_per_node
 _discovered_config: dict = {}
 
 
+def _peer_ip(peer: dict) -> str:
+    host = str(peer.get("host", "")).strip()
+    if host:
+        return host
+    return peer_addr(str(peer.get("hostname", "")).strip())
+
+
+def _run_discover_from_argv(argv: list[str], default_algorithm: str) -> None:
+    args, _ = build_discover_parser(default_algorithm).parse_known_args(argv)
+    cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
+    run_discover(args.algorithm, cluster, grove_world_size(), args.resume_checkpoint)
+
+
 def peer_addr(hostname: str) -> str:
     """Return a routable address for a peer hostname.
 
@@ -80,7 +107,6 @@ def load_configs(algorithm: str = "syncps"):
     """
     # Use the installed smolcluster package path, not __file__, so this works
     # even when grove copies train.py to a temp directory to run on workers.
-    import smolcluster as _sm_pkg
     CONFIG_DIR = Path(_sm_pkg.__file__).parent / "configs"
 
     # Load appropriate model config based on algorithm
@@ -311,13 +337,9 @@ def run_worker(
 
     # Load configs
     gpt_config, cluster_config = load_configs(algorithm)
-
     # Report phase progress to grove TUI (no-op if not running under grove)
-    try:
-        import grove as _grove_status
-        def _status(msg): _grove_status.status(msg)
-    except ImportError:
-        def _status(msg): pass
+    def _status(msg):
+        grove.status(msg)
 
     # Validate batch_size configuration for EDP
     if algorithm == "edp":
@@ -355,33 +377,38 @@ def run_worker(
         pass
     elif algorithm == "syncps":
         workers_cfg = cluster_config.get("workers", [])
-        if not isinstance(workers_cfg, list) or len(workers_cfg) == 0:
-            raise ValueError(
-                "SyncPS requires cluster_config_syncps.yaml workers[] with hostname/rank/ip entries"
-            )
+
+        def _lookup_host_ip(host_key: str) -> str:
+            host_ip_map = cluster_config.get("host_ip", {}) or {}
+            if host_key in host_ip_map:
+                return str(host_ip_map.get(host_key, "")).strip()
+            return ""
+
+        if not isinstance(workers_cfg, list):
+            workers_cfg = []
 
         worker_entry = next(
-            (
-                w
-                for w in workers_cfg
-                if w.get("hostname") == hostname and int(w.get("rank", -1)) == int(local_rank)
-            ),
+            (w for w in workers_cfg if int(w.get("rank", -1)) == int(local_rank)),
             None,
         )
+
         if worker_entry is None:
             raise ValueError(
-                f"SyncPS worker entry not found for hostname='{hostname}', rank={local_rank}. "
-                "Define it under workers[] in cluster_config_syncps.yaml"
+                f"SyncPS worker entry not found for rank={local_rank}. "
+                "Define workers[] with rank, hostname, and ip in cluster_config_syncps.yaml, "
+                "or run discover mode to auto-populate from grove peers."
             )
+        else:
+            worker_hostname = str(worker_entry.get("hostname", "")).strip()
+            worker_ip = str(worker_entry.get("ip", "")).strip() or _lookup_host_ip(worker_hostname)
 
-        worker_ip = str(worker_entry.get("ip", "")).strip()
         if not worker_ip:
             raise ValueError(
-                f"SyncPS worker '{hostname}' rank {local_rank} is missing workers[].ip in cluster_config_syncps.yaml"
+                f"SyncPS worker rank {local_rank} is missing workers[].ip in cluster_config_syncps.yaml"
             )
 
         server_hostname = cluster_config["server"]
-        server_ip = str(cluster_config.get("host_ip", {}).get(server_hostname, "")).strip()
+        server_ip = _lookup_host_ip(server_hostname)
         if not server_ip:
             raise ValueError(
                 f"SyncPS server '{server_hostname}' is missing host_ip mapping in cluster_config_syncps.yaml"
@@ -389,7 +416,7 @@ def run_worker(
 
         host_ip = server_ip
         logger.info(
-            f"SyncPS mapping -> worker={hostname} rank={local_rank} worker_ip={worker_ip} server={server_hostname} server_ip={server_ip}"
+            f"SyncPS mapping -> worker_rank={local_rank} worker_ip={worker_ip} server={server_hostname} server_ip={server_ip}"
         )
     else:
         # Require host_ip for other algorithms
@@ -645,7 +672,6 @@ def run_worker(
             
             # Delete full model and shards to free memory
             del model, out_layers
-            import gc
             gc.collect()
             
             # Pass empty skeleton and shard dict to worker (no full model weights!)
@@ -698,15 +724,8 @@ def run_discover(algorithm: str, cluster: str, world_size: int, resume_checkpoin
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     from smolcluster.discovery import discover
-
-    try:
-        import grove as _grove_status
-    except ImportError:
-        _grove_status = None
-
     def _status(msg):
-        if _grove_status:
-            _grove_status.status(msg)
+        grove.status(msg)
 
     logger = logging.getLogger("[DISCOVER]")
     logger.info(f"Discovering {world_size} peers for cluster '{cluster}'...")
@@ -722,7 +741,7 @@ def run_discover(algorithm: str, cluster: str, world_size: int, resume_checkpoin
     if algorithm == "classicdp":
         workers = [
             {"hostname": p["hostname"], "rank": r,
-             "ip": peer_addr(p["hostname"]), "port": base_port + r}
+             "ip": _peer_ip(p), "port": base_port + r}
             for r, p in peers.items()
         ]
         _discovered_config = {
@@ -731,149 +750,96 @@ def run_discover(algorithm: str, cluster: str, world_size: int, resume_checkpoin
             "port": {p["hostname"]: base_port + r for r, p in peers.items()},
         }
     elif algorithm == "syncps":
-        # SyncPS uses host_ip dict keyed by hostname to locate the parameter server
+        # SyncPS has a dedicated server (rank 0) and workers (rank >= 1).
+        server_rank = 0
+        server_peer = peers[server_rank]
+        server_hostname = server_peer["hostname"]
+        workers = [
+            {"hostname": p["hostname"], "rank": r, "ip": _peer_ip(p)}
+            for r, p in peers.items()
+            if r != server_rank
+        ]
         _discovered_config = {
-            "host_ip": {p["hostname"]: peer_addr(p["hostname"]) for p in peers.values()},
+            "num_workers": world_size - 1,
+            "server": server_hostname,
+            "workers": workers,
+            "host_ip": {p["hostname"]: _peer_ip(p) for p in peers.values()},
+            "port": {p["hostname"]: base_port + r for r, p in peers.items()},
         }
-    elif algorithm in ("edp", "mp", "mp_pipeline"):
-        # Point-to-point: just need host_ip so run_worker can resolve addresses
+    elif algorithm in ("edp", "mp"):
+        # EDP/MP have a dedicated server (rank 0) and workers (rank >= 1).
+        server_rank = 0
+        server_peer = peers[server_rank]
+        server_hostname = server_peer["hostname"]
+        workers = [
+            {"hostname": p["hostname"], "rank": r, "ip": _peer_ip(p)}
+            for r, p in peers.items()
+            if r != server_rank
+        ]
         _discovered_config = {
-            "host_ip": {p["hostname"]: peer_addr(p["hostname"]) for p in peers.values()},
+            "num_workers": world_size - 1,
+            "server": server_hostname,
+            "workers": workers,
+            "host_ip": {p["hostname"]: _peer_ip(p) for p in peers.values()},
+            "port": {p["hostname"]: base_port + r for r, p in peers.items()},
+        }
+    elif algorithm == "mp_pipeline":
+        # Point-to-point pipeline: only host_ip overlay is needed.
+        _discovered_config = {
+            "host_ip": {p["hostname"]: _peer_ip(p) for p in peers.values()},
         }
     elif algorithm in ("fsdp", "ep"):
         workers = [
             {"hostname": p["hostname"], "rank": r,
-             "ip": peer_addr(p["hostname"]), "port": base_port + r}
+             "ip": _peer_ip(p), "port": base_port + r}
             for r, p in peers.items()
         ]
         _discovered_config = {
             "num_workers": world_size,
-            "host_ip": {p["hostname"]: peer_addr(p["hostname"]) for p in peers.values()},
+            "host_ip": {p["hostname"]: _peer_ip(p) for p in peers.values()},
             "allToAllTopology": {"workers": {"regular": workers, "tablets": []}},
             "port": {p["hostname"]: base_port + r for r, p in peers.items()},
         }
 
     try:
-        run_worker(my_rank, hostname, algorithm, resume_checkpoint_path)
+        if algorithm in ("syncps", "edp", "mp") and my_rank == 0:
+            run_server(hostname, algorithm, resume_checkpoint_path)
+        else:
+            run_worker(my_rank, hostname, algorithm, resume_checkpoint_path)
     finally:
         zc.close()
 
 
 def main():
     """Main entry point for distributed training."""
-    parser = argparse.ArgumentParser(description="Distributed GPT Training")
-    parser.add_argument(
-        "mode", choices=["server", "worker", "dashboard", "grove", "discover"],
-        help="Run as server, worker, dashboard, grove, or discover (auto-discovery via grove)"
-    )
-    parser.add_argument("arg1", help="Hostname (server mode) or rank (worker mode)")
-    parser.add_argument("arg2", nargs="?", help="Hostname (worker mode only)")
-    parser.add_argument(
-        "-a",
-        "--algorithm",
-        choices=["edp", "syncps", "mp", "mp_pipeline", "classicdp", "fsdp", "ep"],
-        default="syncps",
-        help="Training algorithm to use (default: syncps)",
-    )
-    parser.add_argument(
-        "-r",
-        "--resume-checkpoint",
-        type=str,
-        default=None,
-        help="Path to checkpoint to resume training from",
-    )
+    parser = build_main_parser()
 
-    # Dashboard shortcut — no further args needed
     if len(sys.argv) >= 2 and sys.argv[1] == "dashboard":
-        from dashboard.__main__ import main as dashboard_main
-        import sys as _sys
-        _sys.argv = [_sys.argv[0]] + _sys.argv[2:]  # strip "dashboard" so argparse in __main__ works
-        dashboard_main()
+        run_dashboard()
         return
 
-    # Discover mode: grove sets sys.argv = [script, 'discover', '-a', ALGO] before calling main().
-    # grove.world_size is already set by grove.init() at this point.
     if len(sys.argv) >= 2 and sys.argv[1] == "discover":
-        alg_parser = argparse.ArgumentParser(add_help=False)
-        alg_parser.add_argument("-a", "--algorithm", default="syncps")
-        alg_parser.add_argument("-r", "--resume-checkpoint", default=None)
-        alg_args, _ = alg_parser.parse_known_args(sys.argv[2:])
-        import grove as _grove
-        cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
-        world_size = _grove.world_size if _grove.world_size > 1 else int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
-        run_discover(alg_args.algorithm, cluster, world_size, alg_args.resume_checkpoint)
+        _run_discover_from_argv(sys.argv[2:], default_algorithm="syncps")
         return
 
-    # Auto-discover mode: running under grove with no mode arg → default to discover
-    try:
-        import grove as _grove
-        if _grove.world_size > 1 and (len(sys.argv) < 2 or sys.argv[1] not in ["server", "worker", "dashboard", "grove", "discover"]):
-            alg_parser = argparse.ArgumentParser(add_help=False)
-            alg_parser.add_argument("-a", "--algorithm", default="classicdp")
-            alg_parser.add_argument("-r", "--resume-checkpoint", default=None)
-            alg_args, _ = alg_parser.parse_known_args(sys.argv[1:])
-            cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
-            run_discover(alg_args.algorithm, cluster, _grove.world_size, alg_args.resume_checkpoint)
-            return
-    except ImportError:
-        pass
+    if should_autodiscover(sys.argv):
+        _run_discover_from_argv(sys.argv[1:], default_algorithm="classicdp")
+        return
 
-    # Handle both new argparse format and legacy positional format
-    if len(sys.argv) >= 2 and sys.argv[1] in ["server", "worker"]:
-        # Try to parse with argparse first
-        if (
-            "--algorithm" in sys.argv
-            or "-a" in sys.argv
-            or "--resume-checkpoint" in sys.argv
-            or "-r" in sys.argv
-        ):
-            args = parser.parse_args()
-            mode = args.mode
-            algorithm = args.algorithm
-            resume_checkpoint_path = args.resume_checkpoint
-
-            # Parse positional args based on mode
-            if mode == "server":
-                hostname = args.arg1
-                worker_rank = None
-            else:  # worker
-                worker_rank = int(args.arg1)
-                hostname = args.arg2
-                if hostname is None:
-                    print("Error: Worker mode requires both rank and hostname")
-                    parser.print_help()
-                    sys.exit(1)
-        else:
-            # Legacy format: mode hostname [rank]
-            mode = sys.argv[1]
-            resume_checkpoint_path = None
-            if len(sys.argv) < 3:
-                parser.print_help()
-                sys.exit(1)
-
-            if mode == "server":
-                hostname = sys.argv[2]
-                algorithm = sys.argv[3] if len(sys.argv) > 3 else "syncps"
-                worker_rank = None
-            else:  # worker
-                if len(sys.argv) < 4:
-                    parser.print_help()
-                    sys.exit(1)
-                worker_rank = int(sys.argv[2])
-                hostname = sys.argv[3]
-                algorithm = sys.argv[4] if len(sys.argv) > 4 else "syncps"
-    else:
+    if len(sys.argv) < 2 or sys.argv[1] not in ["server", "worker", "grove"]:
         parser.print_help()
         sys.exit(1)
 
-    # Validate algorithm
-    if algorithm not in ["edp", "syncps", "mp", "mp_pipeline", "classicdp", "fsdp", "ep"]:
-        print(
-            f"Error: Invalid algorithm '{algorithm}'. Must be 'edp', 'syncps', 'mp', 'mp_pipeline', 'classicdp', 'fsdp', or 'ep'"
-        )
-        sys.exit(1)
+    if sys.argv[1] in ["server", "worker"]:
+        mode, hostname, algorithm, worker_rank, resume_checkpoint_path = parse_server_worker_mode(parser)
+    else:
+        args = parser.parse_args()
+        mode = args.mode
+        hostname = ""
+        worker_rank = None
+        algorithm = args.algorithm
+        resume_checkpoint_path = args.resume_checkpoint
 
-    # Run appropriate mode
     if mode == "server":
         run_server(hostname, algorithm, resume_checkpoint_path)
     elif mode == "worker":
@@ -884,12 +850,7 @@ def main():
         run_worker(worker_rank, hostname, algorithm, resume_checkpoint_path)
     elif mode == "grove":
         cluster = os.environ.get("SMOLCLUSTER_CLUSTER", "smolcluster-run")
-        try:
-            import grove as _grove
-            world_size = _grove.world_size if _grove.world_size > 1 else int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
-        except ImportError:
-            world_size = int(os.environ.get("SMOLCLUSTER_WORLD_SIZE", "2"))
-        run_discover(algorithm, cluster, world_size, resume_checkpoint_path)
+        run_discover(algorithm, cluster, grove_world_size(), resume_checkpoint_path)
 
 
 if __name__ == "__main__":

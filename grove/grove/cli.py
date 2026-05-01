@@ -365,7 +365,15 @@ def main():
 
     sub.add_parser("status", help="System info and nearby clusters")
 
-    args = parser.parse_args(grove_argv)
+    # Parse grove args first, then treat unknown args as script passthrough for
+    # run/start so users can pass script flags without requiring an explicit "--".
+    args, unknown = parser.parse_known_args(grove_argv)
+    if unknown:
+        if args.command in {"run", "start"}:
+            passthrough = unknown + passthrough
+        else:
+            parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+
     match args.command:
         case "run": cmd_run(args)
         case "start": cmd_start(args, passthrough)

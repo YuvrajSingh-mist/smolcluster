@@ -38,8 +38,8 @@ reward_workers: 8       # Number of threads for parallel reward computation (nul
 quality_metrics:
   length_penalty: false  # penalise deviation from target summary length
   rouge: false
-  meteor: false
-  bleu: true
+  meteor: true
+  bleu: false
 
 
 

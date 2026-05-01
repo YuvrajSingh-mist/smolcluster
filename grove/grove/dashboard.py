@@ -39,8 +39,24 @@ def _setup_log_capture() -> LogCapture:
             except Exception:
                 pass
 
+    class _AnsiLevelFormatter(logging.Formatter):
+        _RESET = "\x1b[0m"
+        _LEVEL_COLORS = {
+            logging.DEBUG: "\x1b[2m",      # dim
+            logging.WARNING: "\x1b[33m",   # yellow
+            logging.ERROR: "\x1b[31m",     # red
+            logging.CRITICAL: "\x1b[1;31m",# bold red
+        }
+
+        def format(self, record):
+            msg = super().format(record)
+            color = self._LEVEL_COLORS.get(record.levelno)
+            if not color:
+                return msg
+            return f"{color}{msg}{self._RESET}"
+
     handler = _CaptureHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
+    handler.setFormatter(_AnsiLevelFormatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
@@ -67,15 +83,15 @@ class Dashboard:
         def _train():
             try:
                 train_fn()
-                capture.write("[bold green]Training complete.[/bold green] Press q to exit.")
+                capture.write("\x1b[1;32mTraining complete.\x1b[0m Press q to exit.")
             except SystemExit as e:
                 if e.code not in (None, 0):
                     error.set()
-                    capture.write(f"[bold red]Exited with code {e.code}[/bold red]")
+                    capture.write(f"\x1b[1;31mExited with code {e.code}\x1b[0m")
             except Exception as e:
                 import traceback
                 error.set()
-                capture.write(f"[bold red]ERROR: {e}[/bold red]")
+                capture.write(f"\x1b[1;31mERROR: {e}\x1b[0m")
                 capture.write(traceback.format_exc())
             finally:
                 done.set()
@@ -110,15 +126,15 @@ class WorkerDashboard:
         def _train():
             try:
                 train_fn()
-                capture.write("[bold green]Training complete.[/bold green] Press q to exit.")
+                capture.write("\x1b[1;32mTraining complete.\x1b[0m Press q to exit.")
             except SystemExit as e:
                 if e.code not in (None, 0):
                     error.set()
-                    capture.write(f"[bold red]Exited with code {e.code}[/bold red]")
+                    capture.write(f"\x1b[1;31mExited with code {e.code}\x1b[0m")
             except Exception as e:
                 import traceback
                 error.set()
-                capture.write(f"[bold red]ERROR: {e}[/bold red]")
+                capture.write(f"\x1b[1;31mERROR: {e}\x1b[0m")
                 capture.write(traceback.format_exc())
             finally:
                 done.set()
