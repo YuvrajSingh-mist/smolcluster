@@ -1,0 +1,175 @@
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  --bg-0: #f8fbfc;
+  --bg-1: #eef7f8;
+  --bg-2: #ffffff;
+  --ink: #12343b;
+  --ink-2: #32565d;
+  --ink-3: #648087;
+  --accent: #f39a1f;
+  --teal: #167d90;
+  --green:    #1a9e63;
+  --red:      #c0392b;
+  --panel:    rgba(255,255,255,0.82);
+  --card:     rgba(255,255,255,0.96);
+  --line:     rgba(18,52,59,0.09);
+  --line2:    rgba(18,52,59,0.05);
+  --r:        14px;
+}
+
+body {
+  font-family: 'Space Grotesk', sans-serif;
+  background:
+    radial-gradient(ellipse 1200px 520px at 10% 8%, rgba(22,125,144,0.10) 0%, transparent 55%),
+    radial-gradient(ellipse 820px 420px at 88% 10%, rgba(243,154,31,0.10) 0%, transparent 52%),
+    linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 55%, var(--bg-0) 100%);
+  min-height: 100vh;
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ═══ Landing + Setup ═════════════════════════════════════════════════ */
+.view {
+  min-height: 100vh;
+  width: 100%;
+}
+.hidden { display: none !important; }
+
+.entry-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  position: relative;
+  overflow: hidden;
+}
+.entry-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 30%, rgba(22,125,144,0.08), transparent 28%),
+    radial-gradient(circle at 50% 72%, rgba(243,154,31,0.06), transparent 24%);
+  pointer-events: none;
+}
+.entry-logo {
+  font-size: clamp(52px, 10vw, 88px);
+  font-weight: 700;
+  letter-spacing: -3px;
+  color: var(--ink);
+  line-height: 1;
+  margin-bottom: 14px;
+  position: relative;
+  z-index: 1;
+}
+.entry-logo em { font-style: normal; color: var(--ink); }
+.entry-stage {
+  width: min(980px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+  z-index: 1;
+}
+.entry-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 18px;
+}
+.entry-kicker::before,
+.entry-kicker::after {
+  content: '';
+  width: 34px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(22,125,144,0.35), transparent);
+}
+.entry-sub {
+  color: var(--ink-3);
+  font-size: 15px;
+  text-align: center;
+  max-width: 660px;
+  margin-bottom: 24px;
+  line-height: 1.75;
+  position: relative;
+  z-index: 1;
+}
+.entry-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 38px;
+}
+.entry-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(18,52,59,0.10);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.72);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(18,52,59,0.04);
+}
+.entry-chip b {
+  color: var(--teal);
+  font-weight: 700;
+}
+.entry-actions {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+}
+.entry-option {
+  border: 1px solid rgba(18,52,59,0.12);
+  border-radius: 18px;
+  padding: 20px 22px;
+  cursor: pointer;
+  background: rgba(255,255,255,0.78);
+  backdrop-filter: blur(12px);
+  transition: transform .15s, box-shadow .15s, border-color .15s, background .15s;
+  text-align: left;
+  min-width: 290px;
+  max-width: 340px;
+  box-shadow: 0 8px 24px rgba(18,52,59,0.06);
+}
+.entry-option:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 32px rgba(18,52,59,0.10);
+}
+.entry-option h3 {
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+.entry-option p {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.65;
+  max-width: 100%;
+  margin: 0;
+}
+.entry-option-tag {
+  display: inline-block;
+  margin-bottom: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}

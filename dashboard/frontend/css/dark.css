@@ -1,0 +1,123 @@
+/* ═══ Dark mode — CSS variable overrides ═══════════════════════════════ */
+html.dark {
+  --bg-0: #0a1518;
+  --bg-1: #0d1b20;
+  --bg-2: #111e24;
+  --ink: #d4e9ec;
+  --ink-2: #7ab5be;
+  --ink-3: #4a7880;
+  --panel: rgba(10,21,27,0.92);
+  --card:  rgba(14,28,35,0.97);
+  --line:  rgba(180,220,230,0.11);
+  --line2: rgba(180,220,230,0.06);
+  --red:   #e07070;
+}
+html.dark body {
+  background:
+    radial-gradient(ellipse 1200px 520px at 10% 8%,  rgba(22,125,144,0.18) 0%, transparent 55%),
+    radial-gradient(ellipse 820px 420px  at 88% 10%, rgba(243,154,31,0.09) 0%, transparent 52%),
+    linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 55%, var(--bg-0) 100%);
+}
+
+/* Entry / landing */
+html.dark .entry-shell .entry-logo,
+html.dark .entry-shell .entry-logo em,
+html.dark .entry-shell .entry-kicker,
+html.dark .entry-shell .entry-sub,
+html.dark .entry-shell .entry-chip,
+html.dark .entry-shell .entry-chip b,
+html.dark .entry-shell .entry-option-tag,
+html.dark .entry-shell .entry-option h3,
+html.dark .entry-shell .entry-option p { color: var(--ink); }
+html.dark .entry-chip  { background: rgba(18,34,42,0.80); }
+html.dark .entry-option { background: rgba(16,32,40,0.88); }
+html.dark .entry-option.learn:hover { background: rgba(22,125,144,0.14); }
+html.dark .entry-option.setup:hover { background: rgba(208,106,47,0.10); }
+
+/* Code block */
+html.dark .cmd-wrap  { background: var(--bg-1); }
+html.dark .cmd-head  { background: rgba(10,20,26,0.94); }
+html.dark .copy-btn  { background: rgba(200,230,240,0.08); }
+html.dark .copy-btn:hover { background: rgba(200,230,240,0.16); color: var(--ink); }
+
+/* Setup shell */
+html.dark .setup-shell {
+  background: linear-gradient(180deg, rgba(10,19,24,0.99), rgba(12,22,28,0.99));
+}
+html.dark .setup-panel,
+html.dark .setup-main { background: var(--card); }
+html.dark .setup-tab  { background: var(--bg-1); }
+html.dark .setup-tab.active { background: var(--ink); color: var(--bg-0); }
+html.dark .setup-step { background: var(--bg-1); }
+html.dark .setup-step.active { background: rgba(22,125,144,0.18); }
+html.dark .setup-btn  { background: var(--bg-1); }
+html.dark .setup-btn.primary { background: var(--teal); color: #fff; }
+
+/* Header */
+html.dark header { background: rgba(10,21,27,0.94); }
+html.dark .mode-tabs  { background: rgba(12,24,30,0.82); }
+html.dark .mode-tab:not(.active):hover { background: rgba(180,220,230,0.09); }
+
+/* Left panel */
+html.dark .left { background: rgba(9,19,24,0.32); }
+html.dark .ncard { box-shadow: 0 1px 8px rgba(0,0,0,0.35); }
+html.dark .ncard:hover { box-shadow: 0 4px 18px rgba(0,0,0,0.50); }
+
+/* Topo canvas */
+html.dark .topo-wrap { background: rgba(7,15,20,0.35); }
+
+/* Bottom area */
+html.dark .bottom     { background: rgba(8,18,23,0.55); }
+html.dark .bottom-head { background: rgba(11,22,27,0.70); }
+html.dark .bottom-tabs { background: rgba(11,22,27,0.90); }
+html.dark .bottom-tab.active { background: var(--ink); color: var(--bg-0); }
+html.dark .bottom-tab:hover  { background: rgba(180,220,230,0.09); }
+html.dark .bottom-resizer {
+  background: linear-gradient(to bottom, transparent 0%, rgba(180,220,230,0.13) 48%, transparent 100%);
+}
+html.dark .bottom-resizer:hover {
+  background: linear-gradient(to bottom, transparent 0%, rgba(22,125,144,0.30) 48%, transparent 100%);
+}
+
+/* Controls bar */
+html.dark .abtn.conn { background: rgba(180,220,230,0.07); border-color: var(--line); }
+html.dark .abtn.conn:hover { background: rgba(180,220,230,0.13); }
+html.dark select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' stroke='%237ab5be' stroke-width='1.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+/* Log */
+html.dark .logline:hover   { background: rgba(180,220,230,0.06); }
+html.dark .log-btn:hover   { background: rgba(180,220,230,0.10); }
+html.dark ::-webkit-scrollbar-thumb { background: rgba(180,220,230,0.16); }
+html.dark #logbox::-webkit-scrollbar-thumb { background: rgba(180,220,230,0.16); }
+
+/* Generation panel */
+html.dark .gen-panel {
+  background:
+    radial-gradient(circle at top left, rgba(22,125,144,0.15), transparent 34%),
+    linear-gradient(180deg, rgba(11,22,28,0.99), rgba(9,19,24,0.99));
+}
+html.dark .gen-card { background: var(--card); box-shadow: 0 10px 24px rgba(0,0,0,0.45); }
+html.dark .gen-textarea,
+html.dark .gen-input,
+html.dark .gen-select {
+  background: rgba(14,28,35,0.98);
+  border-color: rgba(180,220,230,0.14);
+  color: var(--ink);
+}
+html.dark .gen-textarea:focus,
+html.dark .gen-input:focus,
+html.dark .gen-select:focus {
+  border-color: rgba(22,125,144,0.50);
+  box-shadow: 0 0 0 3px rgba(22,125,144,0.12);
+}
+html.dark .gen-inline  { background: rgba(13,26,32,0.95); border-color: rgba(180,220,230,0.10); }
+html.dark .gen-chip    { background: rgba(180,220,230,0.07); border-color: rgba(180,220,230,0.14); }
+html.dark .gen-chip:hover { background: rgba(180,220,230,0.13); border-color: rgba(180,220,230,0.24); }
+html.dark .gen-output  { background: var(--bg-2); color: var(--ink); }
+html.dark .gen-raw     { background: rgba(10,20,26,0.97); border-color: rgba(180,220,230,0.10); }
+html.dark .gen-preview { background: var(--bg-2); border-color: rgba(180,220,230,0.12); color: var(--ink); }
+html.dark .gen-btn.secondary { background: rgba(180,220,230,0.10); color: var(--ink); }
+html.dark .gen-btn.ghost { border-color: var(--line); color: var(--ink-2); }
+html.dark .gen-tput-stat { background: rgba(22,125,144,0.14); }

@@ -1,0 +1,190 @@
+/* ═══ Header ═══════════════════════════════════════════════════════════ */
+header {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 28px;
+  background: var(--panel); backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+.logo {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -.5px;
+  color: var(--ink);
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: 'Space Grotesk', sans-serif;
+  cursor: pointer;
+}
+.logo:hover { opacity: 0.82; }
+.logo em { color: var(--ink); font-style: normal; }
+.hstats { display: flex; gap: 22px; font-size: 12px; color: var(--ink-2); }
+.hstat { display: flex; align-items: center; gap: 6px; }
+.pip { width: 7px; height: 7px; border-radius: 50%; background: #ccc; }
+.pip.on  { background: var(--green);  box-shadow: 0 0 7px var(--green); }
+.pip.hot { background: var(--accent); box-shadow: 0 0 7px var(--accent); }
+
+/* ═══ Layout ════════════════════════════════════════════════════════════ */
+main {
+  flex: 1; display: grid;
+  grid-template-columns: 310px 1fr;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+}
+
+/* ═══ Left panel ════════════════════════════════════════════════════════ */
+.left {
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 16px 13px;
+  display: flex; flex-direction: column; gap: 9px;
+  background: rgba(255,255,255,0.28);
+}
+.ptitle {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 1.3px;
+  text-transform: uppercase; color: var(--ink-3);
+  padding: 0 3px 7px; border-bottom: 1px solid var(--line);
+}
+
+/* Node cards */
+.ncard {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 12px 13px;
+  display: flex; flex-direction: column; gap: 7px;
+  animation: rise 220ms ease-out;
+  box-shadow: 0 1px 8px rgba(15,41,38,0.05);
+  transition: box-shadow .18s, border-color .18s;
+}
+.ncard:hover { box-shadow: 0 4px 18px rgba(15,41,38,0.1); }
+.ncard.in-cluster { border-color: rgba(23,126,137,0.35); }
+.ncard.running    { border-color: rgba(26,158,99,0.45); }
+
+@keyframes rise { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:none; } }
+
+.nhead { display: flex; align-items: center; gap: 9px; }
+.nicon { font-size: 22px; line-height: 1; }
+.nname { font-size: 13px; font-weight: 700; font-family: 'IBM Plex Mono', monospace; }
+.nmeta { font-size: 10.5px; color: var(--ink-3); }
+
+.nbadge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px; border-radius: 5px;
+}
+.nbadge.avail   { background: rgba(23,126,137,0.09); color: var(--teal); }
+.nbadge.cluster { background: rgba(208,106,47,0.11); color: var(--accent); }
+.nbadge.active  { background: rgba(26,158,99,0.12);  color: var(--green); }
+
+.sshr { display: flex; align-items: center; gap: 7px; }
+.sshlbl { font-size: 10px; color: var(--ink-3); }
+input[type="text"] {
+  padding: 4px 9px; border-radius: 7px; border: 1.5px solid var(--line);
+  background: var(--bg-0); font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; color: var(--ink); width: 110px;
+  transition: border-color .15s;
+}
+input[type="text"]:focus { outline: none; border-color: var(--teal); }
+
+.nbtn {
+  align-self: flex-start; padding: 5px 14px; border-radius: 7px;
+  border: 1.5px solid var(--teal); background: transparent;
+  color: var(--teal); font-family: 'Space Grotesk', sans-serif;
+  font-size: 11.5px; font-weight: 700; cursor: pointer;
+  transition: background .14s, color .14s;
+}
+.nbtn:hover { background: var(--teal); color: #fff; }
+.nbtn.rm  { border-color: var(--red); color: var(--red); }
+.nbtn.rm:hover { background: var(--red); color: #fff; }
+.nbtn:disabled { opacity: .4; cursor: default; }
+
+.empty {
+  text-align: center; color: var(--ink-3);
+  font-size: 12.5px; padding: 28px 12px; opacity: .75;
+}
+.empty .eico { font-size: 28px; margin-bottom: 7px; }
+
+/* ═══ Right panel ════════════════════════════════════════════════════════ */
+.right {
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Topology canvas ─────────────────────────────────────────────────── */
+.topo-wrap {
+  flex: 1; min-height: 0; position: relative;
+  background: rgba(255,255,255,0.18);
+  border-bottom: 1px solid var(--line);
+}
+#topo3d { width: 100%; height: 100%; position: relative; overflow: hidden; }
+
+.topo-tag {
+  position: absolute; top: 13px; left: 16px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 1.2px;
+  text-transform: uppercase; color: var(--ink-3); pointer-events: none;
+  display: none;
+}
+.mode-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.72);
+}
+.mode-tab {
+  border: none;
+  background: transparent;
+  color: var(--ink-2);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .14s, color .14s;
+}
+.mode-tab.active.train { background: var(--green); color: #fff; }
+.mode-tab.active.infer { background: var(--teal); color: #fff; }
+.mode-tab:not(.active):hover { background: rgba(15,41,38,0.06); }
+.topo-legend {
+  position: absolute; bottom: 10px; right: 14px;
+  display: flex; gap: 14px; pointer-events: none;
+  display: none !important;
+}
+.leg { display: flex; align-items: center; gap: 5px;
+       font-size: 9.5px; color: var(--ink-3); }
+.legdot { width: 7px; height: 7px; border-radius: 50%; }
+
+/* ── Status bar (connectivity / inference) ────────────────────────────── */
+#status-bar {
+  display: none;
+  align-items: center; gap: 10px;
+  padding: 7px 20px;
+  font-size: 11.5px; color: var(--teal);
+  background: rgba(23,126,137,0.07);
+  border-bottom: 1px solid rgba(23,126,137,0.18);
+}
+#status-bar.show { display: flex; }
+.spin {
+  width: 13px; height: 13px; flex-shrink: 0;
+  border: 2px solid rgba(23,126,137,0.25);
+  border-top-color: var(--teal); border-radius: 50%;
+  animation: spin .65s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Connectivity node chips */
+#conn-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 10.5px; font-family: 'IBM Plex Mono', monospace;
+  font-weight: 500; transition: background .2s;
+}
+.cchip.wait { background: rgba(23,126,137,0.1); color: var(--teal); }
+.cchip.ok   { background: rgba(26,158,99,0.12); color: var(--green); }
+.cchip.fail { background: rgba(192,57,43,0.1);  color: var(--red); }
+.cchip .cdot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
