@@ -4,6 +4,14 @@
 
 A distributed deep learning library for training neural networks across heterogeneous hardware using PyTorch and socket-based communication.
 
+## grove TUI — zero setup, runs immediately
+
+- The fastest way to see smolcluster's training algorithms in action. **grove** is a terminal dashboard that allows you to discover and connect to both mac-based and Linux-based nodes seamlessly (NO SSH REQUIRED!), giving you a live unified view across every node in your cluster — no config files, no IPs, no extra services.
+
+- Workers auto-discover the coordinator via AirDrop/mDNS on Mac or TCP/mDNS on Jetson and Linux. Every training algorithm (FSDP, ClassicDP, EDP, SyncPS, EP, GRPO) reports into it automatically — no code changes needed.
+
+> For full setup instructions see the [quickstart guide](https://www.smolcluster.com/quickstart.html). For grove internals and transport options see the [grove README](grove/README.md).
+
 ## Features
 
 - **Distributed Training Algorithms**: Fully Sharded Data Parallel (ZeRO-optimized), Classic Data Parallelism (All-Reduce), Elastic Distributed Parallelism, Synchronous Parameter Server (SyncPS), Expert Parallelism (EP), and Model Parallelism

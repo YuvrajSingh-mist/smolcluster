@@ -145,7 +145,7 @@ class DashboardApp(App):
     #footer { dock: bottom; padding: 0 2; color: $text-muted; }
     """
 
-    BINDINGS = [Binding("q", "quit", "Quit")]
+    BINDINGS = [Binding("q", "quit", "Quit"), Binding("l", "toggle_logs", "Logs")]
 
     def __init__(
         self,
@@ -166,6 +166,7 @@ class DashboardApp(App):
         self._done_event = done_event
         self._error_event = error_event
         self._training_done = False
+        self._logs_visible = True
         self._start_time = time.monotonic()
 
     def compose(self) -> ComposeResult:
@@ -182,7 +183,7 @@ class DashboardApp(App):
         log = RichLog(id="logs", wrap=True, markup=False)
         log.show_vertical_scrollbar = False
         yield log
-        yield Static("  [dim]q quit[/]", id="footer")
+        yield Static("  [dim]q quit   l toggle logs[/]", id="footer")
 
     def on_mount(self) -> None:
         self.set_interval(1.0, self._refresh)
@@ -310,11 +311,20 @@ class DashboardApp(App):
         self.query_one("#stats", Static).update(Text("".join(parts), style="dim"))
 
     def _refresh_logs(self) -> None:
-        if self._log_capture is None:
+        if self._log_capture is None or not self._logs_visible:
             return
         log_widget = self.query_one("#logs", RichLog)
         for line in self._log_capture.drain_new():
             log_widget.write(Text.from_ansi(line))
+
+    def action_toggle_logs(self) -> None:
+        self._logs_visible = not self._logs_visible
+        log_widget = self.query_one("#logs", RichLog)
+        log_widget.display = self._logs_visible
+        state = "on" if self._logs_visible else "off"
+        self.query_one("#footer", Static).update(
+            f"  [dim]q quit   l toggle logs ({state})[/]"
+        )
 
     def action_quit(self) -> None:
         self.exit()
