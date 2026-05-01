@@ -11,24 +11,13 @@ log = logging.getLogger("grove.init")
 def _init_cluster(cluster: str, ws: int, timeout: float) -> None:
     import grove
     from .cluster import _discover_peers
-    from .store.tcp_store import TCPStore
-    from .group import Group
-    from .comm import Communicator
     from .coordinator import CoordinatorServer, WorkerClient
-    from ._types import TransportType, DEFAULT_BASE_PORT
+    from ._types import DEFAULT_BASE_PORT
 
     my_rank, peers, _zc = _discover_peers(cluster, ws, timeout)
     grove.rank = my_rank
     grove.world_size = ws
     coord_host = peers[0]["host"]
-    store = TCPStore(
-        rank=my_rank,
-        world_size=ws,
-        host=coord_host,
-        port=DEFAULT_BASE_PORT - 199,
-    )
-    group = Group(my_rank, ws, store, TransportType.TCP)
-
     coord_port = DEFAULT_BASE_PORT - 198
     if my_rank == 0:
         addr_map = {r: peers[r]["host"] for r in range(ws)}
@@ -39,8 +28,6 @@ def _init_cluster(cluster: str, ws: int, timeout: float) -> None:
 
     worker_client = WorkerClient(coord_host, coord_port, my_rank)
     grove._worker_client = worker_client
-    grove._comm = Communicator(group, worker_client)
-    _init_packer()
 
     if my_rank != 0:
         name, content, argv = worker_client.fetch_script()
@@ -52,8 +39,6 @@ def _init_cluster(cluster: str, ws: int, timeout: float) -> None:
 def _init_p2p(cluster: str, ws: int, timeout: float) -> None:
     import grove
     from .transport.hybrid import HybridTransport
-    from .group import Group
-    from .comm import Communicator
     from .coordinator import P2PCoordinatorServer, P2PWorkerClient
     from .control import MsgType, encode_ctrl, decode_ctrl
 
@@ -86,13 +71,6 @@ def _init_p2p(cluster: str, ws: int, timeout: float) -> None:
     if grove.rank == 0 and grove._coordinator is not None:
         grove._coordinator.set_local_worker(worker)
 
-    group = Group(grove.rank, ws, store=None, transport=transport)
-    grove._comm = Communicator(group, worker)
-    _init_packer()
-
-    if not transport._upgraded:
-        transport.start_keepalive()
-
 
 def _distribute_script(grove, transport, script, ws, encode_ctrl, decode_ctrl, MsgType):
     if grove.rank == 0 and script and os.path.exists(script):
@@ -112,9 +90,3 @@ def _distribute_script(grove, transport, script, ws, encode_ctrl, decode_ctrl, M
             raise ValueError(f"Expected script, got {msg_type}")
         grove._received_script = (payload["name"], payload["content"])
         grove._received_argv = json.loads(payload.get("argv", "[]"))
-
-
-def _init_packer() -> None:
-    import grove
-    from .mlx_comm import _GradientPacker
-    grove._packer = _GradientPacker()
