@@ -30,6 +30,11 @@ from smolcluster.utils.common_utils import (
 from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
+try:
+    import grove as _grove
+except ImportError:
+    _grove = None
+
 step = 0  # Global step counter to track training progress across threads
 
 def evaluate(
@@ -690,6 +695,8 @@ def run_fsdp_worker(
     )
 
     logger.info(f"All workers connected. Starting training for {num_epochs} epochs.")
+    if _grove is not None:
+        _grove.status("training")
     train_start_time = time.time()
 
     for epoch in range(start_epoch, num_epochs):
@@ -1193,6 +1200,18 @@ def run_fsdp_worker(
                     )
             
             wandb.log(wandb_metrics)
+
+            if _grove is not None:
+                _ns = get_network_metrics(reset=False)
+                _grove.report(
+                    local_loss.item(),
+                    step=step,
+                    grad_norm=float(grad_norm),
+                    tok_per_sec=tok_per_sec,
+                    tx_mbps=_ns.get("send_bandwidth_mbps"),
+                    rx_mbps=_ns.get("recv_bandwidth_mbps"),
+                )
+                _grove.status("training")
 
             # Log gradient norms if tracking enabled
             if track_gradients:

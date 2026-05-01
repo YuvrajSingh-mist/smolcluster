@@ -48,7 +48,7 @@ dp:
     # Some model variants (mlx, GGUF, quantized forks) do not ship a
     # generation_config.json. Set generation_config_source to the original
     # base model so generation defaults are fetched from there instead.
-    generation_config_source: Qwen/Qwen2.5-0.5B-Instruct
+    generation_config_source: LiquidAI/LFM2.5-350M
 
     # Tokenizer-specific overrides.
     overrides:

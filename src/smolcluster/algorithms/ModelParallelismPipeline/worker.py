@@ -22,6 +22,11 @@ from smolcluster.utils.common_utils import (
 from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
+try:
+    import grove as _grove
+except ImportError:
+    _grove = None
+
 
 def get_tensor_size_mb(tensor: torch.Tensor) -> float:
     """Calculate tensor size in megabytes."""
@@ -518,6 +523,8 @@ def run_modelparallelism_pipeline_worker(
     gradient_send_sizes = []
 
     logger.info(f"Starting training for {num_epochs} epochs.")
+    if _grove is not None:
+        _grove.status("training")
     train_start_time = time.time()
 
     for epoch in range(start_epoch, num_epochs):
@@ -540,6 +547,8 @@ def run_modelparallelism_pipeline_worker(
         for batch_idx, (data, target) in batch_pbar:
             logger.info(f"Processing batch {batch_idx + 1}/{len(train_loader)}")
             step = epoch * len(train_loader) + batch_idx
+            batch_start_time = time.time()
+            avg_batch_loss = 0.0
 
             data = data.to(device)
             target = target.to(device)
@@ -1187,6 +1196,15 @@ def run_modelparallelism_pipeline_worker(
                     "training/num_microbatches": num_microbatches,
                 }
             )
+
+            if _grove is not None:
+                _ns = get_network_metrics(reset=False)
+                _bt = time.time() - batch_start_time
+                _tps = data.size(0) * data.size(1) / _bt if _bt > 0 else 0
+                _grove.report(avg_batch_loss, step=step, grad_norm=float(grad_norm),
+                              tok_per_sec=_tps,
+                              tx_mbps=_ns.get("send_bandwidth_mbps"), rx_mbps=_ns.get("recv_bandwidth_mbps"))
+                _grove.status("training")
 
             # Log gradient norms if tracking enabled
             if track_gradients:

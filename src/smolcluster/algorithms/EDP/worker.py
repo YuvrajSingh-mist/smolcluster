@@ -20,6 +20,12 @@ from smolcluster.utils.common_utils import (
     send_message,
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
+
+try:
+    import grove as _grove
+except ImportError:
+    _grove = None
+
 from smolcluster.utils.quantization import (
     calculate_compression_ratio,
     dequantize_model_weights,
@@ -404,6 +410,8 @@ def run_edp_worker(
         )
         total_steps = num_epochs * len(train_loader)
 
+    if _grove is not None:
+        _grove.status("training")
     logger.info("Starting training loop...")
 
     # Initialize iterator for continuous training
@@ -476,6 +484,7 @@ def run_edp_worker(
         if scheduler is not None:
             scheduler.step()
 
+        _gn = sum(p.grad.norm(2).item()**2 for p in model.parameters() if p.grad is not None)**0.5
         logger.info("Local forward and backward pass complete.")
         # Send locally-updated weights for Polyak averaging on server
         weights = get_weights(model)
@@ -627,6 +636,10 @@ def run_edp_worker(
         tokens_processed = batch_size * config["max_seq_len"]
         tok_per_sec = tokens_processed / step_time if step_time > 0 else 0
         step_start_time = step_end_time  # Reset for next step
+
+        if _grove is not None:
+            _grove.report(loss.item(), step=step, grad_norm=_gn, tok_per_sec=tok_per_sec)
+            _grove.status("training")
 
         # Run evaluation every eval_steps
         if step % eval_steps == 0:

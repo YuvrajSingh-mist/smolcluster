@@ -759,9 +759,18 @@ def run_classicdp_worker(
                 set_gradients(grads_reduced, model)
                 optimizer.step()
 
-                # Report to grove TUI (no-op if not running under grove)
                 if _grove is not None:
-                    _grove.report(local_loss.item(), step=step)
+                    _bt = time.time() - batch_start_time
+                    _gn = sum(p.grad.norm(2).item() ** 2 for p in model.parameters() if p.grad is not None) ** 0.5
+                    _tps = (data.size(0) * data.size(1)) / _bt if _bt > 0 else 0
+                    _ns = get_network_metrics(reset=False) if track_network_metrics else {}
+                    _grove.report(
+                        local_loss.item(), step=step,
+                        grad_norm=_gn,
+                        tok_per_sec=_tps,
+                        tx_mbps=_ns.get("send_bandwidth_mbps"),
+                        rx_mbps=_ns.get("recv_bandwidth_mbps"),
+                    )
                     _grove.status("training")
 
                 logger.info(

@@ -176,7 +176,7 @@ class DashboardApp(App):
         )
         table = DataTable(id="nodes")
         table.cursor_type = "none"
-        table.add_columns("Rank", "Host", "Status", "Step", "Loss", "Sync")
+        table.add_columns("Rank", "Host", "Status", "Step", "Loss", "Grad", "tok/s", "Sync", "Net Mb")
         yield table
         yield Static("", id="stats")
         log = RichLog(id="logs", wrap=True, markup=False)
@@ -228,6 +228,10 @@ class DashboardApp(App):
         steps = state.get("steps", {})
         losses = state.get("loss", {})
         syncs = state.get("sync_ms", {})
+        grad_norms = state.get("grad_norm", {})
+        tok_per_secs = state.get("tok_per_sec", {})
+        tx_mbps_map = state.get("tx_mbps", {})
+        rx_mbps_map = state.get("rx_mbps", {})
         hostnames = state.get("hostnames", {})
         statuses = state.get("status", {})
         epoch = state.get("epoch", 0)
@@ -249,13 +253,28 @@ class DashboardApp(App):
                     Text(str(step_val), style="dim"),
                     Text("—", style="dim"),
                     Text("—", style="dim"),
+                    Text("—", style="dim"),
+                    Text("—", style="dim"),
+                    Text("—", style="dim"),
                 )
             else:
                 step_val = _get(steps, rank) or 0
                 loss_val = _get(losses, rank)
                 sync_val = _get(syncs, rank)
+                gn_val = _get(grad_norms, rank)
+                tps_val = _get(tok_per_secs, rank)
+                tx_val = _get(tx_mbps_map, rank)
+                rx_val = _get(rx_mbps_map, rank)
                 loss_str = f"{float(loss_val):.4f}" if loss_val else "—"
                 sync_str = f"{float(sync_val):.0f}ms" if sync_val else "—"
+                gn_str = f"{float(gn_val):.2f}" if gn_val else "—"
+                tps_str = f"{float(tps_val):.0f}" if tps_val else "—"
+                if tx_val and rx_val:
+                    net_str = f"{float(tx_val):.0f}↑/{float(rx_val):.0f}↓"
+                elif tx_val or rx_val:
+                    net_str = f"{float(tx_val or rx_val):.0f}"
+                else:
+                    net_str = "—"
                 style = "bold cyan" if is_me else ""
                 marker = " ◀" if is_me else ""
                 phase = _get(statuses, rank) or ""
@@ -270,7 +289,10 @@ class DashboardApp(App):
                     status_text,
                     Text(str(step_val) if step_val else "—", style=style),
                     Text(loss_str, style=style),
+                    Text(gn_str, style=style),
+                    Text(tps_str, style=style),
                     Text(sync_str, style=style),
+                    Text(net_str, style=style),
                 )
 
         n_live = len(live_ranks)
@@ -292,7 +314,7 @@ class DashboardApp(App):
             return
         log_widget = self.query_one("#logs", RichLog)
         for line in self._log_capture.drain_new():
-            log_widget.write(line)
+            log_widget.write(Text.from_ansi(line))
 
     def action_quit(self) -> None:
         self.exit()

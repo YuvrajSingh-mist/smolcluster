@@ -91,16 +91,40 @@ def average_gradients(grads: dict) -> dict:
     return result
 
 
-def report(loss: float, step: int | None = None) -> None:
+def report(
+    loss: float,
+    step: int | None = None,
+    *,
+    grad_norm: float | None = None,
+    tok_per_sec: float | None = None,
+    tx_mbps: float | None = None,
+    rx_mbps: float | None = None,
+) -> None:
     if _worker_client is not None:
         _worker_client._loss = loss
         if step is not None:
             _worker_client._step = step
+        if grad_norm is not None:
+            _worker_client._grad_norm = grad_norm
+        if tok_per_sec is not None:
+            _worker_client._tok_per_sec = tok_per_sec
+        if tx_mbps is not None:
+            _worker_client._tx_mbps = tx_mbps
+        if rx_mbps is not None:
+            _worker_client._rx_mbps = rx_mbps
     if _coordinator is not None:
         with _coordinator._lock:
             _coordinator._loss[rank] = loss
             if step is not None:
                 _coordinator._step_counts[rank] = step
+            if grad_norm is not None:
+                _coordinator._grad_norm[rank] = grad_norm
+            if tok_per_sec is not None:
+                _coordinator._tok_per_sec[rank] = tok_per_sec
+            if tx_mbps is not None:
+                _coordinator._tx_mbps[rank] = tx_mbps
+            if rx_mbps is not None:
+                _coordinator._rx_mbps[rank] = rx_mbps
 
 
 def status(msg: str) -> None:

@@ -20,6 +20,11 @@ from smolcluster.utils.common_utils import (
 )
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
+try:
+    import grove as _grove
+except ImportError:
+    _grove = None
+
 # Setup logging (will be replaced by setup_cluster_logging in run_syncps_worker)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -255,6 +260,8 @@ def run_syncps_worker(
             logger.info("Received start_training command from server.")
             break
 
+    if _grove is not None:
+        _grove.status("training")
     logger.info("Starting training loop...")
     model = model.to(device)
     total_steps = num_epochs * len(train_loader)
@@ -321,6 +328,7 @@ def run_syncps_worker(
                     f"[Step {step} / {num_epochs * len(train_loader)}] Applied gradient clipping with max_norm={max_norm}"
                 )
 
+            _gn = sum(p.grad.norm(2).item()**2 for p in model.parameters() if p.grad is not None)**0.5
             grads = get_gradients(model)
             logger.info(
                 f"[Step {step} / {num_epochs * len(train_loader)}] Computed local gradients"
@@ -352,6 +360,9 @@ def run_syncps_worker(
                 logger.info(
                     f"[Step {step}] ✅ Applied Polyak-averaged weights (alpha={polyak_alpha})"
                 )
+                if _grove is not None:
+                    _grove.report(loss.item(), step=step, grad_norm=_gn, tok_per_sec=tok_per_sec)
+                    _grove.status("training")
             else:
                 logger.warning(
                     f"[Step {step} / {num_epochs * len(train_loader)}] Expected 'model_weights' but got '{command}'"

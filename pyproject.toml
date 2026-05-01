@@ -30,9 +30,7 @@ dependencies = [
     "redis>=5.0.0",
     "evaluate>=0.4.6",
     "ruamel-yaml>=0.19.1",
-    "mlx>=0.31.1",
     "rouge-score>=0.1.2",
-    "mlx-lm>=0.31.1",
 ]
 
 [dependency-groups]
@@ -45,6 +43,15 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
 ]
+
+[project.optional-dependencies]
+dashboard = [
+    "aiofiles>=23.0.0",
+]
+mlx = [
+    "mlx>=0.31.1",
+    "mlx-lm>=0.31.1",
+]
 eval = [
     "accelerate>=0.31.1",
     "deepeval>=3.9.6",
@@ -53,9 +60,15 @@ eval = [
     "pyarrow>=22.0.0",
     "scipy>=1.15.3",
 ]
-mlx = [
+grpo = [
     "mlx>=0.31.1",
     "mlx-lm>=0.31.1",
+    "accelerate>=0.31.1",
+    "deepeval>=3.9.6",
+    "google-genai>=1.71.0",
+    "pandas>=2.3.3",
+    "pyarrow>=22.0.0",
+    "scipy>=1.15.3",
 ]
 
 

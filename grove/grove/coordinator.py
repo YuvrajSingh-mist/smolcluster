@@ -34,6 +34,10 @@ class CoordinatorServer:
         self._step_counts: dict[int, int] = {}
         self._loss: dict[int, float] = {}
         self._sync_ms: dict[int, float] = {}
+        self._grad_norm: dict[int, float] = {}
+        self._tok_per_sec: dict[int, float] = {}
+        self._tx_mbps: dict[int, float] = {}
+        self._rx_mbps: dict[int, float] = {}
         self._hostnames: dict[int, str] = {}
         _h0 = socket.gethostname()
         self._hostnames[0] = _h0 if "." in _h0 else _h0 + ".local"
@@ -109,6 +113,10 @@ class CoordinatorServer:
                             self._loss[rank] = payload["loss"]
                         if "sync_ms" in payload:
                             self._sync_ms[rank] = payload["sync_ms"]
+                        for _key, _store in [("grad_norm", self._grad_norm), ("tok_per_sec", self._tok_per_sec),
+                                             ("tx_mbps", self._tx_mbps), ("rx_mbps", self._rx_mbps)]:
+                            if _key in payload:
+                                _store[rank] = payload[_key]
                         if "status" in payload:
                             self._status_map[rank] = payload["status"]
                         if "ip" in payload:
@@ -149,6 +157,10 @@ class CoordinatorServer:
                 "steps": dict(self._step_counts),
                 "loss": dict(self._loss),
                 "sync_ms": dict(self._sync_ms),
+                "grad_norm": dict(self._grad_norm),
+                "tok_per_sec": dict(self._tok_per_sec),
+                "tx_mbps": dict(self._tx_mbps),
+                "rx_mbps": dict(self._rx_mbps),
                 "hostnames": dict(self._hostnames),
                 "ips": dict(self._peer_ips),
                 "status": dict(self._status_map),
@@ -264,6 +276,10 @@ class WorkerClient:
         self._loss = 0.0
         self._sync_ms = 0.0
         self._status = ""
+        self._grad_norm: float | None = None
+        self._tok_per_sec: float | None = None
+        self._tx_mbps: float | None = None
+        self._rx_mbps: float | None = None
         _h = os.environ.get("GROVE_HOSTNAME", socket.gethostname())
         self._hostname = _h if "." in _h else _h + ".local"
         self._running = True
@@ -307,12 +323,16 @@ class WorkerClient:
             time.sleep(2.0)
             try:
                 with self._lock:
+                    extras = {k: v for k, v in {
+                        "grad_norm": self._grad_norm, "tok_per_sec": self._tok_per_sec,
+                        "tx_mbps": self._tx_mbps, "rx_mbps": self._rx_mbps,
+                    }.items() if v is not None}
                     send_msg(self._sock, MsgType.HEARTBEAT, {
                         "rank": self._rank, "step": self._step, "ts": time.time(),
                         "loss": self._loss, "sync_ms": self._sync_ms,
                         "hostname": self._hostname, "status": self._status,
-                        "ip": get_local_ip(),
-                })
+                        "ip": get_local_ip(), **extras,
+                    })
             except (ConnectionError, OSError):
                 log.warning("Lost connection to coordinator")
                 break
@@ -428,6 +448,10 @@ class P2PCoordinatorServer:
         self._step_counts: dict[int, int] = {}
         self._loss: dict[int, float] = {}
         self._sync_ms: dict[int, float] = {}
+        self._grad_norm: dict[int, float] = {}
+        self._tok_per_sec: dict[int, float] = {}
+        self._tx_mbps: dict[int, float] = {}
+        self._rx_mbps: dict[int, float] = {}
         _h0 = socket.gethostname()
         self._hostnames: dict[int, str] = {0: _h0 if "." in _h0 else _h0 + ".local"}
         self._peer_ips: dict[int, str] = {0: get_local_ip()}
@@ -487,6 +511,10 @@ class P2PCoordinatorServer:
                     self._loss[rank] = payload["loss"]
                 if "sync_ms" in payload:
                     self._sync_ms[rank] = payload["sync_ms"]
+                for _key, _store in [("grad_norm", self._grad_norm), ("tok_per_sec", self._tok_per_sec),
+                                     ("tx_mbps", self._tx_mbps), ("rx_mbps", self._rx_mbps)]:
+                    if _key in payload:
+                        _store[rank] = payload[_key]
                 if "hostname" in payload:
                     self._hostnames[rank] = payload["hostname"]
                 if "status" in payload:
@@ -635,6 +663,10 @@ class P2PCoordinatorServer:
                 "steps": dict(self._step_counts),
                 "loss": dict(self._loss),
                 "sync_ms": dict(self._sync_ms),
+                "grad_norm": dict(self._grad_norm),
+                "tok_per_sec": dict(self._tok_per_sec),
+                "tx_mbps": dict(self._tx_mbps),
+                "rx_mbps": dict(self._rx_mbps),
                 "hostnames": dict(self._hostnames),
                 "ips": dict(self._peer_ips),
                 "status": dict(self._status_map),
@@ -652,6 +684,10 @@ class P2PWorkerClient:
         self._loss = 0.0
         self._sync_ms = 0.0
         self._status = ""
+        self._grad_norm: float | None = None
+        self._tok_per_sec: float | None = None
+        self._tx_mbps: float | None = None
+        self._rx_mbps: float | None = None
         _h = os.environ.get("GROVE_HOSTNAME", socket.gethostname())
         self._hostname = _h if "." in _h else _h + ".local"
         self._running = True
@@ -677,11 +713,15 @@ class P2PWorkerClient:
             time.sleep(2.0)
             try:
                 with self._lock:
+                    extras = {k: v for k, v in {
+                        "grad_norm": self._grad_norm, "tok_per_sec": self._tok_per_sec,
+                        "tx_mbps": self._tx_mbps, "rx_mbps": self._rx_mbps,
+                    }.items() if v is not None}
                     msg = encode_ctrl(MsgType.HEARTBEAT, {
                         "rank": self._rank, "step": self._step, "ts": time.time(),
                         "loss": self._loss, "sync_ms": self._sync_ms,
                         "hostname": self._hostname, "status": self._status,
-                        "ip": get_local_ip(),
+                        "ip": get_local_ip(), **extras,
                     })
                 self._transport.send_raw(0, msg)
             except (ConnectionError, OSError):

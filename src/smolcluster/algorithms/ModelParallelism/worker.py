@@ -20,6 +20,11 @@ from smolcluster.utils.common_utils import (
 from smolcluster.utils.layers import get_model_per_node
 from smolcluster.utils.logging_utils import setup_cluster_logging
 
+try:
+    import grove as _grove
+except ImportError:
+    _grove = None
+
 
 def get_tensor_size_mb(tensor: torch.Tensor) -> float:
     """Calculate tensor size in megabytes."""
@@ -322,6 +327,8 @@ def run_modelparallelism_worker(
     act_out_cache = {}
     target_cache = {}
 
+    if _grove is not None:
+        _grove.status("training")
     logger.info("Starting training loop...")
 
     # Initialize data transfer tracking
@@ -493,11 +500,15 @@ def run_modelparallelism_worker(
                 else:
                     target_for_loss = target_for_loss.to(device)
 
+                _bt_start = time.time()
                 loss = compute_loss(act_out, target_for_loss, criterion, device)
                 total_loss += loss.item()
                 optimizer.zero_grad()
                 loss.backward()
+                _gn = sum(p.grad.norm(2).item()**2 for p in model_layers.parameters() if p.grad is not None)**0.5
                 optimizer.step()
+                _bt = time.time() - _bt_start
+                _tps = act_out.shape[0] * act_out.shape[1] / _bt if _bt > 0 else 0
                 tqdm.write(
                     f"[WORKER-{local_rank}] [Step {step}] Sending gradients from rank {local_rank} to rank {local_rank - 1}"
                 )
@@ -514,6 +525,11 @@ def run_modelparallelism_worker(
                         "epoch": epoch + 1,
                     }
                 )
+                if _grove is not None:
+                    _ns = get_network_metrics(reset=False)
+                    _grove.report(loss.item(), step=step, grad_norm=_gn, tok_per_sec=_tps,
+                                  tx_mbps=_ns.get("send_bandwidth_mbps"), rx_mbps=_ns.get("recv_bandwidth_mbps"))
+                    _grove.status("training")
                 tqdm.write(
                     f"[WORKER-{local_rank}] [Step {step}] Training loss: {avg_loss:.4f}"
                 )

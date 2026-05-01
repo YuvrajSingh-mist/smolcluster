@@ -51,6 +51,11 @@ from smolcluster.applications.reasoning.grpo.utils.worker_sync import (
 )
 from smolcluster.utils.logging_utils import setup_logging
 
+try:
+    import grove as _grove
+except ImportError:
+    _grove = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,6 +129,15 @@ def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: 
             if step_time_s and step_time_s > 0.0:
                 _DASHBOARD_GRAD_INTERVAL.write_text(str(round(step_time_s * 1000, 1)))
             _LAST_DASHBOARD_GRAD_TS = now
+        if _grove is not None and not skipped_update:
+            _gn = grad_norm if isinstance(grad_norm, float) and grad_norm == grad_norm else None
+            _grove.report(
+                float(metrics.get("loss", 0.0)),
+                step=global_step,
+                grad_norm=_gn,
+                tok_per_sec=est_throughput,
+            )
+            _grove.status("training")
     except Exception:
         pass
 
