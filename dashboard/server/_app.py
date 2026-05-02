@@ -1,0 +1,95 @@
+"""FastAPI application factory, lifespan, static mounts, and root route."""
+import asyncio
+import logging
+import socket
+from contextlib import asynccontextmanager
+
+import redis.asyncio as aioredis
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from . import _ctx
+from . import _node_meta, _redis as _redis_mod
+from ._broadcasters import events_broadcaster, log_broadcaster
+from ._paths import FRONTEND_DIR
+from ._ssh_config import _build_static_nodes_inventory, _lookup_ssh_entry, local_node_metadata
+from . import _routes_inference, _routes_misc, _routes_nodes, _routes_training, _sse
+from dashboard.node_manager import NodeManager
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── Redis ──────────────────────────────────────────────────────────────────
+    redis_boot = _redis_mod.ensure_redis_running()
+    _ctx.redis = aioredis.from_url(_redis_mod.REDIS_URL, decode_responses=True)
+    _redis_mod._redis_diag["enabled"] = True
+    _redis_mod._redis_diag["status"]  = "connected"
+    _redis_mod.redis_mark(f"connected ({redis_boot})")
+    logger.info(f"[redis] connected ({redis_boot}) url={_redis_mod.REDIS_URL}")
+
+    # ── Node manager & host identity ───────────────────────────────────────────
+    _ctx.node_manager     = NodeManager()
+    _ctx.server_hostname  = socket.gethostname().removesuffix(".local")
+    local_ips             = _node_meta.collect_local_ips()
+    _ctx.static_nodes     = _build_static_nodes_inventory(_ctx.server_hostname, local_ips)
+    _ctx.ssh_aliases.clear()
+    _ctx.ssh_aliases.update({h: h for h in _ctx.static_nodes})
+    _ctx.node_os[_ctx.server_hostname] = local_node_metadata()
+
+    # ── Restore persisted state from Redis ────────────────────────────────────
+    await _redis_mod.restore_state_from_redis()
+
+    # Flush stale log stream (broadcaster re-tails from EOF on start).
+    await _ctx.redis.delete("smolcluster:logs")
+
+    # Seed SSH usernames from config for nodes not yet probed.
+    seed_pipe = _ctx.redis.pipeline()
+    for h in _ctx.static_nodes:
+        if not _ctx.probed.get(h):
+            user = _lookup_ssh_entry(h, _ctx.static_nodes[h].get("ip", "")).get("user", "")
+            if user:
+                _ctx.probed[h] = user
+                seed_pipe.hset("smolcluster:probed", h, user)
+    await seed_pipe.execute()
+
+    logger.info(f"[dashboard] http://{_ctx.server_hostname}.local:9090")
+
+    broadcast_task = asyncio.create_task(events_broadcaster())
+    log_task       = asyncio.create_task(log_broadcaster())
+    metadata_task  = asyncio.create_task(_node_meta.prime_node_metadata())
+
+    yield
+
+    broadcast_task.cancel()
+    log_task.cancel()
+    metadata_task.cancel()
+    await asyncio.gather(broadcast_task, log_task, metadata_task, return_exceptions=True)
+    await _ctx.node_manager.stop_all()
+    await _ctx.redis.aclose()
+
+
+# ── Application ────────────────────────────────────────────────────────────────
+app = FastAPI(title="smolcluster Dashboard", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+)
+
+# Static assets — mounts before routers (ASGI prefix routing handles ordering correctly).
+app.mount("/css", StaticFiles(directory=FRONTEND_DIR / "css"), name="css")
+app.mount("/js",  StaticFiles(directory=FRONTEND_DIR / "js"),  name="js")
+
+# Include all route groups.
+app.include_router(_routes_nodes.router)
+app.include_router(_routes_training.router)
+app.include_router(_routes_inference.router)
+app.include_router(_routes_misc.router)
+app.include_router(_sse.router)
+
+
+@app.get("/")
+async def index():
+    return FileResponse(FRONTEND_DIR / "index.html")
