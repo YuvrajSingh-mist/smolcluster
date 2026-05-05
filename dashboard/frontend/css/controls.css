@@ -80,19 +80,11 @@ select {
   border: none;
   min-width: 72px;
   flex-shrink: 0;
-  position: relative;
-  cursor: default;
 }
 
-/* Hover tooltip */
-.mstat[data-tip]::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: 240px;
+/* Hover tooltip — rendered via JS into #smol-tip (body-level) to escape overflow:auto */
+#smol-tip {
+  position: fixed;
   padding: 7px 11px;
   background: rgba(10, 22, 20, 0.93);
   backdrop-filter: blur(10px);
@@ -105,19 +97,14 @@ select {
   border-radius: 7px;
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  max-width: 240px;
   white-space: normal;
-  text-transform: none;
-  letter-spacing: 0;
   pointer-events: none;
+  z-index: 99999;
   opacity: 0;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-  z-index: 9999;
-  transform: translateX(-50%) translateY(4px);
+  transition: opacity 0.12s ease;
 }
-.mstat[data-tip]:hover::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
+#smol-tip.visible { opacity: 1; }
 .mslbl { font-size: 9px; font-weight: 700; letter-spacing: .8px;
          text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
 .msval { font-size: 17px; font-weight: 700;

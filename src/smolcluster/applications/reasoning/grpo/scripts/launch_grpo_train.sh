@@ -4,7 +4,7 @@
 # Usage:
 #   ./scripts/training/launch_grpo_train.sh [gsm8k|summarization]
 #   ./scripts/training/launch_grpo_train.sh --dry-run [gsm8k|summarization]
-#   ./scripts/training/launch_grpo_train.sh --cleanup
+#   ./scripts/training/launch_grpo_train.sh --cleanup 
 
 set -euo pipefail
 
@@ -41,13 +41,13 @@ MODEL_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/model_config_infere
 VLLM_TMUX_SESSION="vllm_worker"
 
 DRY_RUN=false
-CLEANUP=false
+CLEANUP_ONLY=false
 TRAIN_TARGET="summarization"  # default target
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)  DRY_RUN=true;  shift ;;
-        --cleanup)  CLEANUP=true;  shift ;;
+        --cleanup)  CLEANUP_ONLY=true;  shift ;;
         --help|-h)
             echo "GRPO training launcher"
             echo ""
@@ -294,7 +294,7 @@ fi
 # --cleanup: kill all vLLM workers + confirm dead
 # ---------------------------------------------------------------------------
 
-if [[ "$CLEANUP" == "true" ]]; then
+if [[ "$CLEANUP_ONLY" == "true" ]]; then
     reset_all_vllm_workers
     # Kill any background SSH log-tail processes started during launch
     if [[ -f "$GRPO_TAIL_PIDS_FILE" ]]; then

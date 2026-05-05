@@ -26,7 +26,7 @@ from smolcluster.utils.common_utils import (
     set_weights_by_layer,
 )
 from smolcluster.utils.layers import get_model_per_node
-from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.logging_utils import emit_smol_event, setup_cluster_logging
 
 try:
     import grove as _grove
@@ -658,7 +658,7 @@ def run_fsdp_worker(
             logger.info(
                 "Performing all-gather: broadcasting local gradients to all peers"
             )
-
+            emit_smol_event("gradients", "out", "fsdp")
             for peer_rank, peer_socket in outbound_worker_sockets.items():
                 send_message(
                     peer_socket,
@@ -764,6 +764,7 @@ def run_fsdp_worker(
                 logger.info(f"[Step {step}] Broadcasting {len(owned_state_dict)} owned parameters (reduced from full state_dict)")
                 
                 # broadcast owned weights to all peers via outbound connections
+                emit_smol_event("weights", "out", "fsdp")
                 for peer_rank, peer_socket in outbound_worker_sockets.items():
                     send_message(
                         peer_socket,

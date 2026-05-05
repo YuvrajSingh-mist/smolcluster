@@ -79,6 +79,7 @@ vllm_cluster:
 # ---------------------------------------------------------------------------
 weight_sync:
   save_every_steps: 100              # save/overwrite latest checkpoint every N optimizer steps (0 = disabled)
+  sync_steps: 5                    # sync/reload workers every N training steps (0 = disabled)
   checkpoint_dir: "checkpoints/Qwen2.5-0.5B-instruct-bf16/length-penalty-included/grpo-summarization-quality-meteor"  # relative to project root
 
   # remote_user and host_ip are read from model_config_inference.yaml cluster.*

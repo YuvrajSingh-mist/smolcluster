@@ -206,17 +206,21 @@
           <div class="msval" id="m-lr">—</div>
         </div>
         <div class="ms-divider"></div>
-        <div class="mstat" data-tip="Training: steps between weight syncs to vLLM workers. Inference: average time between token batches.">
-          <div class="mslbl" id="m-intv-lbl">Sync Intv</div>
-          <div class="msval" id="m-intv">—</div>
-        </div>
-        <div class="mstat" data-tip="Currently live GPU memory allocations (Metal allocator). Reflects tensors actively in use right now.">
+        <div class="mstat" id="m-mem-active-card" data-tip="Currently live GPU memory allocations (Metal allocator). Reflects tensors actively in use right now.">
           <div class="mslbl">Mem Active</div>
           <div class="msval" id="m-mem-active">—</div>
         </div>
-        <div class="mstat" data-tip="Peak GPU memory usage since the last optimizer step. Resets each step — shows worst-case allocation during forward+backward.">
+        <div class="mstat" id="m-mem-peak-card" data-tip="Peak GPU memory usage since the last optimizer step. Resets each step — shows worst-case allocation during forward+backward.">
           <div class="mslbl">Mem Peak</div>
           <div class="msval" id="m-mem-peak">—</div>
+        </div>
+        <div class="mstat" id="m-buf-avg-card" style="display:none" data-tip="Average socket buffer size across all gradient/weight messages sent this interval (in KB or MB).">
+          <div class="mslbl">Buf Avg</div>
+          <div class="msval" id="m-net-buf-avg">—</div>
+        </div>
+        <div class="mstat" id="m-buf-max-card" style="display:none" data-tip="Peak socket buffer size seen in any single message this interval. High values may indicate large parameter shards.">
+          <div class="mslbl">Buf Max</div>
+          <div class="msval" id="m-net-buf-max">—</div>
         </div>
         <div class="mstat" data-tip="Estimated outbound bandwidth — prompt tokens sent to vLLM workers per second (Megabits/s).">
           <div class="mslbl">Send BW</div>
@@ -405,5 +409,32 @@
 <script src="/js/topology/topology-draw.js?v=7"></script>
 <!-- boot (last) -->
 <script src="/js/core/boot.js?v=7"></script>
-</body>
-</html>
+<div id="smol-tip"></div>
+<script>
+(function () {
+  const tip = document.getElementById('smol-tip');
+  let _hide;
+  document.addEventListener('mouseover', function (e) {
+    const el = e.target.closest('[data-tip]');
+    clearTimeout(_hide);
+    if (!el) { tip.classList.remove('visible'); return; }
+    tip.textContent = el.dataset.tip;
+    // position above the element, centred
+    const r = el.getBoundingClientRect();
+    tip.style.left = '0'; tip.style.top = '0'; // reset so offsetWidth is fresh
+    const tw = tip.offsetWidth;
+    let left = r.left + r.width / 2 - tw / 2;
+    let top  = r.top - tip.offsetHeight - 8;
+    // clamp within viewport
+    left = Math.max(6, Math.min(left, window.innerWidth - tw - 6));
+    if (top < 6) top = r.bottom + 8; // flip below if no room
+    tip.style.left = left + 'px';
+    tip.style.top  = top  + 'px';
+    tip.classList.add('visible');
+  });
+  document.addEventListener('mouseout', function (e) {
+    const el = e.target.closest('[data-tip]');
+    if (el) _hide = setTimeout(() => tip.classList.remove('visible'), 80);
+  });
+})();
+</script>

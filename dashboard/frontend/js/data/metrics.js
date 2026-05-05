@@ -117,18 +117,22 @@ function renderMetrics() {
     const fmtMb  = v => { if (v == null || !Number.isFinite(v) || v <= 0) return '—'; if (v < 0.01) return `${Math.round(v * 1000)}KB`; if (v < 10) return `${v.toFixed(2)}MB`; return `${v.toFixed(1)}MB`; };
     const fmtKb  = v   => (v != null && Number.isFinite(v) && v > 0) ? `${v < 1024 ? Math.round(v) + 'KB' : (v / 1024).toFixed(1) + 'MB'}` : '—';
 
-    if (isTrainingRunning) {
-      setText('m-intv-lbl', 'Sync Intv');
-      setText('m-intv', _gradIntervalMs > 300 ? fmtMs(_gradIntervalMs) : '—');
-    } else {
-      setText('m-intv-lbl', 'Token Intv');
-      setText('m-intv', _tokenIntervalMs > 0 ? fmtMs(_tokenIntervalMs) : '—');
-    }
-
     const fmtMbMem = v => (v != null && Number.isFinite(v) && v > 0) ? (v >= 1024 ? `${(v/1024).toFixed(1)}GB` : `${Math.round(v)}MB`) : '—';
     const _t = trainingFallbackMetrics;
-    setText('m-mem-active', fmtMbMem(_t.active_mem_mb));
-    setText('m-mem-peak',   fmtMbMem(_t.peak_mem_mb));
+    // Show Mem Active/Peak for MLX-based GRPO; show Buf Avg/Max for socket-based algorithms
+    const _algo = String((_t.algorithm || _activeAlgo || $('algo-sel').value || '')).toLowerCase();
+    const _isGrpo = _algo === 'grpo' || _algo === '';
+    $('m-mem-active-card').style.display = _isGrpo ? '' : 'none';
+    $('m-mem-peak-card').style.display   = _isGrpo ? '' : 'none';
+    $('m-buf-avg-card').style.display    = _isGrpo ? 'none' : '';
+    $('m-buf-max-card').style.display    = _isGrpo ? 'none' : '';
+    if (_isGrpo) {
+      setText('m-mem-active', fmtMbMem(_t.active_mem_mb));
+      setText('m-mem-peak',   fmtMbMem(_t.peak_mem_mb));
+    } else {
+      setText('m-net-buf-avg', fmtKb(_t.avg_buffer_size_kb));
+      setText('m-net-buf-max', fmtKb(_t.max_buffer_size_kb));
+    }
 
     const _n = trainingFallbackMetrics;
     setText('m-net-snd-bw',  fmtBw(_n.send_bandwidth_mbps));

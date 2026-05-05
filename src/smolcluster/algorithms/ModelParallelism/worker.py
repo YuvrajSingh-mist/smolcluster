@@ -19,7 +19,7 @@ from smolcluster.utils.common_utils import (
     send_message,
 )
 from smolcluster.utils.layers import get_model_per_node
-from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.logging_utils import emit_smol_event, setup_cluster_logging
 
 try:
     import grove as _grove
@@ -461,6 +461,7 @@ def run_modelparallelism_worker(
                 act_send_start = time.time()
 
                 # Send detached copy to next worker/server
+                emit_smol_event("gradients", "out", "mp")
                 send_message(
                     sock,
                     (
@@ -563,6 +564,7 @@ def run_modelparallelism_worker(
                     logger.info(f"[Step {step}] Worker {local_rank} checkpoint saved")
 
                 # Send input gradients to previous worker
+                emit_smol_event("gradients", "out", "mp")
                 send_message(
                     sock,
                     (

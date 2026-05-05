@@ -18,6 +18,7 @@ from tqdm import tqdm
 from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
 from smolcluster.utils.common_utils import (
     get_gradients,
+    get_network_metrics,
     get_weights,
     receive_message,
     send_message,
@@ -489,6 +490,7 @@ def run_syncps_server(
                 _eta_m = (_eta_s % 3600) // 60
                 _eta_sec = _eta_s % 60
                 _eta_str = f"{_eta_h:02d}:{_eta_m:02d}:{_eta_sec:02d}"
+                _net = get_network_metrics(reset=True)
                 _metrics = {
                     "step": step,
                     "total_steps": _total_steps,
@@ -501,6 +503,7 @@ def run_syncps_server(
                     "eta_remaining": _eta_str,
                     "algorithm": "syncps",
                     "running": True,
+                    **{k: round(v, 3) for k, v in _net.items() if isinstance(v, (int, float))},
                 }
                 Path("/tmp/smolcluster_metrics.json").write_text(json.dumps(_metrics))
                 # Emit a machine-readable metrics line so the SSH-tailed log stream
