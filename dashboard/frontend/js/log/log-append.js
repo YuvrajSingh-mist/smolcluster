@@ -14,14 +14,13 @@ function appendLog({ hostname, line }) {
         if (v !== null && v !== undefined) trainingFallbackMetrics[k] = v;
       }
       trainingFallbackMetrics.algorithm ||= _activeAlgo || $('algo-sel').value;
-      renderMetrics();
+      _scheduleRenderMetrics();
     } catch(e) {}
     // Fall through so the line is also visible in the log terminal.
   }
 
-  // Transport events (structured + pattern-based)
-  _parseTransportEvent(line);
-  _checkTransportPatterns(line);
+  // Structured event markers
+  _parseSmolEvent(line);
 
   // Training metrics from log pattern matching
   _parseTrainingLogLine(line);

@@ -1,3 +1,4 @@
+"""Device selection helper — returns the best available compute device (CUDA, MPS, or CPU)."""
 # device.py
 import torch
 

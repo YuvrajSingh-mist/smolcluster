@@ -1,3 +1,4 @@
+"""SynchronousPS training server — aggregates gradients from workers and broadcasts updated weights (parameter-server pattern)."""
 import gc
 import json
 import logging
@@ -22,7 +23,7 @@ from smolcluster.utils.common_utils import (
     send_message,
     set_gradients,
 )
-from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.logging_utils import emit_smol_event, setup_cluster_logging
 
 # Setup logging (will be replaced by setup_cluster_logging in run_syncps_server)
 logging.basicConfig(
@@ -376,6 +377,7 @@ def run_syncps_server(
                 else:
                     break
 
+            emit_smol_event("gradients", "in", "syncps")
             # Average gradients and update model
             if len(grads_received[step]) != 0:
                 logger.info(
@@ -406,6 +408,7 @@ def run_syncps_server(
                 )
 
                 # Send updated weights to workers
+                emit_smol_event("weights", "out", "syncps")
                 for _worker_addr, worker_socket in workers.items():
                     weights = get_weights(model)
                     send_message(worker_socket, ("model_weights", step, weights))

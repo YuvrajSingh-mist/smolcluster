@@ -499,7 +499,7 @@ else
     echo "  SFT adapters enabled: NO"
 fi
 
-UV_RUN="env ${HF_ENV_SETUP[*]+${HF_ENV_SETUP[*]}} uv run --group mlx --group eval python"
+UV_RUN="env ${HF_ENV_SETUP[*]+${HF_ENV_SETUP[*]}} uv run --extra mlx --extra eval python"
 
 if [[ "$DRY_RUN" == "true" ]]; then
     printf 'Dry run command: %s %q' "$UV_RUN" "$EVAL_SCRIPT"
@@ -511,7 +511,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 if [[ ${#EVAL_ARGS[@]} -gt 0 ]]; then
-    env "${HF_ENV_SETUP[@]}" uv run --group mlx --group eval python "$EVAL_SCRIPT" "${EVAL_ARGS[@]}"
+    env "${HF_ENV_SETUP[@]}" uv run --extra mlx --extra eval python "$EVAL_SCRIPT" "${EVAL_ARGS[@]}"
 else
-    env "${HF_ENV_SETUP[@]}" uv run --group mlx --group eval python "$EVAL_SCRIPT"
+    env "${HF_ENV_SETUP[@]}" uv run --extra mlx --extra eval python "$EVAL_SCRIPT"
 fi

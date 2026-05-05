@@ -1,3 +1,4 @@
+"""Expert-parallelism worker — hosts a subset of MoE experts, routes tokens from the server, and returns expert outputs."""
 import gc
 import logging
 import math

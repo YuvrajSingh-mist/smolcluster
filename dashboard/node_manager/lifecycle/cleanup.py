@@ -1,3 +1,4 @@
+"""_CleanupMixin — terminates running processes and kills matching tmux sessions locally and on remote nodes."""
 import asyncio
 import logging
 import os
@@ -5,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict
 
-from ._ssh import _build_ssh_target
+from ..ssh import _build_ssh_target
 
 logger = logging.getLogger(__name__)
 

@@ -5,8 +5,8 @@ import os
 import subprocess
 import time
 
-from . import _ctx
-from ._ssh_config import _lookup_ssh_entry
+from . import ctx
+from .ssh_config import _lookup_ssh_entry
 
 logger = logging.getLogger(__name__)
 
@@ -72,19 +72,19 @@ def ensure_redis_running() -> str:
 
 async def restore_state_from_redis() -> None:
     """Restore selected nodes, probed usernames, and node OS info from Redis."""
-    from ._helpers import canonicalize_node_hostname  # local import avoids cycles at module load
+    from .helpers import canonicalize_node_hostname  # local import avoids cycles at module load
 
     try:
-        selected = await _ctx.redis.hgetall("smolcluster:selected")
+        selected = await ctx.redis.hgetall("smolcluster:selected")
         restored = skipped = 0
         for hostname, val in selected.items():
             data      = json.loads(val)
             canonical = canonicalize_node_hostname(hostname)
-            if canonical != _ctx.server_hostname and canonical not in _ctx.static_nodes:
+            if canonical != ctx.server_hostname and canonical not in ctx.static_nodes:
                 logger.info(f"[dashboard] Redis skipped stale node: {hostname}")
                 skipped += 1
                 continue
-            _ctx.node_manager.selected[canonical] = data
+            ctx.node_manager.selected[canonical] = data
             restored += 1
             logger.info(f"[dashboard] Redis restored: {hostname} → {canonical} rank={data.get('rank')}")
         redis_mark(f"restore: restored={restored} skipped={skipped}",
@@ -96,19 +96,19 @@ async def restore_state_from_redis() -> None:
         logger.warning(f"[dashboard] Redis restore skipped: {exc}")
 
     try:
-        for hostname, username in (await _ctx.redis.hgetall("smolcluster:probed")).items():
+        for hostname, username in (await ctx.redis.hgetall("smolcluster:probed")).items():
             canonical = canonicalize_node_hostname(hostname)
             if canonical and username:
-                _ctx.probed[canonical] = username
+                ctx.probed[canonical] = username
     except Exception:
         pass
 
     try:
-        for hostname, json_str in (await _ctx.redis.hgetall("smolcluster:node_os")).items():
+        for hostname, json_str in (await ctx.redis.hgetall("smolcluster:node_os")).items():
             canonical = canonicalize_node_hostname(hostname)
             if canonical:
                 try:
-                    _ctx.node_os[canonical] = json.loads(json_str)
+                    ctx.node_os[canonical] = json.loads(json_str)
                 except Exception:
                     pass
     except Exception:

@@ -1,3 +1,4 @@
+"""ModelParallelism training worker — owns a horizontal model shard and exchanges activations/gradients with neighboring shards."""
 import logging
 import math
 import socket

@@ -28,7 +28,8 @@ mp:
         k: 40
 
 dp:
-  hf_model_name: YuvrajSingh9886/LFM2.5-350M-grpo-summarization-length-only
+  # hf_model_name: YuvrajSingh9886/Qwen2.5-0.5B-grpo-summarization-length-only
+  hf_model_name: mlx-community/Qwen2.5-0.5B-Instruct-bf16
 
   # Max tokens to generate per inference request.
   max_new_tokens: 256
@@ -48,7 +49,7 @@ dp:
     # Some model variants (mlx, GGUF, quantized forks) do not ship a
     # generation_config.json. Set generation_config_source to the original
     # base model so generation defaults are fetched from there instead.
-    generation_config_source: LiquidAI/LFM2.5-350M
+    generation_config_source: Qwen/Qwen2.5-0.5B-Instruct
 
     # Tokenizer-specific overrides.
     overrides:

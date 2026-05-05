@@ -5,8 +5,8 @@ import re
 import socket
 import subprocess
 
-from . import _ctx
-from ._ssh_config import _get_server_alias, _lookup_ssh_entry, local_node_metadata
+from . import ctx
+from .ssh_config import _get_server_alias, _lookup_ssh_entry, local_node_metadata
 from dashboard.node_manager import NodeManager
 
 logger = logging.getLogger(__name__)
@@ -42,26 +42,26 @@ def collect_local_ips() -> set:
 
 
 async def refresh_node_metadata(hostname: str, ssh_hint: str = "") -> None:
-    from ._helpers import canonicalize_node_hostname  # local import avoids load-time cycle
+    from .helpers import canonicalize_node_hostname  # local import avoids load-time cycle
     canonical = canonicalize_node_hostname(hostname)
     if not canonical:
         return
 
-    if canonical == _ctx.server_hostname:
-        _ctx.node_os[canonical] = local_node_metadata()
+    if canonical == ctx.server_hostname:
+        ctx.node_os[canonical] = local_node_metadata()
         return
 
-    node_ip   = _ctx.static_nodes.get(canonical, {}).get("ip", "")
+    node_ip   = ctx.static_nodes.get(canonical, {}).get("ip", "")
     ssh_entry = _lookup_ssh_entry(canonical, node_ip)
-    target    = ssh_hint or ssh_entry.get("alias") or _ctx.ssh_aliases.get(canonical) or canonical
+    target    = ssh_hint or ssh_entry.get("alias") or ctx.ssh_aliases.get(canonical) or canonical
     info      = await NodeManager.probe_metadata(canonical, target)
     if not info:
         return
 
     username = (info.get("username") or "").strip()
     if username:
-        _ctx.probed[canonical] = username
-        await _ctx.redis.hset("smolcluster:probed", canonical, username)
+        ctx.probed[canonical] = username
+        await ctx.redis.hset("smolcluster:probed", canonical, username)
 
     os_info = {
         "os":         (info.get("os") or "").strip(),
@@ -69,16 +69,16 @@ async def refresh_node_metadata(hostname: str, ssh_hint: str = "") -> None:
         "machine":    (info.get("machine") or "").strip(),
     }
     if any(os_info.values()):
-        _ctx.node_os[canonical] = os_info
-        await _ctx.redis.hset("smolcluster:node_os", canonical, json.dumps(os_info))
+        ctx.node_os[canonical] = os_info
+        await ctx.redis.hset("smolcluster:node_os", canonical, json.dumps(os_info))
 
 
 async def prime_node_metadata() -> None:
     import asyncio
-    await refresh_node_metadata(_ctx.server_hostname)
+    await refresh_node_metadata(ctx.server_hostname)
     tasks = [
         asyncio.create_task(refresh_node_metadata(h))
-        for h in _ctx.static_nodes
+        for h in ctx.static_nodes
     ]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)

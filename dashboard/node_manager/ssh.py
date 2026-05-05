@@ -1,3 +1,4 @@
+"""SSH target builder and probe mixin — resolves SSH connection strings and fetches remote node metadata."""
 import asyncio
 import logging
 import subprocess

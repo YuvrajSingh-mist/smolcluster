@@ -1,3 +1,4 @@
+"""FSDP stage-1 worker — shards optimizer states across workers while keeping full parameter and gradient copies."""
 import gc
 import logging
 import math

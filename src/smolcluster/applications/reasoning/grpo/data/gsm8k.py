@@ -1,3 +1,4 @@
+"""GSM8K dataset loader — formats grade-school math problems and answers for GRPO training and evaluation."""
 import re
 from typing import Any, Dict, List, Optional, Tuple
 

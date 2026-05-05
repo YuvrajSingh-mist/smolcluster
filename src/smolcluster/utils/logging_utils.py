@@ -249,3 +249,23 @@ def emit_transport_event(phase: str, **fields) -> None:
         else:
             payload[k] = str(v)
     print(f"[TRANSPORT_EVENT] {json.dumps(payload)}", flush=True)
+
+
+def emit_smol_event(event_type: str, direction: str, arch: str) -> None:
+    """Emit a dashboard particle-animation event.
+
+    This is the canonical way to trigger topology animations in the dashboard.
+    It prints a ``[SMOL_EVENT]`` line that the log stream picks up and routes to
+    the frontend's ``_handleSmolEvent`` → ``_smolEventQueue`` pipeline.
+
+    Args:
+        event_type: One of ``"gradients"``, ``"weights"``, ``"rollout"``, ``"weight_sync"``.
+        direction:  ``"out"`` when the local node is *sending* data to peers;
+                    ``"in"``  when the local node has *received* data from peers.
+        arch:       Algorithm identifier: ``"syncps"``, ``"classicdp"``, ``"fsdp"``, ``"grpo"``.
+
+    Each call produces exactly **one** ``[SMOL_EVENT]`` line, so calling this
+    once per peer / per prompt gives one animation burst per exchange — rather
+    than a single burst for the whole batch.
+    """
+    print(f'[SMOL_EVENT] {json.dumps({"type": event_type, "dir": direction, "arch": arch})}', flush=True)

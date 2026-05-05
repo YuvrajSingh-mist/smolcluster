@@ -1,3 +1,4 @@
+"""Token decoding strategies: greedy, top-k, and nucleus (top-p) sampling over logit distributions."""
 import torch
 from transformers import AutoTokenizer
 

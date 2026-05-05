@@ -8,11 +8,11 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import _ctx
-from ._helpers import _get_inference_api_url
-from ._paths import INFERENCE_FILE
-from ._redis import REDIS_UI_KEY, redis_mark
-from ._ssh_config import _lookup_ssh_entry
+from .. import ctx as _ctx
+from ..helpers import _get_inference_api_url
+from ..paths import INFERENCE_FILE
+from ..redis import REDIS_UI_KEY, redis_mark
+from ..ssh_config import _lookup_ssh_entry
 
 logger = logging.getLogger(__name__)
 

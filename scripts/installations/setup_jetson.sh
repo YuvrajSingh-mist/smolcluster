@@ -32,8 +32,8 @@ sudo apt install -y python3-pip python3-venv libopenblas-base libopenmpi-dev pyt
 
 echo ""
 echo "--- Removing any existing user torch packages ---"
-pip3 uninstall -y torch torchvision torchaudio || true
-pip3 uninstall -y torch torchvision torchaudio || true
+uv pip uninstall -y torch torchvision torchaudio || true
+uv pip uninstall -y torch torchvision torchaudio || true
 
 echo ""
 echo "=== Setting up project with uv ==="

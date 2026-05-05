@@ -1,3 +1,4 @@
+"""GRPO rollout generation — queries vLLM workers to sample candidate responses for each prompt."""
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import requests
 import yaml
-from smolcluster.utils.logging_utils import emit_transport_event
+from smolcluster.utils.logging_utils import emit_smol_event
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ def _fetch_n_from_worker(
     if sampling_params:
         api_params.update(sampling_params)
     logger.info("[vllm worker %d] Requesting n=%d completions from %s", worker_rank, n, vllm_url)
-    emit_transport_event("request", algorithm="grpo", transport="http", worker_rank=worker_rank, step=step, n=n)
+    emit_smol_event("rollout", "out", "grpo")
 
     try:
         response = requests.post(vllm_url, json=api_params, timeout=300)
@@ -204,7 +205,7 @@ def _fetch_n_from_worker(
         })
 
         if non_empty:
-            emit_transport_event("response", algorithm="grpo", transport="http", worker_rank=worker_rank, step=step, count=len(non_empty))
+            emit_smol_event("rollout", "in", "grpo")
             logger.info("[vllm worker %d] Got %d/%d non-empty completion(s)", worker_rank, len(non_empty), n)
             for idx, text in enumerate(non_empty):
                 logger.info(
@@ -215,10 +216,10 @@ def _fetch_n_from_worker(
                 rollouts[worker_rank] = non_empty
             return
 
-        emit_transport_event("response", algorithm="grpo", transport="http", worker_rank=worker_rank, step=step, count=0)
+        emit_smol_event("rollout", "in", "grpo")
         logger.warning("[vllm worker %d] All %d completions empty", worker_rank, n)
     except Exception as e:
-        emit_transport_event("response", algorithm="grpo", transport="http", worker_rank=worker_rank, step=step, error="request_failed")
+        emit_smol_event("rollout", "in", "grpo")
         append_vllm_debug_log(
             {
                 "step": step,

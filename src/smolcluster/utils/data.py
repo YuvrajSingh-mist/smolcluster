@@ -1,3 +1,4 @@
+"""Dataset splitting utilities — partitions indices uniquely across workers for distributed data loading."""
 # For spliting the data uniquely across workers
 import torch
 

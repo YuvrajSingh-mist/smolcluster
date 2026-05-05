@@ -1,10 +1,11 @@
+"""_LifecycleMixin — spawns training server + remote SSH workers, and starts inference processes."""
 import asyncio
 import logging
 import os
 import shlex
 
-from ._constants import REMOTE_REPO
-from ._ssh import _build_ssh_target
+from ..constants import REMOTE_REPO
+from ..ssh import _build_ssh_target
 
 logger = logging.getLogger(__name__)
 

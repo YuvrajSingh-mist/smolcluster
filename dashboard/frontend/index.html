@@ -11,12 +11,12 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <!-- Styles -->
-  <link rel="stylesheet" href="/css/base.css">
-  <link rel="stylesheet" href="/css/setup.css">
-  <link rel="stylesheet" href="/css/dashboard.css">
-  <link rel="stylesheet" href="/css/controls.css">
-  <link rel="stylesheet" href="/css/generation.css">
-  <link rel="stylesheet" href="/css/dark.css">
+  <link rel="stylesheet" href="/css/base.css?v=7">
+  <link rel="stylesheet" href="/css/setup.css?v=7">
+  <link rel="stylesheet" href="/css/dashboard.css?v=7">
+  <link rel="stylesheet" href="/css/controls.css?v=7">
+  <link rel="stylesheet" href="/css/generation.css?v=7">
+  <link rel="stylesheet" href="/css/dark.css?v=7">
   <!-- Three.js r128 -->
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -121,10 +121,7 @@
     <div class="topo-wrap">
       <div id="topo3d"></div>
       <div class="topo-tag" id="topo-tag"></div>
-      <div class="topo-legend" id="topo-legend" style="display:none">
-        <div class="leg"><div class="legdot" id="legend-dot-a" style="background:var(--green)"></div><span id="legend-label-a">gradients ↑</span></div>
-        <div class="leg"><div class="legdot" id="legend-dot-b" style="background:var(--accent)"></div><span id="legend-label-b">weights ↓</span></div>
-      </div>
+      <div class="topo-legend" id="topo-legend" style="display:none"></div>
     </div>
 
     <!-- Status bar: connectivity results -->
@@ -196,14 +193,56 @@
           <div class="mslbl">ETA</div>
           <div class="msval" id="m-eta">—</div>
         </div>
-        <div class="mstat">
+        <div class="mstat" data-tip="Wall-clock time since training started.">
+          <div class="mslbl">Elapsed</div>
+          <div class="msval" id="m-elapsed">—</div>
+        </div>
+        <div class="mstat" data-tip="L2 norm of the gradient vector after clipping. High values may indicate instability.">
           <div class="mslbl">Grad Norm</div>
           <div class="msval" id="m-gn">—</div>
         </div>
-        <div class="mstat">
+        <div class="mstat" data-tip="Current learning rate from the optimizer scheduler.">
           <div class="mslbl">LR</div>
           <div class="msval" id="m-lr">—</div>
         </div>
+        <div class="ms-divider"></div>
+        <div class="mstat" data-tip="Training: steps between weight syncs to vLLM workers. Inference: average time between token batches.">
+          <div class="mslbl" id="m-intv-lbl">Sync Intv</div>
+          <div class="msval" id="m-intv">—</div>
+        </div>
+        <div class="mstat" data-tip="Currently live GPU memory allocations (Metal allocator). Reflects tensors actively in use right now.">
+          <div class="mslbl">Mem Active</div>
+          <div class="msval" id="m-mem-active">—</div>
+        </div>
+        <div class="mstat" data-tip="Peak GPU memory usage since the last optimizer step. Resets each step — shows worst-case allocation during forward+backward.">
+          <div class="mslbl">Mem Peak</div>
+          <div class="msval" id="m-mem-peak">—</div>
+        </div>
+        <div class="mstat" data-tip="Estimated outbound bandwidth — prompt tokens sent to vLLM workers per second (Megabits/s).">
+          <div class="mslbl">Send BW</div>
+          <div class="msval" id="m-net-snd-bw">—</div>
+        </div>
+        <div class="mstat" data-tip="Estimated inbound bandwidth — completion tokens received back from vLLM workers per second (Megabits/s).">
+          <div class="mslbl">Recv BW</div>
+          <div class="msval" id="m-net-rcv-bw">—</div>
+        </div>
+        <div class="mstat" data-tip="Average latency per individual vLLM inference request: total rollout time ÷ number of rollouts.">
+          <div class="mslbl">Send Lat</div>
+          <div class="msval" id="m-net-snd-lat">—</div>
+        </div>
+        <div class="mstat" data-tip="Total wall-clock time the training loop blocked waiting for the full rollout batch from all vLLM workers.">
+          <div class="mslbl">Batch Lat</div>
+          <div class="msval" id="m-net-rcv-lat">—</div>
+        </div>
+        <div class="mstat" data-tip="Cumulative prompt token data sent to vLLM workers this step (~2 bytes per token, bfloat16).">
+          <div class="mslbl">Sent MB</div>
+          <div class="msval" id="m-net-snd-mb">—</div>
+        </div>
+        <div class="mstat" data-tip="Cumulative completion token data received from vLLM workers this step (~2 bytes per token, bfloat16).">
+          <div class="mslbl">Rcvd MB</div>
+          <div class="msval" id="m-net-rcv-mb">—</div>
+        </div>
+
         <div class="prog-bar-wrap" id="prog-wrap" style="display:none">
           <div class="prog-labels">
             <span id="prog-lbl">—</span>
@@ -334,37 +373,37 @@
 
 
 <!-- core -->
-<script src="/js/core/helpers.js"></script>
-<script src="/js/core/state.js"></script>
-<script src="/js/core/views.js"></script>
+<script src="/js/core/helpers.js?v=7"></script>
+<script src="/js/core/state.js?v=7"></script>
+<script src="/js/core/views.js?v=7"></script>
 <!-- ui -->
-<script src="/js/ui/setup-tracks.js"></script>
-<script src="/js/ui/ui-persistence.js"></script>
-<script src="/js/ui/actions.js"></script>
+<script src="/js/ui/setup-tracks.js?v=7"></script>
+<script src="/js/ui/ui-persistence.js?v=7"></script>
+<script src="/js/ui/actions.js?v=7"></script>
 <!-- data -->
-<script src="/js/data/sse.js"></script>
-<script src="/js/data/render.js"></script>
-<script src="/js/data/nodes.js"></script>
-<script src="/js/data/metrics.js"></script>
+<script src="/js/data/sse.js?v=7"></script>
+<script src="/js/data/render.js?v=7"></script>
+<script src="/js/data/nodes.js?v=7"></script>
+<script src="/js/data/metrics.js?v=7"></script>
 <!-- log -->
-<script src="/js/log/log.js"></script>
-<script src="/js/log/log-parse.js"></script>
-<script src="/js/log/log-append.js"></script>
+<script src="/js/log/log.js?v=7"></script>
+<script src="/js/log/log-parse.js?v=7"></script>
+<script src="/js/log/log-append.js?v=7"></script>
 <!-- generation -->
-<script src="/js/generation/generation.js"></script>
-<script src="/js/generation/generation-send.js"></script>
+<script src="/js/generation/generation.js?v=7"></script>
+<script src="/js/generation/generation-send.js?v=7"></script>
 <!-- topology -->
-<script src="/js/topology/topology-state.js"></script>
-<script src="/js/topology/topology-scene.js"></script>
-<script src="/js/topology/topology-drag.js"></script>
-<script src="/js/topology/topology-layout.js"></script>
-<script src="/js/topology/topology-nodes.js"></script>
-<script src="/js/topology/topology-connections.js"></script>
-<script src="/js/topology/topology-overlays.js"></script>
-<script src="/js/topology/topology-draw-nodes.js"></script>
-<script src="/js/topology/topology-draw-particles.js"></script>
-<script src="/js/topology/topology-draw.js"></script>
+<script src="/js/topology/topology-state.js?v=7"></script>
+<script src="/js/topology/topology-scene.js?v=7"></script>
+<script src="/js/topology/topology-drag.js?v=7"></script>
+<script src="/js/topology/topology-layout.js?v=7"></script>
+<script src="/js/topology/topology-nodes.js?v=7"></script>
+<script src="/js/topology/topology-connections.js?v=7"></script>
+<script src="/js/topology/topology-overlays.js?v=7"></script>
+<script src="/js/topology/topology-draw-nodes.js?v=7"></script>
+<script src="/js/topology/topology-draw-particles.js?v=7"></script>
+<script src="/js/topology/topology-draw.js?v=7"></script>
 <!-- boot (last) -->
-<script src="/js/core/boot.js"></script>
+<script src="/js/core/boot.js?v=7"></script>
 </body>
 </html>

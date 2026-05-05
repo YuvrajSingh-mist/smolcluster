@@ -1,3 +1,4 @@
+"""Convert a trained GPT-2 shard to Core ML format for on-device inference on Apple Silicon."""
 import os
 from pathlib import Path
 from typing import Optional
@@ -167,7 +168,7 @@ def convert_to_coreml_weights(
     if not isinstance(mlmodel, ct.models.MLModel):
         raise TypeError(f"Expected MLModel, got {type(mlmodel)}")
 
-    os.makedirs(coremlmodel_path, exist_ok=True)
+    os.makedirs(coremlmodel_path, e
     save_path = str(
         coremlmodel_path
         / f"{hf_model_identifier.split('/')[-1]}_rank{local_rank}.mlpackage"

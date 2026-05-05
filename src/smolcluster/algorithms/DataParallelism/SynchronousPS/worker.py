@@ -1,3 +1,4 @@
+"""SynchronousPS training worker — runs local forward/backward pass, sends gradients to the server, and applies Polyak-blended weight updates."""
 import logging
 import math
 import socket
@@ -18,7 +19,7 @@ from smolcluster.utils.common_utils import (
     send_message,
     set_weights,
 )
-from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.logging_utils import emit_smol_event, setup_cluster_logging
 
 try:
     import grove as _grove
@@ -338,11 +339,13 @@ def run_syncps_worker(
             logger.info(
                 f"[Step {step} / {num_epochs * len(train_loader)}] Sending gradients to server"
             )
+            emit_smol_event("gradients", "out", "syncps")
             send_message(sock, ("parameter_server_reduce", step, worker_rank, grads))
 
             # Receive updated weights from server
             logger.info(f"[Step {step}] Waiting for model weights from server")
             data_recv = receive_message(sock)
+            emit_smol_event("weights", "in", "syncps")
             command, recv_step, weights = data_recv
             logger.info(
                 f"[Step {step} / {num_epochs * len(train_loader)}] Received '{command}' from server for step {recv_step}"

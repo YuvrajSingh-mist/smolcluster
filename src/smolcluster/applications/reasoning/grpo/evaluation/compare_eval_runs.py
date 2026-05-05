@@ -1,3 +1,4 @@
+"""CLI tool to compare reward scores across multiple GRPO evaluation runs and print a summary table."""
 #!/usr/bin/env python3
 
 import argparse

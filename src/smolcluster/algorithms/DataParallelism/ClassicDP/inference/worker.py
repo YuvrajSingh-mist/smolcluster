@@ -1,3 +1,4 @@
+"""ClassicDP inference worker — loads a full model replica and serves token-generation requests from the inference server."""
 import logging
 import os
 import socket

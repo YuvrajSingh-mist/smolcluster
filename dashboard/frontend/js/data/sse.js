@@ -71,9 +71,9 @@ function startSSE() {
     const cSig = JSON.stringify(state.connectivity);
     const rSig = JSON.stringify(state.redis || {});
 
-    if (nSig !== _prevNSig) { renderHeader(); renderLeft(); updateButtons(); syncLogFilter(); _prevNSig = nSig; }
+    if (nSig !== _prevNSig) { renderHeader(); renderLeft(); updateButtons(); syncLogFilter(); renderMetrics(); _prevNSig = nSig; }
     if (tSig !== _prevTSig) { renderMetrics(); updateButtons(); _prevTSig = tSig; }
-    if (cSig !== _prevCSig) { renderConnBar(); _prevCSig = cSig; }
+    if (cSig !== _prevCSig) { renderConnBar(); renderMetrics(); _prevCSig = cSig; }
     if (rSig !== _prevRSig) { renderHeader(); _prevRSig = rSig; }
   };
   ssEventSource.onerror = () => { ssEventSource.close(); ssEventSource = null; setTimeout(startSSE, 3000); };

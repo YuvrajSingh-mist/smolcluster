@@ -6,14 +6,14 @@ import subprocess
 
 from fastapi import APIRouter, HTTPException
 
-from . import _ctx
-from ._helpers import _read_json, build_nodes_info
-from ._models import InferenceLaunchRequest, StartRequest
-from ._paths import (
+from .. import ctx as _ctx
+from ..helpers import _read_json, build_nodes_info
+from ..models import InferenceLaunchRequest, StartRequest
+from ..paths import (
     GRAD_INTERVAL, GRAD_PING, GRPO_TRAIN_SCRIPT_FILE,
     INFER_SCRIPT_FILE, METRICS_FILE, TRAIN_CONFIGS_DIR, TRAIN_SCRIPTS_DIR,
 )
-from ._redis import REDIS_UI_KEY, redis_mark
+from ..redis import REDIS_UI_KEY, redis_mark
 from dashboard.node_manager import _build_ssh_target
 
 logger = logging.getLogger(__name__)

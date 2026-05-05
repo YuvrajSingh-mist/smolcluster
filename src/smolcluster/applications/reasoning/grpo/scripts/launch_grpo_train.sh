@@ -414,7 +414,7 @@ elif [[ -n "${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
 fi
 HF_ENV_SETUP+="export HF_HUB_ENABLE_HF_TRANSFER=1; "
 
-TRAIN_CMD="cd \"$PROJECT_DIR\" && ${HF_ENV_SETUP}uv run --group mlx python \"$TRAIN_SCRIPT\""
+TRAIN_CMD="cd \"$PROJECT_DIR\" && ${HF_ENV_SETUP}uv run --extra mlx python \"$TRAIN_SCRIPT\""
 
 echo ""
 echo "Launching GRPO training ($SERVER_HOST, target=$TRAIN_TARGET) ..."

@@ -5,7 +5,7 @@ Pytest test suite for GPT-2 and MoE model implementations.
 ## Installation
 
 ```bash
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 ## Running Tests
@@ -58,7 +58,7 @@ jobs:
     - uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-    - run: pip install -e ".[dev]"
+    - run: uv pip install -e ".[dev]"
     - run: pytest --cov=smolcluster
 ```
 

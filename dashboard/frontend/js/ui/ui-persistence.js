@@ -4,6 +4,7 @@
 let logBuffer = [];          // in-memory mirror of stored log entries
 let _replayingLogs = false;  // suppress re-persisting during replay on boot
 let _uiStateCache = {};      // in-memory copy populated at boot
+let _persistLogTimer = null; // debounce: avoid a POST per log line
 
 async function _uiLoadRemote() {
   try {
@@ -25,7 +26,12 @@ function uiSave(patch) {
 function persistLog(entry) {
   logBuffer.push(entry);
   if (logBuffer.length > 600) logBuffer.splice(0, logBuffer.length - 600);
-  if (!_replayingLogs) uiSave({ logs: logBuffer });
+  if (_replayingLogs) return;
+  // Debounce: flush at most once every 2 s instead of on every line.
+  // During active training batches of 200 lines arrive at once — without
+  // this a single SSE tick would fire 200 POST requests.
+  clearTimeout(_persistLogTimer);
+  _persistLogTimer = setTimeout(() => uiSave({ logs: logBuffer }), 2000);
 }
 
 async function loadUI() {

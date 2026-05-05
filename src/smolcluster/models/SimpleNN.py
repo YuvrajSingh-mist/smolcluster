@@ -1,3 +1,4 @@
+"""Simple MNIST MLP baseline used for quick distributed-training smoke tests."""
 # model.py
 import torch.nn as nn
 

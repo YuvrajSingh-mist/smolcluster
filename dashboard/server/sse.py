@@ -5,8 +5,8 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from . import _ctx
-from ._redis import REDIS_EVENTS_KEY
+from . import ctx
+from .redis import REDIS_EVENTS_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ async def sse_events(request: Request):
             if await request.is_disconnected():
                 break
             try:
-                raw = await _ctx.redis.get(REDIS_EVENTS_KEY)
+                raw = await ctx.redis.get(REDIS_EVENTS_KEY)
                 if raw:
                     yield f"data: {raw}\n\n"
             except Exception:
@@ -38,7 +38,7 @@ async def sse_logs(request: Request):
     async def gen():
         # Send recent history first so the UI doesn't miss logs from before connect.
         try:
-            history = await _ctx.redis.xrevrange("smolcluster:logs", "+", "-", count=500)
+            history = await ctx.redis.xrevrange("smolcluster:logs", "+", "-", count=500)
             if history:
                 history.reverse()
                 lines = [
@@ -58,7 +58,7 @@ async def sse_logs(request: Request):
             if await request.is_disconnected():
                 break
             try:
-                results = await _ctx.redis.xread(
+                results = await ctx.redis.xread(
                     {"smolcluster:logs": last_id}, count=200, block=400,
                 )
                 if results:

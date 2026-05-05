@@ -1,4 +1,6 @@
+"""ClassicDP all-reduce worker — computes gradients locally, reduces across peers via grove, and steps the optimizer."""
 import gc
+import json
 import logging
 import math
 import socket
@@ -21,7 +23,7 @@ from smolcluster.utils.common_utils import (
     send_message,
     set_gradients,
 )
-from smolcluster.utils.logging_utils import setup_cluster_logging
+from smolcluster.utils.logging_utils import emit_smol_event, setup_cluster_logging
 
 try:
     import grove as _grove
@@ -629,7 +631,7 @@ def run_classicdp_worker(
             logger.info(
                 "Performing all-gather: broadcasting local gradients to all peers"
             )
-
+            emit_smol_event("gradients", "out", "classicdp")
             for peer_rank, peer_socket in outbound_worker_sockets.items():
                 send_message(
                     peer_socket,
@@ -695,6 +697,7 @@ def run_classicdp_worker(
                 )
 
                 # Scatter-reduce: broadcast averaged gradients to all peers via outbound connections
+                emit_smol_event("weights", "out", "classicdp")
                 for peer_rank, peer_socket in outbound_worker_sockets.items():
                     send_message(
                         peer_socket,
@@ -904,6 +907,7 @@ def run_classicdp_worker(
                         f"[Worker {worker_rank} Step {step}] Network: Send={network_stats.get('send_bandwidth_mbps', 0):.2f}Mbps, "
                         f"Recv={network_stats.get('recv_bandwidth_mbps', 0):.2f}Mbps"
                     )
+                    print(f'[SMOL_METRICS] {json.dumps({k: round(v, 3) for k, v in network_stats.items() if isinstance(v, (int, float))})}', flush=True)
 
             # Evaluation
             if step % eval_steps == 0:

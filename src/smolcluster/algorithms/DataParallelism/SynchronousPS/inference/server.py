@@ -1,3 +1,4 @@
+"""SynchronousPS inference server — loads a model shard, coordinates token generation across workers, and streams results."""
 import logging
 import os
 import socket

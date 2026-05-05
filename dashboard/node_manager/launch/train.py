@@ -1,3 +1,4 @@
+"""_TrainLaunchMixin — rewrites the algorithm's cluster config YAML with live node topology then runs the training launch script."""
 import asyncio
 import io
 import logging
@@ -8,7 +9,7 @@ from typing import Dict
 
 from ruamel.yaml import YAML as _YAML
 
-from ._constants import _TRAINING_ALGO_MAP
+from ..constants import _TRAINING_ALGO_MAP
 
 logger = logging.getLogger(__name__)
 

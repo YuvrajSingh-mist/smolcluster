@@ -66,7 +66,7 @@ def _discover_mdns(cluster: str, world_size: int, timeout: float):
     except ImportError:
         raise ImportError(
             "grove not found. Expected at <repo>/grove/. "
-            "Run: cd grove && pip install -e ."
+            "Run: cd grove && uv pip install -e ."
         )
 
     os.environ.setdefault("GROVE_IS_COORDINATOR", "0")

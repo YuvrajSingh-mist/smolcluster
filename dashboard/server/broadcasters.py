@@ -5,13 +5,13 @@ import logging
 import time
 from pathlib import Path
 
-from . import _ctx
-from ._helpers import _self_node, _ssh_aliases_snapshot, canonicalize_log_hostname, _read_json
-from ._paths import (
+from . import ctx
+from .helpers import _self_node, _ssh_aliases_snapshot, canonicalize_log_hostname, _read_json
+from .paths import (
     CLUSTER_LOG_DIR, GRAD_INTERVAL, GRAD_PING, LAST_TOKEN, METRICS_FILE,
     INFERENCE_FILE, TOKEN_INTERVAL, TOKEN_PING,
 )
-from ._redis import REDIS_EVENTS_KEY, redis_mark, redis_snapshot
+from .redis import REDIS_EVENTS_KEY, redis_mark, redis_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -24,19 +24,19 @@ async def events_broadcaster() -> None:
     All SSE /api/events connections read from the cache key — one compute, N readers."""
     while True:
         try:
-            running = _ctx.node_manager.snapshot_processes()
+            running = ctx.node_manager.snapshot_processes()
             training_active = any(
                 p.get("role") in ("server", "worker", "training_launcher")
                 for p in running.values()
             )
             payload = json.dumps({
                 "nodes": {
-                    "discovered":  {_ctx.server_hostname: _self_node(), **dict(_ctx.static_nodes)},
-                    "selected":    _ctx.node_manager.snapshot_selected(),
+                    "discovered":  {ctx.server_hostname: _self_node(), **dict(ctx.static_nodes)},
+                    "selected":    ctx.node_manager.snapshot_selected(),
                     "running":     running,
-                    "usernames":   dict(_ctx.probed),
+                    "usernames":   dict(ctx.probed),
                     "ssh_aliases": _ssh_aliases_snapshot(),
-                    "node_os":     dict(_ctx.node_os),
+                    "node_os":     dict(ctx.node_os),
                 },
                 "training":          _read_json(METRICS_FILE) if training_active else None,
                 "connectivity":      _read_json(INFERENCE_FILE),
@@ -47,7 +47,7 @@ async def events_broadcaster() -> None:
                 "grad_interval_ms":  float(GRAD_INTERVAL.read_text())  if GRAD_INTERVAL.exists()  else None,
                 "redis":             redis_snapshot(),
             })
-            await _ctx.redis.set(REDIS_EVENTS_KEY, payload, ex=5)
+            await ctx.redis.set(REDIS_EVENTS_KEY, payload, ex=5)
             redis_mark("events cache write", op_key="events_cache_writes")
         except Exception as exc:
             logger.debug(f"[dashboard] events broadcaster: {exc}")
@@ -119,12 +119,12 @@ async def log_broadcaster() -> None:
             merged: list[dict] = []
             while True:
                 try:
-                    merged.append(_ctx.node_manager._queue.get_nowait())
+                    merged.append(ctx.node_manager._queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
             merged.extend(_read_local_cluster_logs(local_log_offsets))
             if merged:
-                pipe = _ctx.redis.pipeline()
+                pipe = ctx.redis.pipeline()
                 for entry in merged:
                     if any(m in entry.get("line", "") for m in _GRAD_SIGNAL_MARKERS):
                         try:

@@ -1,3 +1,4 @@
+"""SynchronousPS inference worker — holds a model shard and processes forward-pass requests from the inference server."""
 import logging
 import os
 import socket

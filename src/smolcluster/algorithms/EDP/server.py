@@ -1,3 +1,4 @@
+"""EDP (Elastic Data Parallelism) server — coordinates gradient exchange and weight broadcast for elastic worker pools."""
 import gc
 import logging
 import math

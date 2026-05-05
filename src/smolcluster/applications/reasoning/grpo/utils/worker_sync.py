@@ -41,6 +41,8 @@ import yaml
 from mlx.utils import tree_flatten
 import os
 
+from smolcluster.utils.logging_utils import emit_smol_event
+
 logger = logging.getLogger(__name__)
 
 _module_dir = Path(__file__).parent
@@ -388,6 +390,7 @@ def _sync_single_worker(
     logger.info("[weight_sync] worker %d (%s): stale remote weights cleaned", rank, hostname)
 
     # 4. Copy weights or LoRA adapters to the worker.
+    emit_smol_event("weight_sync", "out", "grpo")
     if is_lora:
         _run_ssh(hostname, f"mkdir -p {shlex.quote(remote_adapter_dir)}")
         for fname in ["adapters.safetensors", "adapter_config.json"]:
@@ -423,6 +426,7 @@ def _sync_single_worker(
     retries = int(sync_cfg.get("health_retries", 30))
     interval = int(sync_cfg.get("health_interval", 5))
     _wait_for_health(health_url, retries, interval)
+    emit_smol_event("weight_sync", "in", "grpo")
     logger.info("[weight_sync] worker %d (%s): ready", rank, hostname)
 
 

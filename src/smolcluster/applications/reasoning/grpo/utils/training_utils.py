@@ -277,14 +277,19 @@ class RolloutPrefetcher:
         self._thread: Optional[threading.Thread] = None
 
     def submit(self, prompts: List[str], answers: List[str], step: Optional[int] = None) -> None:
+        import time as _time
+        _start = _time.monotonic()
+
         def _run() -> None:
             result = self._fetch_fn(prompts, answers, step)
-            self._queue.put(result)
+            elapsed = _time.monotonic() - _start
+            self._queue.put((result, elapsed))
 
         self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
 
-    def get(self) -> List[Tuple[List[str], str]]:
+    def get(self) -> Tuple[List[Tuple[List[str], str]], float]:
+        """Return ``(rollouts, rollout_time_s)`` — blocks until the background fetch finishes."""
         return self._queue.get()
 
     def flush(self) -> None:

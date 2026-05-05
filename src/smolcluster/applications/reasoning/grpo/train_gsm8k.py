@@ -1,3 +1,4 @@
+"""GRPO training loop for GSM8K — fine-tunes a language model with group relative policy optimization on math reasoning."""
 
 
 import json
@@ -78,6 +79,7 @@ _DASHBOARD_METRICS_FILE = Path("/tmp/smolcluster_metrics.json")
 _DASHBOARD_GRAD_PING = Path("/tmp/smolcluster_grad_ping")
 _DASHBOARD_GRAD_INTERVAL = Path("/tmp/smolcluster_grad_interval_ms")
 _LAST_DASHBOARD_GRAD_TS: Optional[float] = None
+_last_net_stats: Dict[str, float] = {}
 
 
 def _append_answers_log(record: dict) -> None:
@@ -87,7 +89,8 @@ def _append_answers_log(record: dict) -> None:
 
 
 def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: int,
-                               grad_norm: float, lr: float, skipped_update: bool) -> None:
+                               grad_norm: float, lr: float, skipped_update: bool,
+                               net_stats: Optional[Dict[str, float]] = None) -> None:
     global _LAST_DASHBOARD_GRAD_TS
     try:
         now = time.time()
@@ -99,6 +102,11 @@ def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: 
         token_count = float(metrics.get("generation_token_len_mean", 0) or 0) * float(metrics.get("num_rollouts", 0) or 0)
         if step_time_s and step_time_s > 0.0 and token_count > 0.0:
             est_throughput = round(token_count / step_time_s, 1)
+        rollout_time_s = float(metrics.get("rollout_time_s") or 0)
+        _tbase = rollout_time_s if rollout_time_s > 0.0 else step_time_s
+        prompt_count = float(metrics.get("prompt_token_len_mean", 0) or 0) * float(metrics.get("num_rollouts", 0) or 0)
+        tok_sec_in  = round(prompt_count / _tbase, 1) if (_tbase and prompt_count > 0.0) else est_throughput
+        tok_sec_out = round(token_count   / _tbase, 1) if (_tbase and token_count  > 0.0) else est_throughput
         eta_remaining = None
         if step_time_s and step_time_s > 0.0 and total_steps and total_steps > 0:
             steps_left = max(0, int(total_steps) - int(global_step))
@@ -108,19 +116,25 @@ def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: 
             s = eta_seconds % 60
             eta_remaining = f"{h:02d}:{m:02d}:{s:02d}"
 
+        _ns = net_stats or {}
         payload = {
             "step": global_step,
             "total_steps": total_steps,
             "loss": float(metrics.get("loss", 0.0)),
             "throughput": est_throughput,
-            "tok_sec_in": est_throughput,
-            "tok_sec_out": est_throughput,
+            "tok_sec_in": tok_sec_in,
+            "tok_sec_out": tok_sec_out,
             "grad_norm": safe_grad_norm,
             "lr": lr,
             "eta_remaining": eta_remaining,
             "algorithm": "grpo",
             "running": True,
             "reward": float(metrics.get("reward", 0.0)),
+            # Metal GPU memory (bytes → MB)
+            "active_mem_mb": round(mx.metal.get_active_memory() / 1e6, 1) if mx.metal.is_available() else 0.0,
+            "peak_mem_mb":   round(mx.metal.get_peak_memory()   / 1e6, 1) if mx.metal.is_available() else 0.0,
+            # network/* keys match get_network_metrics() field names exactly
+            **{k: v for k, v in _ns.items() if isinstance(v, (int, float))},
         }
         _DASHBOARD_METRICS_FILE.write_text(json.dumps(payload))
         print(f"[SMOL_METRICS] {json.dumps(payload)}", flush=True)
@@ -640,7 +654,8 @@ def train(
             current_rollout_step = rollout_step + 1
             rollout_step = current_rollout_step
             # Collect prefetched rollouts (blocks only on cold-start or very fast compute)
-            pre = prefetcher.get() if prefetcher else None
+            _pfetch = prefetcher.get() if prefetcher else None
+            pre, _prefetch_time_s = _pfetch if _pfetch is not None else (None, None)
             # Immediately arm next step — runs concurrently with all compute below
             next_idx = step_in_epoch + 1
             if prefetcher and next_idx < total_steps_in_epoch:
@@ -760,6 +775,8 @@ def train(
                 for k in accum_metrics[0]
                 if not isinstance(accum_metrics[0][k], dict)
             }
+            if _prefetch_time_s is not None and pre is not None:
+                metrics["rollout_time_s"] = _prefetch_time_s
             # -------------------------------------------------------
 
             # Save checkpoint weights at a configurable interval.
@@ -846,6 +863,22 @@ def train(
                 },
                 step=global_step,
             )
+            # Recv network stats: rollout completions received from vLLM workers.
+            _rollout_ms = float(metrics.get("rollout_time_s", 0)) * 1000
+            if _rollout_ms > 0:
+                _total_tokens = float(metrics.get("num_rollouts", 0)) * float(metrics.get("generation_token_len_mean", 0))
+                _recv_mb = _total_tokens * 2 / 1e6  # ~2 bytes per token
+                _last_net_stats["avg_recv_latency_ms"] = round(_rollout_ms, 1)
+                _last_net_stats["recv_bandwidth_mbps"] = round((_recv_mb * 8) / max(0.001, _rollout_ms / 1000), 3) if _recv_mb > 0 else 0.0
+                _last_net_stats["total_recv_mb"] = round(_recv_mb, 3)
+                # Send network stats: prompt requests sent to vLLM workers each step.
+                _prompt_tokens = float(metrics.get("num_rollouts", 0)) * float(metrics.get("prompt_token_len_mean", 0))
+                _send_mb = _prompt_tokens * 2 / 1e6
+                _per_req_lat_ms = round(_rollout_ms / max(1.0, float(metrics.get("num_rollouts", 1))), 1)
+                _last_net_stats["avg_send_latency_ms"] = _per_req_lat_ms  # per-request avg inference latency
+                _last_net_stats["send_bandwidth_mbps"] = round((_send_mb * 8) / max(0.001, _rollout_ms / 1000), 3) if _send_mb > 0 else 0.0
+                _last_net_stats["total_send_mb"] = round(_send_mb, 3)
+
             _publish_dashboard_metrics(
                 metrics,
                 global_step=global_step,
@@ -853,6 +886,7 @@ def train(
                 grad_norm=grad_norm,
                 lr=_optimizer_lr(optimizer, config),
                 skipped_update=skipped_update,
+                net_stats=dict(_last_net_stats),
             )
 
             if config.get("do_eval", False) and global_step % val_steps == 0:

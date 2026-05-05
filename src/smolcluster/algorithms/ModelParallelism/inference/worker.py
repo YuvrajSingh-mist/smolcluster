@@ -1,3 +1,4 @@
+"""ModelParallelism inference worker — holds a model shard and processes activation tensors forwarded from the inference server."""
 import logging
 import socket
 import subprocess

@@ -1,3 +1,4 @@
+"""smolcluster utilities package."""
 from .common_utils import (
     InferenceMetrics,
     NetworkMetrics,

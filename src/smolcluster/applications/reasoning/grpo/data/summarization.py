@@ -1,3 +1,4 @@
+"""CNN/DailyMail summarization dataset loader — formats article/summary pairs for GRPO training."""
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple

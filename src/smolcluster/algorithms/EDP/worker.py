@@ -1,3 +1,4 @@
+"""EDP worker — trains a local replica, pushes gradients to the EDP server, and pulls merged weights each step."""
 import logging
 import math
 import os

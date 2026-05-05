@@ -1,3 +1,4 @@
+"""ModelParallelism tablet inference worker — lightweight shard variant optimized for smaller edge devices (tablets)."""
 import logging
 import socket
 import subprocess

@@ -1,3 +1,4 @@
+"""ModelParallelism inference server — coordinates multi-shard token generation and assembles final logits."""
 import gc
 import heapq
 import logging

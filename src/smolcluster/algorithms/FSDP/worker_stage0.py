@@ -1,3 +1,4 @@
+"""FSDP stage-0 worker — full-precision baseline with no parameter sharding, used for correctness comparison."""
 import gc
 import logging
 import math

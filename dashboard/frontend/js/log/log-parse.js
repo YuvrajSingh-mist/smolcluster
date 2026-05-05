@@ -1,38 +1,17 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Log parsing helpers — called from appendLog
 // ════════════════════════════════════════════════════════════════════════════
-
-/** Handle [TRANSPORT_EVENT] JSON embedded in a log line. */
-function _parseTransportEvent(line) {
-  const m = line.match(/\[TRANSPORT_EVENT\]\s*(\{.+\})/);
-  if (!m) return;
-  try {
-    const io = JSON.parse(m[1]);
-    const phase = String(io.phase || io.event || io.type || '').toLowerCase();
-    if (phase === 'request' || phase === 'req' || phase === 'outbound' || phase === 'send') {
-      _markTrainIoRequestEvent();
-    } else if (phase === 'response' || phase === 'resp' || phase === 'inbound' || phase === 'recv' || phase === 'receive') {
-      _markTrainIoResponseEvent();
-    }
-  } catch (e) {}
+let _renderMetricsTimer = null;
+function _scheduleRenderMetrics() {
+  clearTimeout(_renderMetricsTimer);
+  _renderMetricsTimer = setTimeout(renderMetrics, 80);
 }
 
-/** Pattern-based transport event detection (no structured marker needed). */
-function _checkTransportPatterns(line) {
-  const lowerLine = String(line || '').toLowerCase();
-  const looksLikeRequest =
-    (/\brequest\b/i.test(line) && /\bn=\d+/i.test(line) && /vllm|worker/i.test(line))
-    || /request n=\d+ comple/i.test(lowerLine)
-    || /\b(dispatch|sending|send|submit|submitted)\b.*\b(prompt|rollout|batch|request|rpc)\b/.test(lowerLine)
-    || /\b(prompt|rollout|batch|request|rpc)\b.*\b(to|->)\b.*\b(worker|server|rank|node)\b/.test(lowerLine);
-  const looksLikeResponse =
-    /got\s+\d+\/\d+\s+non-empty\s+completion/i.test(lowerLine)
-    || /all workers done\.\s*\d+\s+non-empty/i.test(lowerLine)
-    || /received\s+\d+\s+usable/i.test(lowerLine)
-    || /\b(received|recv|returned|response|reply)\b.*\b(result|completion|rollout|batch|token|output)\b/.test(lowerLine)
-    || /\b(result|completion|rollout|batch|output)\b.*\b(from|<-|back)\b.*\b(worker|server|rank|node)\b/.test(lowerLine);
-  if (looksLikeRequest)  _markTrainIoRequestEvent();
-  if (looksLikeResponse) _markTrainIoResponseEvent();
+/** Handle [SMOL_EVENT] JSON — the authoritative animation trigger. */
+function _parseSmolEvent(line) {
+  const m = line.match(/\[SMOL_EVENT\]\s*(\{.+\})/);
+  if (!m) return;
+  try { _handleSmolEvent(JSON.parse(m[1])); } catch (e) {}
 }
 
 /**
@@ -41,7 +20,7 @@ function _checkTransportPatterns(line) {
  */
 function _parseTrainingLogLine(line) {
   const lowerLine = String(line || '').toLowerCase();
-  if (!/step|loss|tok\/s|gradient norm|grad_norm|\blr\b|it\/s|eta/.test(lowerLine)) return;
+  if (!/step|loss|tok\/s|gradient norm|grad_norm|\blr\b|it\/s|eta|elapsed/.test(lowerLine)) return;
   let dirty = false;
 
   const stepTotalMatch = line.match(/\[step\s+(\d+)\s*\/\s*(\d+)\]/i) || line.match(/step:\s*(\d+)\s*\/\s*(\d+)/i);
@@ -86,6 +65,12 @@ function _parseTrainingLogLine(line) {
     if (etaText) { trainingFallbackMetrics.eta_tqdm = etaText; dirty = true; }
   }
 
+  const tqdmElapsedMatch = line.match(/\b\d+%\|[^|]*\|\s*\d+\/\d+\s*\[\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\s*</);
+  if (tqdmElapsedMatch) {
+    const elapsedText = String(tqdmElapsedMatch[1] || '').trim();
+    if (elapsedText) { trainingFallbackMetrics.elapsed_tqdm = elapsedText; dirty = true; }
+  }
+
   const etaMatch =
     line.match(/\beta(?:\s*remaining)?\s*[:=]\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)/i)
     || line.match(/\[[^\]]*?<\s*([^,\]]+)/);
@@ -93,6 +78,17 @@ function _parseTrainingLogLine(line) {
     const etaText = String(etaMatch[1]).trim().replace(/^<+/, '');
     if (etaText && !trainingFallbackMetrics.eta_tqdm) {
       trainingFallbackMetrics.eta_remaining = etaText;
+      dirty = true;
+    }
+  }
+
+  const elapsedMatch =
+    line.match(/\belapsed(?:\s*time)?\s*[:=]\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)/i)
+    || line.match(/\[[^\]]*?\b(elapsed)\s*[=:]\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)[^\]]*\]/i);
+  if (elapsedMatch) {
+    const elapsedText = String(elapsedMatch[2] || elapsedMatch[1] || '').trim();
+    if (elapsedText && !trainingFallbackMetrics.elapsed_tqdm) {
+      trainingFallbackMetrics.elapsed = elapsedText;
       dirty = true;
     }
   }
@@ -105,6 +101,6 @@ function _parseTrainingLogLine(line) {
 
   if (dirty) {
     trainingFallbackMetrics.algorithm ||= _activeAlgo || $('algo-sel').value;
-    renderMetrics();
+    _scheduleRenderMetrics();
   }
 }

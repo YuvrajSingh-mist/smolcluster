@@ -1,3 +1,4 @@
+"""Shared constants for the node manager: remote repo path, log sanitizer, and training algorithm map."""
 import re
 
 REMOTE_REPO = "~/smolcluster"

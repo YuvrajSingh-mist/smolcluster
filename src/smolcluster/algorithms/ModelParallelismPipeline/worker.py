@@ -1,3 +1,4 @@
+"""Pipeline-parallel worker — holds one pipeline stage, exchanges activations/gradients with adjacent stage workers."""
 import gc
 import logging
 import math

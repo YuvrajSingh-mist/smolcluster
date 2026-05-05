@@ -1,3 +1,4 @@
+"""ModelParallelism training server — orchestrates forward/backward passes across tensor-parallel worker shards."""
 import gc
 import heapq
 import logging

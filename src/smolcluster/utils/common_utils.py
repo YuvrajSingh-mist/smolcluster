@@ -1,3 +1,4 @@
+"""Shared socket-based messaging helpers and gradient/weight extraction utilities used across training algorithms."""
 import pickle
 import socket
 import struct
@@ -6,7 +7,7 @@ import logging
 from copy import deepcopy
 from typing import Any, Optional
 import torch
-from smolcluster.utils.logging_utils import emit_transport_event
+from smolcluster.utils.logging_utils import emit_smol_event, emit_transport_event
         
 # Module logger
 logger = logging.getLogger(__name__)
@@ -238,7 +239,10 @@ def send_tensor(sock, tensor: torch.Tensor):
 
 
 def send_message(
-    sock: socket.SocketType, message: Any, buffer_size_mb: Optional[int] = None
+    sock: socket.SocketType,
+    message: Any,
+    buffer_size_mb: Optional[int] = None,
+    smol_event: Optional[dict] = None,
 ) -> None:
     """Send a message with optional buffer size configuration and metrics tracking.
 
@@ -246,6 +250,10 @@ def send_message(
         sock: Socket to send on
         message: Message to send (will be pickled)
         buffer_size_mb: Buffer size in MB (None = use 4MB default)
+        smol_event: Optional dict with ``type`` and ``arch`` keys.  When provided,
+            emits a ``[SMOL_EVENT]`` dashboard animation event with ``dir="out"``
+            so the topology view shows an outbound particle burst for this send.
+            Example: ``{"type": "gradients", "arch": "syncps"}``
     """
     start_time = time.time()
 
@@ -262,6 +270,9 @@ def send_message(
     _network_metrics.record_buffer_size(len(data))
     sock.sendall(struct.pack(">I", len(data)) + data)
 
+    if smol_event:
+        emit_smol_event(smol_event["type"], "out", smol_event["arch"])
+
     cmd = message[0] if isinstance(message, (tuple, list)) and message else ""
     emit_transport_event("request", transport="socket", command=cmd)
 
@@ -271,13 +282,19 @@ def send_message(
 
 
 def receive_message(
-    sock: socket.SocketType, buffer_size_mb: Optional[int] = None
+    sock: socket.SocketType,
+    buffer_size_mb: Optional[int] = None,
+    smol_event: Optional[dict] = None,
 ) -> Optional[dict]:
     """Receive a message with optional buffer size configuration and metrics tracking.
 
     Args:
         sock: Socket to receive from
         buffer_size_mb: Buffer size in MB (None = use 4MB default)
+        smol_event: Optional dict with ``type`` and ``arch`` keys.  When provided,
+            emits a ``[SMOL_EVENT]`` dashboard animation event with ``dir="in"``
+            so the topology view shows an inbound particle burst for this receive.
+            Example: ``{"type": "weights", "arch": "syncps"}``
 
     Returns:
         Unpickled message or None if socket closed
@@ -316,6 +333,9 @@ def receive_message(
         remaining -= len(chunk)
 
     result = pickle.loads(data)
+
+    if smol_event:
+        emit_smol_event(smol_event["type"], "in", smol_event["arch"])
 
     cmd = result[0] if isinstance(result, (tuple, list)) and result else ""
     emit_transport_event("response", transport="socket", command=cmd)

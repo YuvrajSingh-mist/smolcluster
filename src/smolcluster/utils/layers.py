@@ -1,3 +1,4 @@
+"""Custom neural-network layer helpers and HuggingFace model sharding utilities for distributed inference."""
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple

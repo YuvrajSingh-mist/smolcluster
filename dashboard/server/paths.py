@@ -1,7 +1,7 @@
 """File-system path constants used across the dashboard server."""
 from pathlib import Path
 
-FRONTEND_DIR  = Path(__file__).resolve().parents[2] / "frontend"
+FRONTEND_DIR  = Path(__file__).resolve().parents[1] / "frontend"
 
 # /tmp sentinel files written by training/inference processes
 METRICS_FILE    = Path("/tmp/smolcluster_metrics.json")
@@ -12,10 +12,10 @@ TOKEN_INTERVAL  = Path("/tmp/smolcluster_token_interval_ms")
 GRAD_PING       = Path("/tmp/smolcluster_grad_ping")
 GRAD_INTERVAL   = Path("/tmp/smolcluster_grad_interval_ms")
 
-CLUSTER_LOG_DIR = Path(__file__).resolve().parents[3] / "logging" / "cluster-logs"
+CLUSTER_LOG_DIR = Path(__file__).resolve().parents[2] / "logging" / "cluster-logs"
 
 # Repository paths (one level above the dashboard/ package)
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 INFER_CONFIG_FILE = (
     _REPO_ROOT / "src" / "smolcluster" / "configs" / "inference" / "cluster_config_inference.yaml"

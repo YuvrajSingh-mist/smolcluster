@@ -64,9 +64,11 @@ select {
 /* Training metrics strip */
 #metrics-strip {
   display: none;
-  padding: 10px 20px 8px; gap: 14px; flex-wrap: wrap;
+  padding: 10px 20px 8px; gap: 14px;
+  flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
   align-items: center; border-bottom: 1px solid var(--line); flex-shrink: 0;
 }
+#metrics-strip::-webkit-scrollbar { display: none; }
 #metrics-strip.show { display: flex; }
 .mstat {
   display: flex;
@@ -76,15 +78,54 @@ select {
   border-radius: 0;
   background: transparent;
   border: none;
-  min-width: 84px;
+  min-width: 72px;
+  flex-shrink: 0;
+  position: relative;
+  cursor: default;
+}
+
+/* Hover tooltip */
+.mstat[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 240px;
+  padding: 7px 11px;
+  background: rgba(10, 22, 20, 0.93);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: rgba(255,255,255,0.82);
+  font-size: 11px;
+  font-family: 'Inter', sans-serif;
+  font-weight: 400;
+  line-height: 1.45;
+  border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 9999;
+  transform: translateX(-50%) translateY(4px);
+}
+.mstat[data-tip]:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 .mslbl { font-size: 9px; font-weight: 700; letter-spacing: .8px;
-         text-transform: uppercase; color: var(--ink-3); }
+         text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
 .msval { font-size: 17px; font-weight: 700;
-         font-family: 'IBM Plex Mono', monospace; color: var(--ink); line-height: 1; }
+         font-family: 'IBM Plex Mono', monospace; color: var(--ink); line-height: 1; white-space: nowrap; }
 .mssub { font-size: 9.5px; color: var(--ink-3); }
+.ms-divider { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; flex-shrink: 0; }
 
-.prog-bar-wrap { flex: 1; min-width: 160px; display: flex; flex-direction: column; gap: 4px; }
+.prog-bar-wrap { flex: 1 1 220px; min-width: 220px; display: flex; flex-direction: column; gap: 4px; }
 .prog-labels { display: flex; justify-content: space-between; font-size: 10.5px; }
 .prog-bg { background: var(--line2); border-radius: 99px; height: 6px; overflow: hidden; }
 .prog-fill {

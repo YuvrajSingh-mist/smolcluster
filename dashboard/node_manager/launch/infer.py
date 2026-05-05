@@ -1,3 +1,4 @@
+"""_InferLaunchMixin — rewrites cluster_config_inference.yaml with live node topology then runs the inference launch script."""
 import asyncio
 import io
 import logging

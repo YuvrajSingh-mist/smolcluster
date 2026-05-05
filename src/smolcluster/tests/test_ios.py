@@ -1,3 +1,4 @@
+"""Tests for iOS/on-device inference metrics and network statistics collection."""
 import socket
 
 import numpy as np
