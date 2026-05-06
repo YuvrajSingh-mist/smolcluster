@@ -60,8 +60,11 @@ function draw(ts) {
   // ── Connections ────────────────────────────────────────────────────────────
   _drawConnections(server, workers, isActive, isClassicDP);
 
-  // ── Particle spawning (event-driven — drains _smolEventQueue immediately) ──
+  // ── Particle spawning (event-driven) ──────────────────────────────────────
+  // Step 1: convert new SMOL_EVENTs into deferred spawn-queue entries.
   _processSmolEvents(server, workers);
+  // Step 2: fire one wave of queued particles this frame (3-frame gap between waves).
+  _drainSpawnQueue();
 
   // Clear particles when cluster goes idle
   if (!isActive) _clearAllParticles();

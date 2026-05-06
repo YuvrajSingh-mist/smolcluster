@@ -16,9 +16,16 @@ let _tokenIntervalMs = 200;
 // ── Typed event queue ────────────────────────────────────────────────────────
 // Each entry: { type: 'gradients'|'weights'|'rollout'|'weight_sync',
 //               dir:  'in'|'out',
-//               arch: 'syncps'|'classicdp'|'fsdp'|'grpo' }
-// The draw loop drains this every frame and spawns particles immediately.
+//               arch: 'syncps'|'classicdp'|'fsdp'|'grpo',
+//               count: number }
+// The draw loop drains this every frame.
 let _smolEventQueue = [];
+
+// ── Deferred particle spawn queue ─────────────────────────────────────────────
+// Each entry: { fp, tp, lane, col, sz, phase, delay }
+// Particles are spawned one wave at a time (every _SPAWN_FRAMES_GAP frames)
+// so each rollout/packet gets its own clearly visible journey from t=0.
+let _particleSpawnQueue = [];
 
 // RTT tracking per event type (for metrics display only).
 const _evOutTs = {};

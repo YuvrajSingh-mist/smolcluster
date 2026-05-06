@@ -251,7 +251,7 @@ def emit_transport_event(phase: str, **fields) -> None:
     print(f"[TRANSPORT_EVENT] {json.dumps(payload)}", flush=True)
 
 
-def emit_smol_event(event_type: str, direction: str, arch: str) -> None:
+def emit_smol_event(event_type: str, direction: str, arch: str, count: int = 1) -> None:
     """Emit a dashboard particle-animation event.
 
     This is the canonical way to trigger topology animations in the dashboard.
@@ -263,9 +263,12 @@ def emit_smol_event(event_type: str, direction: str, arch: str) -> None:
         direction:  ``"out"`` when the local node is *sending* data to peers;
                     ``"in"``  when the local node has *received* data from peers.
         arch:       Algorithm identifier: ``"syncps"``, ``"classicdp"``, ``"fsdp"``, ``"grpo"``.
+        count:      Number of parallel data items in this exchange (e.g. num_rollouts).
+                    The JS side spawns ``count`` staggered particles so each item
+                    gets its own visible packet animation.
 
     Each call produces exactly **one** ``[SMOL_EVENT]`` line, so calling this
     once per peer / per prompt gives one animation burst per exchange — rather
     than a single burst for the whole batch.
     """
-    print(f'[SMOL_EVENT] {json.dumps({"type": event_type, "dir": direction, "arch": arch})}', flush=True)
+    print(f'[SMOL_EVENT] {json.dumps({"type": event_type, "dir": direction, "arch": arch, "count": max(1, int(count))})}', flush=True)

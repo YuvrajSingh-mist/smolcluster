@@ -673,7 +673,7 @@ def train(
             else None
         )
         if prefetcher and epoch_batches:
-            emit_smol_event("rollout", "out", "grpo")
+            emit_smol_event("rollout", "out", "grpo", count=int(config["num_rollouts"]))
             prefetcher.submit(*epoch_batches[0], step=rollout_step + 1)
             logger.info("Prefetcher armed for epoch %d step 0.", epoch + 1)
 
@@ -684,11 +684,11 @@ def train(
             _pfetch = prefetcher.get() if prefetcher else None
             pre, _prefetch_time_s = _pfetch if _pfetch is not None else (None, None)
             if pre is not None:
-                emit_smol_event("rollout", "in", "grpo")
+                emit_smol_event("rollout", "in", "grpo", count=int(config["num_rollouts"]))
             # Immediately arm next step — runs concurrently with all compute below
             next_idx = step_in_epoch + 1
             if prefetcher and next_idx < total_steps_in_epoch:
-                emit_smol_event("rollout", "out", "grpo")
+                emit_smol_event("rollout", "out", "grpo", count=int(config["num_rollouts"]))
                 prefetcher.submit(*epoch_batches[next_idx], step=current_rollout_step + 1)
 
             # Subdivide this batch into micro-batches for gradient accumulation

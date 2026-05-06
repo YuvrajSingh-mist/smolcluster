@@ -60,8 +60,9 @@ function _getParticleMesh(col, sz) {
     _T3scene.add(m); _pPool.push(m);
   }
   m.material.color.set(new THREE.Color(`rgb(${col})`));
+  m.material.opacity = 0;  // reset so stale opacity never flashes for one frame
   m.scale.setScalar(sz * 0.028);
-  m.visible = true;
+  m.visible = true;  // mark taken NOW — pool check is !visible, so must be true to prevent double-grab
   return m;
 }
 
