@@ -107,8 +107,17 @@
 
 <main>
   <!-- ═══ Left ═══════════════════════════════════════════════════════════════ -->
-  <div class="left">
-    <div class="ptitle">Discovered Nodes</div>
+  <div class="left" id="left-panel">
+    <div class="ptitle">
+      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
+        <svg width="15" height="12" viewBox="0 0 15 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect y="0"   width="15" height="1.8" rx="0.9" fill="currentColor"/>
+          <rect y="5.1" width="15" height="1.8" rx="0.9" fill="currentColor"/>
+          <rect y="10.2" width="15" height="1.8" rx="0.9" fill="currentColor"/>
+        </svg>
+      </button>
+      <span class="ptitle-text">Discovered Nodes</span>
+    </div>
     <div id="disc-list">
       <div class="empty"><div class="eico">📡</div>Scanning network…</div>
     </div>

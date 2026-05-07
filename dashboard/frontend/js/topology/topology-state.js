@@ -27,6 +27,12 @@ let _smolEventQueue = [];
 // so each rollout/packet gets its own clearly visible journey from t=0.
 let _particleSpawnQueue = [];
 
+// ── Tab visibility ────────────────────────────────────────────────────────────────────────────────────────────────
+// When the tab is hidden, rAF freezes while SSE, setTimeout etc. keep running.
+// All accumulated animation events become stale.  On return we discard them so
+// the topology starts clean from the next real event — no burst catch-up.
+let _tabWasHidden = false;  // draw() reads this to skip one stale frame on return
+
 // RTT tracking per event type (for metrics display only).
 const _evOutTs = {};
 let _trainIoRttMs = 0;

@@ -1,4 +1,4 @@
-"""Centralized logging configuration for smolcluster."""
+"""Centralized logging for smolcluster — ANSI-coloured console output, per-rank filtering, cluster-wide file logging (setup_logging, setup_cluster_logging), and structured event emitters (emit_smol_event, emit_transport_event) consumed by the dashboard SSE stream."""
 
 import json
 import logging

@@ -72,6 +72,7 @@ function applyLogFilter() {
 function clearLogs() {
   $('logbox').innerHTML = '';
   logBuffer = [];
+  clearTimeout(_persistLogTimer);  // cancel any pending save so stale empty-buffer write doesn't clobber fresh logs
   knownLogHosts.clear();
   const sel = $('log-filter');
   while (sel.children.length > 1) sel.removeChild(sel.lastChild);

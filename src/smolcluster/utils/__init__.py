@@ -1,4 +1,4 @@
-"""smolcluster utilities package."""
+"""smolcluster utilities — re-exports socket messaging helpers, gradient/weight accessors, dataset splitting, device selection, model sharding layers, and model download utilities."""
 from .common_utils import (
     InferenceMetrics,
     NetworkMetrics,

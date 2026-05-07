@@ -1,6 +1,4 @@
-"""
-Utility functions for downloading and managing model weights.
-"""
+"""Model weight downloader — fetches GPT-2 safetensors from URLs defined in model_weights.yaml, converts HuggingFace checkpoints via mlx_lm, and caches weights locally with a progress bar."""
 
 import logging
 import urllib.request

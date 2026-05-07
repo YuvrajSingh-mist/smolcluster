@@ -1,4 +1,4 @@
-"""Batch inference helpers and retry logic used by GRPO evaluation pipelines."""
+"""Batch inference helpers and retry logic used by GRPO evaluation pipeline (summarization)."""
 import json
 import logging
 import math

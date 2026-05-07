@@ -1,4 +1,4 @@
-"""Tests for iOS/on-device inference metrics and network statistics collection."""
+"""Manual smoke test — sends a random (1, 1, 768) float32 activation tensor to an iPad inference server over TCP and prints the returned tensor shape."""
 import socket
 
 import numpy as np

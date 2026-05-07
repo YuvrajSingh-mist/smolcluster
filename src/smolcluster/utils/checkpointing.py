@@ -1,7 +1,4 @@
-"""
-Checkpointing utilities for distributed training.
-Handles saving and loading model checkpoints, optimizer states, and training metadata.
-"""
+"""CheckpointManager for distributed training — saves/loads model weights, optimizer state, and step metadata, with configurable keep-last-N retention."""
 
 import glob
 import logging

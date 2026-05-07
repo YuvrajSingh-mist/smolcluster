@@ -50,9 +50,14 @@ async def sse_logs(request: Request):
                     yield f"data: {json.dumps(lines)}\n\n"
                 last_id = history[-1][0]
             else:
-                last_id = "$"
+                # Do NOT use "$" here — it re-evaluates to "current latest" on each
+                # XREAD call, so entries written in the gap between two consecutive
+                # 400ms polls can be silently skipped.  "0-0" means "start of stream":
+                # since the stream was just cleared at startup this is always safe and
+                # guarantees every new entry is delivered exactly once.
+                last_id = "0-0"
         except Exception:
-            last_id = "$"
+            last_id = "0-0"
 
         while True:
             if await request.is_disconnected():

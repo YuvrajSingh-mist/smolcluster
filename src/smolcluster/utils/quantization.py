@@ -1,7 +1,4 @@
-"""
-Quantization utilities for model weight compression in distributed training.
-Uses W8A16 (8-bit weights, 16-bit activations) quantization for efficient network transfer.
-"""
+"""W8A16 quantization helpers — int8 weight quantization and dequantization for bandwidth-efficient gradient/weight transfer in distributed training."""
 
 from typing import Union
 

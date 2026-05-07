@@ -165,3 +165,19 @@ function _clearAllParticles() {
   particles = [];
   _particleSpawnQueue = [];
 }
+
+/**
+ * Called when the tab becomes visible again.
+ * Discards all animation state accumulated while the tab was hidden so the
+ * topology starts fresh from the next real event rather than playing back a
+ * burst of stale packets.
+ */
+function _onTabVisible() {
+  // Discard events and spawn queue built up while rAF was frozen.
+  _smolEventQueue.length = 0;
+  _particleSpawnQueue = [];
+  // Hide any mid-flight particles (their positions are stale relative to the
+  // time gap and would snap to wrong places on the first resumed frame).
+  particles.forEach(p => { if (p.mesh) p.mesh.visible = false; });
+  particles = [];
+}

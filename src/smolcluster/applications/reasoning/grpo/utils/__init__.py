@@ -1,4 +1,4 @@
-"""GRPO training utilities."""
+"""GRPO training utilities — re-exports MLX gradient helpers, tokenisation, loss/advantage computation, AMP (GradScaler, MasterWeightAdamW), rollout prefetcher, and answer parsing."""
 
 from smolcluster.utils.logging_utils import setup_logging
 from .training_utils import (

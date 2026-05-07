@@ -1,4 +1,4 @@
-"""Misc helpers used across route handlers and broadcasters."""
+"""Shared helpers for dashboard route handlers and broadcasters — builds local node metadata, canonicalises hostnames/log labels, resolves SSH aliases, assembles nodes_info dicts for launch calls, and reads JSON sentinel files."""
 import json
 import logging
 import platform

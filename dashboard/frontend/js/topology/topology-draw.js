@@ -3,6 +3,13 @@
 // ════════════════════════════════════════════════════════════════════════════
 function draw(ts) {
   requestAnimationFrame(draw);
+
+  // If the tab just came back from hidden, skip this frame entirely.
+  // rAF was frozen so ts jumped; all queued animation state was already
+  // cleared by _onTabVisible().  One blank frame avoids the stale-ts
+  // snap on ring spin and orbit damping.
+  if (_tabWasHidden) { _tabWasHidden = false; _T3orbit.update(); return; }
+
   _T3orbit.update();
 
   // ── Active state ───────────────────────────────────────────────────────────

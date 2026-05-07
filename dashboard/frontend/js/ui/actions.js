@@ -73,6 +73,10 @@ async function startTraining() {
   });
   if (r.ok) {
     inferLocked = true;
+    // Bounce the log SSE so it fetches fresh history (catches any early launch
+    // logs) and establishes a real stream cursor — fixes first-run blank log panel.
+    if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+    setTimeout(() => { if (!logsEventSource) startLogs(); }, 200);
   } else {
     alert(`Error: ${(await r.json()).detail}`);
   }
@@ -114,6 +118,30 @@ async function checkConn() {
   const r = await fetch('/api/connectivity/check', { method:'POST' });
   if (!r.ok) alert(`Error: ${(await r.json()).detail}`);
 }
+
+function toggleSidebar() {
+  const main  = document.querySelector('main');
+  const panel = document.getElementById('left-panel');
+  const collapsed = main.classList.toggle('sidebar-collapsed');
+  panel.classList.toggle('collapsed', collapsed);
+  try { localStorage.setItem('sidebar-collapsed', collapsed ? '1' : '0'); } catch (_) {}
+}
+
+// Restore sidebar state on load
+(function () {
+  try {
+    if (localStorage.getItem('sidebar-collapsed') === '1') {
+      document.addEventListener('DOMContentLoaded', () => {
+        const main  = document.querySelector('main');
+        const panel = document.getElementById('left-panel');
+        if (main && panel) {
+          main.classList.add('sidebar-collapsed');
+          panel.classList.add('collapsed');
+        }
+      });
+    }
+  } catch (_) {}
+}());
 
 function resetTopologyLayout() {
   _manualNodePos.clear();
