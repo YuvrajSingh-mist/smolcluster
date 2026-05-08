@@ -168,7 +168,7 @@ def convert_to_coreml_weights(
     if not isinstance(mlmodel, ct.models.MLModel):
         raise TypeError(f"Expected MLModel, got {type(mlmodel)}")
 
-    os.makedirs(coremlmodel_path, e
+    os.makedirs(coremlmodel_path, exist_ok=True)
     save_path = str(
         coremlmodel_path
         / f"{hf_model_identifier.split('/')[-1]}_rank{local_rank}.mlpackage"

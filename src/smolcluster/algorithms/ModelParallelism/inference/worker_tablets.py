@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from smolcluster.utils.common_utils import (
+from smolcluster.utils import (
     receive_message,
     recv_tensor,
     send_message,

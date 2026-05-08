@@ -1,6 +1,5 @@
 """GRPO training utilities — re-exports MLX gradient helpers, tokenisation, loss/advantage computation, AMP (GradScaler, MasterWeightAdamW), rollout prefetcher, and answer parsing."""
 
-from smolcluster.utils.logging_utils import setup_logging
 from .training_utils import (
     _add_grads,
     _log_mem,
@@ -20,8 +19,26 @@ from .training_utils import (
     parse_answer,
     RolloutPrefetcher,
     set_global_seed,
+    DASHBOARD_METRICS_FILE,
+    DASHBOARD_GRAD_PING,
+    DASHBOARD_GRAD_INTERVAL,
+    get_optimizer_lr,
+    publish_dashboard_metrics,
 )
 from .amp import GradScaler, MasterWeightAdamW
+from .rollouts import build_batched_rollout_texts, build_rollouts_per_prompt, build_vllm_worker_urls
+from .worker_sync import save_policy_weights, sync_and_reload_workers
+from .evaluation_utils import (
+    aggregate_metric_statistics,
+    backoff_seconds,
+    batch_items,
+    build_geval_metrics,
+    is_rate_limit_error,
+    parse_test_results,
+    resolve_path,
+    save_rollouts,
+    save_summary,
+)
 
 __all__ = [
     "_add_grads",
@@ -42,7 +59,25 @@ __all__ = [
     "parse_answer",
     "RolloutPrefetcher",
     "set_global_seed",
+    "DASHBOARD_METRICS_FILE",
+    "DASHBOARD_GRAD_PING",
+    "DASHBOARD_GRAD_INTERVAL",
+    "get_optimizer_lr",
+    "publish_dashboard_metrics",
     "GradScaler",
     "MasterWeightAdamW",
-    "setup_logging",
+    "build_batched_rollout_texts",
+    "build_rollouts_per_prompt",
+    "build_vllm_worker_urls",
+    "save_policy_weights",
+    "sync_and_reload_workers",
+    "aggregate_metric_statistics",
+    "backoff_seconds",
+    "batch_items",
+    "build_geval_metrics",
+    "is_rate_limit_error",
+    "parse_test_results",
+    "resolve_path",
+    "save_rollouts",
+    "save_summary",
 ]

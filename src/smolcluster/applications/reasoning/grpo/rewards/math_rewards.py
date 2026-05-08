@@ -3,6 +3,10 @@
 import logging
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import mlx.core as mx
 
 logger = logging.getLogger(__name__)
 
@@ -51,3 +55,82 @@ def calculate_formatted_reward(predicted_answer: str) -> float:
 
     parsed = parse_answer(predicted_answer)
     return 1.0 if math.isfinite(parsed) else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Per-rollout reward computation (threaded) — used by the GRPO training loops
+# ---------------------------------------------------------------------------
+
+
+def _compute_single_reward(
+    args: Tuple[int, str, str, str],
+) -> Tuple[int, float, dict]:
+    idx, question, generated_text, true_answer = args
+    predicted_answer = parse_answer(generated_text)
+    answer_reward = calculate_answer_reward(predicted_answer, true_answer)
+    think_reward = calculate_think_reward(generated_text)
+    formatted_reward = calculate_formatted_reward(generated_text)
+    # Tiered reward:
+    #   +0.1 for using <think> tags (any reasoning attempt)
+    #   +0.1 for using both <think> and <answer> tags correctly with parseable number
+    #   +1.0 for correct answer
+    # "Full marks" when all three achieved = 1.2
+    total_reward = float(answer_reward + 0.1 * think_reward + 0.1 * formatted_reward)
+    log_record = {
+        "rollout_idx":      idx,
+        "question":         question,
+        "predicted_answer": predicted_answer,
+        "answer_reward":    float(answer_reward),
+        "think_reward":     float(think_reward),
+        "formatted_reward": float(formatted_reward),
+        "total_reward":     total_reward,
+        "generated_text":   generated_text,
+        "true_answer":      true_answer,
+    }
+    return idx, total_reward, log_record
+
+
+def compute_math_rewards(
+    rollout_texts: List[str],
+    rollout_targets: List[str],
+    dtype: type = mx.float32,
+    device: mx.Device = mx.cpu,
+    max_workers: Optional[int] = None,
+    step: Optional[int] = None,
+    rollout_questions: Optional[List[str]] = None,
+    log_fn: Optional[Callable[[dict], None]] = None,
+) -> Tuple[mx.array, Dict[str, List[float]]]:
+    """Returns (reward_tensor [T*C], components) where components has per-rollout
+    lists for each reward term (answer_reward, formatted_reward, total_reward).
+
+    Args:
+        log_fn: Optional callback to persist rollout records (e.g. a file-local
+                ``_append_answers_log``). Called with ``{"step": step, "rollouts": [...]}`
+                if provided.
+    """
+    questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
+    indexed_args = [
+        (i, q, text, target)
+        for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
+    ]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(_compute_single_reward, indexed_args))
+
+    reward_values: List[float] = []
+    log_records: List[dict] = []
+    for _idx, total_reward, log_record in results:
+        reward_values.append(total_reward)
+        log_records.append(log_record)
+
+    if log_fn is not None:
+        log_fn({"step": step, "rollouts": log_records})
+
+    components: Dict[str, List[float]] = {
+        "answer_reward":    [r["answer_reward"]    for r in log_records],
+        "formatted_reward": [r["formatted_reward"] for r in log_records],
+        "total_reward":     [r["total_reward"]     for r in log_records],
+    }
+
+    with mx.stream(mx.default_stream(device)):
+        return mx.array(reward_values, dtype=dtype), components

@@ -14,16 +14,14 @@ import torchinfo
 import wandb
 from torch.utils.data import DataLoader
 
-from smolcluster.utils.checkpointing import CheckpointManager
-from smolcluster.utils.common_utils import (
+from smolcluster.utils import (
+    CheckpointManager,
+    dequantize_model_weights,
     get_weights,
+    quantize_model_weights,
     receive_message,
     send_message,
-)
-from smolcluster.utils.logging_utils import setup_cluster_logging
-from smolcluster.utils.quantization import (
-    dequantize_model_weights,
-    quantize_model_weights,
+    setup_cluster_logging,
 )
 
 # Setup logging (will be replaced by setup_cluster_logging in run_edp_server)

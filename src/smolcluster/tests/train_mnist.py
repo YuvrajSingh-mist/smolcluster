@@ -30,7 +30,7 @@ from smolcluster.algorithms.EDP.worker import run_edp_worker
 from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
 from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
 from smolcluster.models.SimpleNN import SimpleMNISTModel
-from smolcluster.utils.device import get_device
+from smolcluster.utils import get_device
 
 
 def load_configs(algorithm: str = "syncps"):
@@ -56,7 +56,7 @@ def load_data(batch_size: int, world_size: int, seed: int, rank: int):
     """Load MNIST dataset for the given rank."""
     import torchvision
 
-    from smolcluster.utils.data import get_data_indices
+    from smolcluster.utils import get_data_indices
 
     transforms = torchvision.transforms.Compose(
         [

@@ -16,7 +16,7 @@ import torch.nn as nn
 
 from smolcluster.algorithms.ExpertParallelism.worker import compute_expert_contributions, route_tokens
 from smolcluster.models.moe import ExpertBlock, Mixtral, Router, TextEmbeddings
-from smolcluster.utils.layers import get_expert_per_node, get_model_per_node
+from smolcluster.utils import get_expert_per_node, get_model_per_node
 
 
 # ---------------------------------------------------------------------------

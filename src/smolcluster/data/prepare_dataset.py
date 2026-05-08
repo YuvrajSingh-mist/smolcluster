@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 # Partition training data across workers
-from smolcluster.utils.data import get_data_indices
+from smolcluster.utils import get_data_indices
 
 # Try ~/.env first (works on remote nodes where CWD may be grove's temp dir),
 # then fall back to CWD/.env (works on the coordinator/local runs).

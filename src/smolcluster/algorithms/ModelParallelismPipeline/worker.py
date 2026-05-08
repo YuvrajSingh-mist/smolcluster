@@ -13,15 +13,16 @@ import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
-from smolcluster.utils.common_utils import (
+from smolcluster.utils import (
     calculate_bandwidth_metrics,
+    CheckpointManager,
+    get_model_per_node,
     get_network_metrics,
     receive_message,
     send_message,
+    setup_cluster_logging,
+    should_save_checkpoint,
 )
-from smolcluster.utils.layers import get_model_per_node
-from smolcluster.utils.logging_utils import setup_cluster_logging
 
 try:
     import grove as _grove

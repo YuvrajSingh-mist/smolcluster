@@ -22,13 +22,15 @@ from smolcluster.applications.reasoning.grpo.rewards import (
     calculate_answer_reward,
     calculate_formatted_reward,
     calculate_think_reward,
+    compute_math_rewards,
 )
-from smolcluster.applications.reasoning.grpo.utils.rollouts import build_batched_rollout_texts, build_rollouts_per_prompt
 from smolcluster.applications.reasoning.grpo.utils import (
     _add_grads,
     _log_mem,
     _scale_grads,
+    build_batched_rollout_texts,
     build_completion_mask,
+    build_rollouts_per_prompt,
     compute_advantages,
     compute_grpo_loss,
     compute_logprobs,
@@ -41,16 +43,16 @@ from smolcluster.applications.reasoning.grpo.utils import (
     apply_lora_if_quantized,
     tokenize_rollouts,
     parse_answer,
+    save_policy_weights,
+    sync_and_reload_workers,
     GradScaler,
     MasterWeightAdamW,
     RolloutPrefetcher,
     set_global_seed,
+    get_optimizer_lr,
+    publish_dashboard_metrics,
 )
-from smolcluster.applications.reasoning.grpo.utils.worker_sync import (
-    save_policy_weights,
-    sync_and_reload_workers,
-)
-from smolcluster.utils.logging_utils import emit_smol_event, setup_logging
+from smolcluster.utils import emit_smol_event, setup_logging
 
 try:
     import grove as _grove
@@ -75,9 +77,6 @@ _debug_dir = _module_dir.parents[4] / ".grpo_debug"
 _debug_dir.mkdir(parents=True, exist_ok=True)
 _answers_log_path = _debug_dir / "rollout_answers.jsonl"
 _answers_log_lock = threading.Lock()
-_DASHBOARD_METRICS_FILE = Path("/tmp/smolcluster_metrics.json")
-_DASHBOARD_GRAD_PING = Path("/tmp/smolcluster_grad_ping")
-_DASHBOARD_GRAD_INTERVAL = Path("/tmp/smolcluster_grad_interval_ms")
 _LAST_DASHBOARD_GRAD_TS: Optional[float] = None
 _last_net_stats: Dict[str, float] = {}
 
@@ -86,157 +85,6 @@ def _append_answers_log(record: dict) -> None:
     with _answers_log_lock:
         with _answers_log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n\n")
-
-
-def _publish_dashboard_metrics(metrics: dict, *, global_step: int, total_steps: int,
-                               grad_norm: float, lr: float, skipped_update: bool,
-                               net_stats: Optional[Dict[str, float]] = None) -> None:
-    global _LAST_DASHBOARD_GRAD_TS
-    try:
-        now = time.time()
-        safe_grad_norm = grad_norm
-        if safe_grad_norm != safe_grad_norm or safe_grad_norm in (float("inf"), float("-inf")):
-            safe_grad_norm = "NaN"
-        step_time_s = None if _LAST_DASHBOARD_GRAD_TS is None else max(0.0, now - _LAST_DASHBOARD_GRAD_TS)
-        est_throughput = None
-        token_count = float(metrics.get("generation_token_len_mean", 0) or 0) * float(metrics.get("num_rollouts", 0) or 0)
-        if step_time_s and step_time_s > 0.0 and token_count > 0.0:
-            est_throughput = round(token_count / step_time_s, 1)
-        rollout_time_s = float(metrics.get("rollout_time_s") or 0)
-        _tbase = rollout_time_s if rollout_time_s > 0.0 else step_time_s
-        prompt_count = float(metrics.get("prompt_token_len_mean", 0) or 0) * float(metrics.get("num_rollouts", 0) or 0)
-        tok_sec_in  = round(prompt_count / _tbase, 1) if (_tbase and prompt_count > 0.0) else est_throughput
-        tok_sec_out = round(token_count   / _tbase, 1) if (_tbase and token_count  > 0.0) else est_throughput
-        eta_remaining = None
-        if step_time_s and step_time_s > 0.0 and total_steps and total_steps > 0:
-            steps_left = max(0, int(total_steps) - int(global_step))
-            eta_seconds = int(max(0.0, steps_left * step_time_s))
-            h = eta_seconds // 3600
-            m = (eta_seconds % 3600) // 60
-            s = eta_seconds % 60
-            eta_remaining = f"{h:02d}:{m:02d}:{s:02d}"
-
-        _ns = net_stats or {}
-        payload = {
-            "step": global_step,
-            "total_steps": total_steps,
-            "loss": float(metrics.get("loss", 0.0)),
-            "throughput": est_throughput,
-            "tok_sec_in": tok_sec_in,
-            "tok_sec_out": tok_sec_out,
-            "grad_norm": safe_grad_norm,
-            "lr": lr,
-            "eta_remaining": eta_remaining,
-            "algorithm": "grpo",
-            "running": True,
-            "reward": float(metrics.get("reward", 0.0)),
-            # Metal GPU memory (bytes → MB)
-            "active_mem_mb": round(mx.metal.get_active_memory() / 1e6, 1) if mx.metal.is_available() else 0.0,
-            "peak_mem_mb":   round(mx.metal.get_peak_memory()   / 1e6, 1) if mx.metal.is_available() else 0.0,
-            # network/* keys match get_network_metrics() field names exactly
-            **{k: v for k, v in _ns.items() if isinstance(v, (int, float))},
-        }
-        _DASHBOARD_METRICS_FILE.write_text(json.dumps(payload))
-        print(f"[SMOL_METRICS] {json.dumps(payload)}", flush=True)
-        if not skipped_update:
-            _DASHBOARD_GRAD_PING.touch()
-            if step_time_s and step_time_s > 0.0:
-                _DASHBOARD_GRAD_INTERVAL.write_text(str(round(step_time_s * 1000, 1)))
-            _LAST_DASHBOARD_GRAD_TS = now
-        if _grove is not None and not skipped_update:
-            _gn = grad_norm if isinstance(grad_norm, float) and grad_norm == grad_norm else None
-            _grove.report(
-                float(metrics.get("loss", 0.0)),
-                step=global_step,
-                grad_norm=_gn,
-                tok_per_sec=est_throughput,
-            )
-            _grove.status("training")
-    except Exception:
-        pass
-
-
-def _optimizer_lr(optimizer: Any, config: Dict[str, Any]) -> float:
-    """Return current LR for different optimizer wrappers without assuming attributes."""
-    lr_obj = getattr(optimizer, "learning_rate", None)
-    if lr_obj is not None:
-        try:
-            return float(lr_obj.item()) if hasattr(lr_obj, "item") else float(lr_obj)
-        except Exception:
-            pass
-    if hasattr(optimizer, "_lr"):
-        try:
-            return float(getattr(optimizer, "_lr"))
-        except Exception:
-            pass
-    return float(config.get("learning_rate", 0.0))
-
-
-def _compute_single_reward(
-    args: Tuple[int, str, str, str],
-) -> Tuple[int, float, dict]:
-    idx, question, generated_text, true_answer = args
-
-    predicted_answer = parse_answer(generated_text)
-    answer_reward = calculate_answer_reward(predicted_answer, true_answer)
-    think_reward = calculate_think_reward(generated_text)
-    formatted_reward = calculate_formatted_reward(generated_text)
-    # Tiered reward:
-    #   +0.1 for using <think> tags (any reasoning attempt)
-    #   +0.1 for using both <think> and <answer> tags correctly with parseable number
-    #   +1.0 for correct answer
-    # "Full marks" when all three achieved = 1.2
-    total_reward = float(answer_reward + 0.1 * think_reward + 0.1 * formatted_reward)
-    log_record = {
-        "rollout_idx":    idx,
-        "question":       question,
-        "predicted_answer": predicted_answer,
-        "answer_reward": float(answer_reward),
-        "think_reward":  float(think_reward),
-        "formatted_reward": float(formatted_reward),
-        "total_reward":   total_reward,
-        "generated_text": generated_text,
-        "true_answer":    true_answer,
-    }
-    return idx, total_reward, log_record
-
-
-def compute_rewards(
-    rollout_texts: List[str],
-    rollout_targets: List[str],
-    dtype: type = mx.float32,
-    device: mx.Device = mx.cpu,
-    max_workers: Optional[int] = None,
-    step: Optional[int] = None,
-    rollout_questions: Optional[List[str]] = None,
-) -> Tuple[mx.array, Dict[str, List[float]]]:
-    """Returns (reward_tensor [T*C], components) where components has per-rollout
-    lists for each reward term (answer_reward, formatted_reward, total_reward)."""
-    questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
-    indexed_args = [
-        (i, q, text, target)
-        for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
-    ]
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(executor.map(_compute_single_reward, indexed_args))
-
-    reward_values: List[float] = []
-    log_records: List[dict] = []
-    for _idx, total_reward, log_record in results:
-        reward_values.append(total_reward)
-        log_records.append(log_record)
-
-    _append_answers_log({"step": step, "rollouts": log_records})
-
-    components: Dict[str, List[float]] = {
-        "answer_reward": [r["answer_reward"] for r in log_records],
-        "formatted_reward": [r["formatted_reward"] for r in log_records],
-        "total_reward":   [r["total_reward"]   for r in log_records],
-    }
-
-    with mx.stream(mx.default_stream(device)):
-        return mx.array(reward_values, dtype=dtype), components
 
 
 def evaluate_batch(
@@ -280,7 +128,7 @@ def evaluate_batch(
 
     curr_logprobs = compute_logprobs(model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
 
-    rewards_flat, reward_components = compute_rewards(
+    rewards_flat, reward_components = compute_math_rewards(
         rollout_texts,
         rollout_targets,
         dtype=dtype,
@@ -288,6 +136,7 @@ def evaluate_batch(
         max_workers=config.get("reward_workers"),
         step=step,
         rollout_questions=rollout_questions,
+        log_fn=_append_answers_log,
     )
     rewards = rewards_flat.reshape(T, C)          # [T, C]
     advantages = compute_advantages(rewards, dtype=dtype)  # [T, C]
@@ -381,7 +230,7 @@ def train_step(
     _log_mem("train_step: after tokenize_rollouts")
 
     logger.info("%s Computing rewards ...", step_tag)
-    rewards_flat, reward_components = compute_rewards(
+    rewards_flat, reward_components = compute_math_rewards(
         rollout_texts,
         rollout_targets,
         dtype=dtype,
@@ -389,6 +238,7 @@ def train_step(
         max_workers=config.get("reward_workers"),
         step=step,
         rollout_questions=rollout_questions,
+        log_fn=_append_answers_log,
     )
     rewards = rewards_flat.reshape(T, C)          # [T, C]
     logger.info(
@@ -598,6 +448,7 @@ def train(
     device: mx.Device = mx.cpu,
     scaler: Optional[GradScaler] = None,
 ) -> None:
+    global _LAST_DASHBOARD_GRAD_TS
     model.train()
   
     global_step = 0
@@ -883,13 +734,15 @@ def train(
                 _last_net_stats["send_bandwidth_mbps"] = round((_send_mb * 8) / max(0.001, _rollout_ms / 1000), 3) if _send_mb > 0 else 0.0
                 _last_net_stats["total_send_mb"] = round(_send_mb, 3)
 
-            _publish_dashboard_metrics(
+            _LAST_DASHBOARD_GRAD_TS = publish_dashboard_metrics(
                 metrics,
                 global_step=global_step,
                 total_steps=total_epochs * total_steps_in_epoch,
                 grad_norm=grad_norm,
-                lr=_optimizer_lr(optimizer, config),
+                lr=get_optimizer_lr(optimizer, config),
                 skipped_update=skipped_update,
+                last_ts=_LAST_DASHBOARD_GRAD_TS,
+                grove=_grove,
                 net_stats=dict(_last_net_stats),
             )
 

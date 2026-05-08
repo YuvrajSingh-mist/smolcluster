@@ -2,7 +2,10 @@
 
 import logging
 import threading
-from typing import Any, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import mlx.core as mx
 
 import evaluate
 from rouge_score import rouge_scorer as _rouge_scorer
@@ -80,3 +83,88 @@ def calculate_length_reward(
         
     # length = len(predicted_answer)
     return -((abs(length - max_length)) / max_length)
+
+
+# ---------------------------------------------------------------------------
+# Per-rollout reward computation (threaded) — used by the GRPO training loops
+# ---------------------------------------------------------------------------
+
+MAX_LENGTH_OF_SUMMARIZATION = 64
+
+
+def _compute_single_reward(
+    args: Tuple[int, str, str, str, Any, bool, bool, bool, bool],
+) -> Tuple[int, float, dict]:
+    idx, question, generated_text, true_answer, tokenizer, use_rouge, use_meteor, use_bleu, use_length_penalty = args
+    quality_scores = calculate_summary_quality(
+        generated_text, true_answer,
+        use_rouge=use_rouge, use_meteor=use_meteor, use_bleu=use_bleu,
+    )
+    length_penalty = (
+        calculate_length_reward(generated_text, MAX_LENGTH_OF_SUMMARIZATION, tokenizer=tokenizer)
+        if use_length_penalty
+        else 0.0
+    )
+    total_reward = float(sum(quality_scores.values()) + length_penalty)
+    log_record = {
+        "rollout_idx":    idx,
+        "question":       question,
+        **{f"quality_{k}": v for k, v in quality_scores.items()},
+        "length_penalty": float(length_penalty),
+        "total_reward":   total_reward,
+        "generated_text": generated_text,
+        "true_answer":    true_answer,
+    }
+    return idx, total_reward, log_record
+
+
+def compute_summarization_rewards(
+    rollout_texts: List[str],
+    rollout_targets: List[str],
+    dtype: type = mx.float32,
+    device: mx.Device = mx.cpu,
+    max_workers: Optional[int] = None,
+    step: Optional[int] = None,
+    rollout_questions: Optional[List[str]] = None,
+    tokenizer: Optional[Any] = None,
+    use_rouge: bool = False,
+    use_meteor: bool = False,
+    use_bleu: bool = False,
+    use_length_penalty: bool = True,
+    log_fn: Optional[Callable[[dict], None]] = None,
+) -> Tuple[mx.array, Dict[str, List[float]]]:
+    """Returns (reward_tensor [T*C], components) where components has per-rollout
+    lists for each enabled quality metric plus length_penalty and total_reward.
+
+    Args:
+        log_fn: Optional callback to persist rollout records (e.g. a file-local
+                ``_append_answers_log``). Called with ``{"step": step, "rollouts": [...]}`
+                if provided.
+    """
+    questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
+    indexed_args = [
+        (i, q, text, target, tokenizer, use_rouge, use_meteor, use_bleu, use_length_penalty)
+        for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
+    ]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(_compute_single_reward, indexed_args))
+
+    reward_values: List[float] = []
+    log_records: List[dict] = []
+    for _idx, total_reward, log_record in results:
+        reward_values.append(total_reward)
+        log_records.append(log_record)
+
+    if log_fn is not None:
+        log_fn({"step": step, "rollouts": log_records})
+
+    quality_keys = sorted({k for r in log_records for k in r if k.startswith("quality_")})
+    components: Dict[str, List[float]] = {
+        **{k: [r[k] for r in log_records] for k in quality_keys},
+        "length_penalty": [r["length_penalty"] for r in log_records],
+        "total_reward":   [r["total_reward"]   for r in log_records],
+    }
+
+    with mx.stream(mx.default_stream(device)):
+        return mx.array(reward_values, dtype=dtype), components

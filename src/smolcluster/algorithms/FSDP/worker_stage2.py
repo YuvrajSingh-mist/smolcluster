@@ -16,20 +16,22 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from smolcluster.models.gpt import BaseTransformer
-from smolcluster.utils.checkpointing import CheckpointManager, should_save_checkpoint
-from smolcluster.utils.common_utils import (
+from smolcluster.utils import (
+    CheckpointManager,
     clear_skeleton_gradients,
+    emit_smol_event,
     extract_owned_gradients,
     forward_through_shard,
-    get_ordered_shard_layer_names,
+    get_model_per_node,
     get_network_metrics,
+    get_ordered_shard_layer_names,
     load_params_into_skeleton,
     receive_message,
     send_message,
+    setup_cluster_logging,
+    should_save_checkpoint,
     unload_params_from_skeleton,
 )
-from smolcluster.utils.layers import get_model_per_node
-from smolcluster.utils.logging_utils import emit_smol_event, setup_cluster_logging
 
 try:
     import grove as _grove

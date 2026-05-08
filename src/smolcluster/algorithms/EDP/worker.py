@@ -14,24 +14,21 @@ import wandb
 import yaml
 
 from smolcluster.data.prepare_dataset import prepare_dataset
-from smolcluster.utils.checkpointing import CheckpointManager
-from smolcluster.utils.common_utils import (
+from smolcluster.utils import (
+    calculate_compression_ratio,
+    CheckpointManager,
+    dequantize_model_weights,
     get_weights,
+    quantize_model_weights,
     receive_message,
     send_message,
+    setup_cluster_logging,
 )
-from smolcluster.utils.logging_utils import setup_cluster_logging
 
 try:
     import grove as _grove
 except ImportError:
     _grove = None
-
-from smolcluster.utils.quantization import (
-    calculate_compression_ratio,
-    dequantize_model_weights,
-    quantize_model_weights,
-)
 
 # Setup logging (will be replaced by setup_cluster_logging in run_edp_worker)
 logging.basicConfig(

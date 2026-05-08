@@ -1,10 +1,12 @@
 """Generic MLX training utilities for GRPO — gradient helpers, tokenisation, data batching."""
 
+import json
 import logging
 import os
 import queue
 import random
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 import re
@@ -14,7 +16,6 @@ import numpy as np
 from mlx.nn.utils import checkpoint as mlx_grad_checkpoint
 from mlx.utils import tree_flatten, tree_unflatten
 from mlx_lm import load as mlx_load
-from mlx_lm.utils import save_config as mlx_save_config
 
 logger = logging.getLogger(__name__)
 
@@ -461,3 +462,115 @@ def apply_lora_if_quantized(model: Any, config: Dict[str, Any]) -> bool:
     logger.info("[LORA] Base backbone frozen; only lora_a / lora_b will update")
     logger.info(sep)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Dashboard metrics helpers (shared by all GRPO training loops)
+# ---------------------------------------------------------------------------
+
+DASHBOARD_METRICS_FILE = Path("/tmp/smolcluster_metrics.json")
+DASHBOARD_GRAD_PING = Path("/tmp/smolcluster_grad_ping")
+DASHBOARD_GRAD_INTERVAL = Path("/tmp/smolcluster_grad_interval_ms")
+
+
+def get_optimizer_lr(optimizer: Any, config: Dict[str, Any]) -> float:
+    """Return the current learning rate for different MLX optimizer wrappers."""
+    lr_obj = getattr(optimizer, "learning_rate", None)
+    if lr_obj is not None:
+        try:
+            return float(lr_obj.item()) if hasattr(lr_obj, "item") else float(lr_obj)
+        except Exception:
+            logger.info("Could not parse learning_rate from optimizer, falling back to config value")
+    if hasattr(optimizer, "_lr"):
+        try:
+            return float(getattr(optimizer, "_lr"))
+        except Exception:
+            logger.info("Could not parse _lr from optimizer, falling back to config value")
+    return float(config.get("learning_rate", 0.0))
+
+
+def publish_dashboard_metrics(
+    metrics: dict,
+    *,
+    global_step: int,
+    total_steps: int,
+    grad_norm: float,
+    lr: float,
+    skipped_update: bool,
+    last_ts: Optional[float],
+    grove: Any = None,
+    net_stats: Optional[Dict[str, float]] = None,
+) -> Optional[float]:
+    """Write step metrics to the dashboard file and return the updated timestamp.
+
+    Args:
+        last_ts: The timestamp recorded at the previous gradient step (or None).
+
+    Returns:
+        The timestamp of this step (or the unchanged *last_ts* if the update was
+        skipped), to be stored by the caller and passed back on the next call.
+    """
+    try:
+        now = time.time()
+        safe_grad_norm: Any = grad_norm
+        if safe_grad_norm != safe_grad_norm or safe_grad_norm in (float("inf"), float("-inf")):
+            safe_grad_norm = "NaN"
+        step_time_s = None if last_ts is None else max(0.0, now - last_ts)
+        est_throughput = None
+        token_count = float(metrics.get("generation_token_len_mean", 0) or 0) * float(
+            metrics.get("num_rollouts", 0) or 0
+        )
+        if step_time_s and step_time_s > 0.0 and token_count > 0.0:
+            est_throughput = round(token_count / step_time_s, 1)
+        rollout_time_s = float(metrics.get("rollout_time_s") or 0)
+        _tbase = rollout_time_s if rollout_time_s > 0.0 else step_time_s
+        prompt_count = float(metrics.get("prompt_token_len_mean", 0) or 0) * float(
+            metrics.get("num_rollouts", 0) or 0
+        )
+        tok_sec_in = round(prompt_count / _tbase, 1) if (_tbase and prompt_count > 0.0) else est_throughput
+        tok_sec_out = round(token_count / _tbase, 1) if (_tbase and token_count > 0.0) else est_throughput
+        eta_remaining = None
+        if step_time_s and step_time_s > 0.0 and total_steps and total_steps > 0:
+            steps_left = max(0, int(total_steps) - int(global_step))
+            eta_seconds = int(max(0.0, steps_left * step_time_s))
+            h = eta_seconds // 3600
+            m = (eta_seconds % 3600) // 60
+            s = eta_seconds % 60
+            eta_remaining = f"{h:02d}:{m:02d}:{s:02d}"
+        _ns = net_stats or {}
+        payload = {
+            "step": global_step,
+            "total_steps": total_steps,
+            "loss": float(metrics.get("loss", 0.0)),
+            "throughput": est_throughput,
+            "tok_sec_in": tok_sec_in,
+            "tok_sec_out": tok_sec_out,
+            "grad_norm": safe_grad_norm,
+            "lr": lr,
+            "eta_remaining": eta_remaining,
+            "algorithm": "grpo",
+            "running": True,
+            "reward": float(metrics.get("reward", 0.0)),
+            "active_mem_mb": round(mx.metal.get_active_memory() / 1e6, 1) if mx.metal.is_available() else 0.0,
+            "peak_mem_mb": round(mx.metal.get_peak_memory() / 1e6, 1) if mx.metal.is_available() else 0.0,
+            **{k: v for k, v in _ns.items() if isinstance(v, (int, float))},
+        }
+        DASHBOARD_METRICS_FILE.write_text(json.dumps(payload))
+        print(f"[SMOL_METRICS] {json.dumps(payload)}", flush=True)
+        if not skipped_update:
+            DASHBOARD_GRAD_PING.touch()
+            if step_time_s and step_time_s > 0.0:
+                DASHBOARD_GRAD_INTERVAL.write_text(str(round(step_time_s * 1000, 1)))
+            last_ts = now
+        if grove is not None and not skipped_update:
+            _gn = grad_norm if isinstance(grad_norm, float) and grad_norm == grad_norm else None
+            grove.report(
+                float(metrics.get("loss", 0.0)),
+                step=global_step,
+                grad_norm=_gn,
+                tok_per_sec=est_throughput,
+            )
+            grove.status("training")
+    except Exception:
+        logger.info("Exception occurred while reporting metrics to grove")
+    return last_ts

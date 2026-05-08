@@ -39,20 +39,18 @@ from deepeval.evaluate.configs import AsyncConfig, DisplayConfig
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 from smolcluster.applications.reasoning.grpo.data.summarization import PROMPT
-from smolcluster.applications.reasoning.grpo.utils.evaluation_utils import (
+from smolcluster.applications.reasoning.grpo.utils import (
     aggregate_metric_statistics,
     backoff_seconds,
     batch_items,
-    build_significance_report,
     build_geval_metrics,
     is_rate_limit_error,
     parse_test_results,
     resolve_path,
     save_rollouts,
-    save_significance_report,
     save_summary,
 )
-from smolcluster.utils.logging_utils import setup_logging
+from smolcluster.utils import setup_logging
 
 setup_logging(force=True)
 logger = logging.getLogger(__name__)

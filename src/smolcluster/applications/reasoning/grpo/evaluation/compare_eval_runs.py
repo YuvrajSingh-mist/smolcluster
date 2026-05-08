@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parents[5]))
-from smolcluster.utils.logging_utils import setup_logging  # noqa: E402
+from smolcluster.utils import setup_logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

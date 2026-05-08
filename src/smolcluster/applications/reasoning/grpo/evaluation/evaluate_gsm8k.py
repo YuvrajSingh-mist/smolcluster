@@ -47,20 +47,20 @@ _smolcluster_root = _script_dir.parents[3]
 _project_root = _smolcluster_root.parent.parent
 sys.path.insert(0, str(_project_root / "src"))
 
-from smolcluster.applications.reasoning.grpo.utils import parse_answer
+from smolcluster.applications.reasoning.grpo.utils import (
+    build_rollouts_per_prompt,
+    build_vllm_worker_urls,
+    get_mlx_device,
+    parse_answer,
+    sync_and_reload_workers,
+)
 from smolcluster.applications.reasoning.grpo.data.gsm8k import build_train_val_examples
 from smolcluster.applications.reasoning.grpo.rewards import (
     calculate_answer_reward,
     calculate_formatted_reward,
     calculate_think_reward,
 )
-from smolcluster.applications.reasoning.grpo.utils.rollouts import (
-    build_rollouts_per_prompt,
-    build_vllm_worker_urls,
-)
-from smolcluster.applications.reasoning.grpo.utils.training_utils import get_mlx_device
-from smolcluster.applications.reasoning.grpo.utils.worker_sync import sync_and_reload_workers
-from smolcluster.utils.logging_utils import setup_logging
+from smolcluster.utils import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)

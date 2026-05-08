@@ -11,15 +11,15 @@ from typing import Any, Optional
 import torch
 import yaml
 
-from smolcluster.utils.common_utils import (
+from smolcluster.utils import (
+    get_device,
     get_effective_decoding_strategies,
     load_model_and_tokenizer,
     receive_message,
     resolve_generation_request_params,
+    sample_next_token,
     send_message,
 )
-from smolcluster.utils.decoding import sample_next_token
-from smolcluster.utils.device import get_device
 
 CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "configs"
 

@@ -37,9 +37,9 @@ reward_workers: 8       # Number of threads for parallel reward computation (nul
 # Quality metrics used in calculate_summary_quality (any combination, at least one)
 quality_metrics:
   length_penalty: false  # penalise deviation from target summary length
-  rouge: true
+  rouge: false
   meteor: true
-  bleu: false
+  bleu: true
 
 
 

@@ -7,8 +7,7 @@ Implements the key stability techniques from mixed precision training:
 """
 
 import logging
-from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Tuple
+from typing import Any, Dict, Tuple
 
 import mlx.core as mx
 import mlx.optimizers as optim
@@ -58,10 +57,6 @@ class GradScaler:
         """Multiply loss by scale before the backward pass."""
         return self.scale(loss)
 
-    def scale_tensor(self, value: mx.array) -> mx.array:
-        """PyTorch-like alias for scaling a tensor/loss value."""
-        return self.scale(value)
-
     def unscale(self, grads: Any) -> Any:
         """Divide every gradient tensor by the current scale.
 
@@ -69,10 +64,6 @@ class GradScaler:
         clipping or the optimizer step.
         """
         return _scale_grads(grads, 1.0 / self._scale) if self.enabled else grads
-
-    def unscale_(self, grads: Any) -> Any:
-        """PyTorch-like alias for in-place-style unscale (returns new tree)."""
-        return self.unscale(grads)
 
     def has_inf_nan(self, grads: Any) -> bool:
         """Return True if any gradient tensor contains inf or nan."""
@@ -100,24 +91,6 @@ class GradScaler:
                 self._scale = min(self._scale * self._growth_factor, float(2 ** 24))
                 self._growth_tracker = 0
                 logger.info("[AMP] scale grown to %.0f", self._scale)
-
-    def state_dict(self) -> Dict[str, Any]:
-        return {"scale": self._scale, "growth_tracker": self._growth_tracker}
-
-    def load_state_dict(self, state: Dict[str, Any]) -> None:
-        self._scale = float(state["scale"])
-        self._growth_tracker = int(state["growth_tracker"])
-
-
-@contextmanager
-def autocast(enabled: bool = True) -> Iterator[None]:
-    """Compatibility context manager akin to torch.cuda.amp.autocast.
-
-    MLX handles dtype behavior at tensor/module level, so this is intentionally
-    a no-op context used for API symmetry and call-site clarity.
-    """
-    _ = enabled
-    yield
 
 
 class MasterWeightAdamW:

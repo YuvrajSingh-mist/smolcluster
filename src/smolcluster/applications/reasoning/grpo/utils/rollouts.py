@@ -9,7 +9,7 @@ from pathlib import Path
 
 import requests
 import yaml
-from smolcluster.utils.logging_utils import emit_smol_event
+from smolcluster.utils import emit_smol_event
 
 logger = logging.getLogger(__name__)
 
@@ -55,20 +55,6 @@ def append_vllm_debug_log(record: Dict[str, Any]) -> None:
             debug_file.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n\n")
 
 
-def extract_generated_text(result: Dict[str, Any]) -> str:
-    choices = result.get("choices") or []
-    if not choices:
-        return ""
-    first_choice = choices[0] or {}
-    return first_choice.get("text") or ""
-
-def query(url: str, payload: Dict) -> Dict:
-    """Query the inference API."""
-    response = requests.post(url, json=payload)
-    response.raise_for_status()
-    return response.json()
-
-
 def build_vllm_worker_urls(config: Dict[str, Any]) -> Dict[int, str]:
     """Build OpenAI-compatible vLLM completion URLs for each configured worker rank.
     Workers and host_ip are read from cluster_config_inference.yaml."""
@@ -87,77 +73,6 @@ def build_vllm_worker_urls(config: Dict[str, Any]) -> Dict[int, str]:
         worker_urls[rank] = f"http://{host_ip[hostname]}:{port}{completion_path}"
 
     return worker_urls
-
-
-def handle_worker_rollout(
-    url: str,
-    payload: Dict,
-    worker_rank: int,
-    rollout_idx: int,
-    rollouts: Dict,
-    lock: threading.Lock,
-) -> None:
-    """Generate a single rollout for a worker and store result."""
-    response = query(url, payload)
-    
-    with lock:
-        if worker_rank not in rollouts:
-            rollouts[worker_rank] = [None] * NUM_ROLLOUTS
-        rollouts[worker_rank][rollout_idx] = response["generated_text"]
-
-
-def generate_rollouts_for_prompt(
-    prompt: str,
-    num_workers: int,
-    decoding_strategy: str,
-    max_tokens: int,
-) -> Dict[int, list[str]]:
-    """Generate NUM_ROLLOUTS outputs from each worker for a single prompt."""
-    if API_URL is None:
-        raise ValueError("api_url must be set in the GRPO config to use generate_rollouts")
-
-    threads = []
-    rollouts = {}
-    
-    for worker_rank in range(num_workers):
-        for rollout_idx in range(NUM_ROLLOUTS):
-            
-            payload = {
-                "text": prompt,
-                "worker_rank": worker_rank,
-                "max_tokens": max_tokens,
-                "decoding_strategy": decoding_strategy,
-            }
-            
-            thread = threading.Thread(
-                target=handle_worker_rollout,
-                args=(API_URL, payload, worker_rank, rollout_idx, rollouts, lock),
-            )
-            thread.start()
-            threads.append(thread)
-    
-    # Wait for all threads to complete
-    for thread in threads:
-        thread.join()
-    
-    return rollouts
-
-
-def generate_rollouts(
-    prompt: str,
-    num_workers: int,
-    decoding_strategy,
-    max_tokens,
-) -> Dict[int, list[str]]:
-    """
-    Generate NUM_ROLLOUTS outputs from each worker for a prompt.
-    
-    Returns:
-        Dict mapping worker_rank -> list of NUM_ROLLOUTS generated texts
-    """
-    return generate_rollouts_for_prompt(
-        prompt, num_workers, decoding_strategy, max_tokens
-    )
 
 
 def _fetch_n_from_worker(

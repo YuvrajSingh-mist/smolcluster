@@ -31,15 +31,15 @@ import yaml
 import grove
 
 import smolcluster as _sm_pkg
-from smolcluster.utils.cli import (
+from smolcluster.utils import (
     ALGORITHMS as _ALGORITHMS,
     MODES as _MODES,
-    build_main_parser,
     build_discover_parser,
+    build_main_parser,
     grove_world_size,
+    parse_server_worker_mode,
     run_dashboard,
     should_autodiscover,
-    parse_server_worker_mode,
 )
 
 from smolcluster.algorithms.EDP.server import run_edp_server
@@ -59,8 +59,7 @@ from smolcluster.algorithms.ExpertParallelism.worker import run_ep_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.models.moe import Mixtral
-from smolcluster.utils.device import get_device
-from smolcluster.utils.layers import get_model_per_node
+from smolcluster.utils import get_device, get_model_per_node
 
 # -----------------------------------------------------------------------------
 # Configuration and Data Loading
