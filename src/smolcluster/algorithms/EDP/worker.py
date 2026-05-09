@@ -18,6 +18,7 @@ from smolcluster.utils import (
     calculate_compression_ratio,
     CheckpointManager,
     dequantize_model_weights,
+    emit_smol_event,
     get_weights,
     quantize_model_weights,
     receive_message,
@@ -503,6 +504,7 @@ def run_edp_worker(
                     "Local forward and backward pass done. Sending quantized model weights to server."
                 )
 
+                emit_smol_event("weights", "out", "edp")
                 send_message(
                     sock,
                     (
@@ -522,6 +524,7 @@ def run_edp_worker(
                 )
                 # sock.setblocking(False)
                 try:
+                    emit_smol_event("weights", "out", "edp")
                     send_message(
                         sock,
                         (
@@ -587,6 +590,7 @@ def run_edp_worker(
 
             try:
                 weights, new_version = receive_message(sock)
+                emit_smol_event("weights", "in", "edp")
 
                 if use_quantization:
                     dequant_weights = dequantize_model_weights(weights, device=device)

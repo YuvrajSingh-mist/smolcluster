@@ -16,6 +16,7 @@ from tqdm import tqdm
 from smolcluster.utils import (
     calculate_bandwidth_metrics,
     CheckpointManager,
+    emit_smol_event,
     get_model_per_node,
     get_network_metrics,
     receive_message,
@@ -28,6 +29,8 @@ try:
     import grove as _grove
 except ImportError:
     _grove = None
+
+_last_grad_ts = [0.0]  # tracks wall-clock of last grad exchange for animation speed
 
 
 def get_tensor_size_mb(tensor: torch.Tensor) -> float:
@@ -800,6 +803,7 @@ def run_modelparallelism_pipeline_worker(
                             )
                             grad_send_start = time.time()
 
+                            emit_smol_event("gradients", "out", "pipeline")
                             send_message(
                                 prev_sock,
                                 (
@@ -886,6 +890,7 @@ def run_modelparallelism_pipeline_worker(
                                     )
                                     grad_send_start = time.time()
 
+                                    emit_smol_event("gradients", "out", "pipeline")
                                     send_message(
                                         prev_sock,
                                         (
@@ -1175,6 +1180,19 @@ def run_modelparallelism_pipeline_worker(
 
             # Apply gradients
             optimizer.step()
+
+            # Signal the dashboard: rank 0 touches ping + real step interval for animation speed.
+            if worker_rank == 0:
+                _now = time.time()
+                try:
+                    Path("/tmp/smolcluster_grad_ping").touch()
+                    if _last_grad_ts[0] > 0:
+                        Path("/tmp/smolcluster_grad_interval_ms").write_text(
+                            f"{(_now - _last_grad_ts[0]) * 1000:.1f}"
+                        )
+                except Exception:
+                    pass
+                _last_grad_ts[0] = _now
 
             # Step the scheduler after optimizer
             if scheduler is not None:

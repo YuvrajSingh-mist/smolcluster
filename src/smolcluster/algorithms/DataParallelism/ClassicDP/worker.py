@@ -33,6 +33,7 @@ except ImportError:
     _grove = None
 
 step = 0  # Global step counter to track training progress across threads
+_last_grad_ts = [0.0]  # tracks wall-clock of last grad exchange for animation speed
 
 
 def reduce(
@@ -763,6 +764,19 @@ def run_classicdp_worker(
 
                 set_gradients(grads_reduced, model)
                 optimizer.step()
+
+                # Signal the dashboard: rank 0 touches ping + real step interval for animation speed.
+                if worker_rank == 0:
+                    _now = time.time()
+                    try:
+                        Path("/tmp/smolcluster_grad_ping").touch()
+                        if _last_grad_ts[0] > 0:
+                            Path("/tmp/smolcluster_grad_interval_ms").write_text(
+                                f"{(_now - _last_grad_ts[0]) * 1000:.1f}"
+                            )
+                    except Exception:
+                        pass
+                    _last_grad_ts[0] = _now
 
                 if _grove is not None:
                     _bt = time.time() - batch_start_time

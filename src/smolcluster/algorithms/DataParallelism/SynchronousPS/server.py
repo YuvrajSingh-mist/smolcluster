@@ -135,6 +135,57 @@ def handle_worker(
     conn.close()
 
 
+def accept_workers(
+    sock: socket.socket,
+    num_workers: int,
+    workers: dict,
+    grads_received: dict,
+    step_event: threading.Event,
+    lock: threading.Lock,
+) -> dict:
+    """Block until all expected workers have registered. Returns rank -> socket map."""
+    registered: dict = {}
+    while len(registered) < num_workers:
+        client_socket, client_address = sock.accept()
+        logger.info(f"Accepted connection from {client_address}")
+        try:
+            message = receive_message(client_socket)
+            if message is None:
+                logger.warning(
+                    f"Connection from {client_address} closed before registration"
+                )
+                client_socket.close()
+                continue
+
+            command, worker_rank = message
+            if command == "register":
+                logger.info(f"Worker {worker_rank} registered from {client_address}")
+                registered[worker_rank] = client_socket
+                workers[client_address] = client_socket
+                threading.Thread(
+                    target=handle_worker,
+                    args=(
+                        client_socket,
+                        client_address,
+                        workers,
+                        grads_received,
+                        step_event,
+                        lock,
+                    ),
+                    daemon=True,
+                ).start()
+            else:
+                logger.warning(
+                    f"Unexpected message from {client_address}: {command}"
+                )
+                client_socket.close()
+        except Exception as e:
+            logger.error(f"Error during registration from {client_address}: {e}")
+            client_socket.close()
+            continue
+    return registered
+
+
 def parameter_server_reduce(
     grads_dict: dict[int, dict[str, torch.Tensor]], num_workers_connected: int
 ) -> dict[str, torch.Tensor]:
@@ -268,47 +319,9 @@ def run_syncps_server(
     logger.info(model_summary)
     wandb.log({"model_structure": model_summary})
 
-    # Accept connections and wait for registration
-    registered_workers = {}  # rank -> socket
-    while len(registered_workers) < num_workers:
-        client_socket, client_address = sock.accept()
-        logger.info(f"Accepted connection from {client_address}")
-
-        # Wait for registration message
-        try:
-            message = receive_message(client_socket)
-            if message is None:
-                logger.warning(
-                    f"Connection from {client_address} closed before registration"
-                )
-                client_socket.close()
-                continue
-
-            command, worker_rank = message
-            if command == "register":
-                logger.info(f"Worker {worker_rank} registered from {client_address}")
-                registered_workers[worker_rank] = client_socket
-                workers[client_address] = client_socket
-                threading.Thread(
-                    target=handle_worker,
-                    args=(
-                        client_socket,
-                        client_address,
-                        workers,
-                        grads_received,
-                        step_event,
-                        lock,
-                    ),
-                    daemon=True,
-                ).start()
-            else:
-                logger.warning(f"Unexpected message from {client_address}: {command}")
-                client_socket.close()
-        except Exception as e:
-            logger.error(f"Error during registration from {client_address}: {e}")
-            client_socket.close()
-            continue
-
+    registered_workers = accept_workers(
+        sock, num_workers, workers, grads_received, step_event, lock
+    )
     logger.info("All workers connected. Starting training...")
 
     # Send start signal to all workers

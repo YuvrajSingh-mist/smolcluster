@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from smolcluster.utils import (
     CheckpointManager,
+    emit_smol_event,
     get_expert_per_node,
     get_gradients,
     get_model_per_node,
@@ -32,6 +33,8 @@ try:
     import grove as _grove
 except ImportError:
     _grove = None
+
+_last_grad_ts = [0.0]  # tracks wall-clock of last grad exchange for animation speed
 
 step = 0  # Global step counter to track training progress across threads
 
@@ -1157,6 +1160,7 @@ def run_ep_worker(
                     f"[Step {step}] Last rank broadcasting gradients to all workers"
                 )
                 for peer_rank, peer_socket in outbound_worker_sockets.items():
+                    emit_smol_event("gradients", "out", "expertparallel")
                     send_message(
                         peer_socket,
                         (
@@ -1193,6 +1197,7 @@ def run_ep_worker(
             # Apply broadcast gradients to local model
             if len(reduced_grads_received[step]) > 0:
                 grads_reduced = reduced_grads_received[step][worker_rank]
+                emit_smol_event("gradients", "in", "expertparallel")
                 
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} applying broadcast gradients to local model"
@@ -1212,6 +1217,16 @@ def run_ep_worker(
                 # stream carries it back to the controller machine.
                 if worker_rank == 0:
                     print(f"[SMOL_PING] step={step}", flush=True)
+                    _now = time.time()
+                    try:
+                        Path("/tmp/smolcluster_grad_ping").touch()
+                        if _last_grad_ts[0] > 0:
+                            Path("/tmp/smolcluster_grad_interval_ms").write_text(
+                                f"{(_now - _last_grad_ts[0]) * 1000:.1f}"
+                            )
+                    except Exception:
+                        pass
+                    _last_grad_ts[0] = _now
 
                 logger.info(
                     f"[Step {step}] Worker {worker_rank} model updated with broadcast gradients"
