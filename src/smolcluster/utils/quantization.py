@@ -1,6 +1,5 @@
 """W8A16 quantization helpers — int8 weight quantization and dequantization for bandwidth-efficient gradient/weight transfer in distributed training."""
 
-from typing import Union
 
 import torch
 
@@ -160,7 +159,7 @@ def quantize_model_weights(weights_dict):
 
 
 def dequantize_model_weights(
-    quantized_dict: dict[str, torch.Tensor], device: Union[str, torch.device] = "cpu"
+    quantized_dict: dict[str, torch.Tensor], device: str | torch.device = "cpu"
 ):
     """
     Dequantize a full model state dict.

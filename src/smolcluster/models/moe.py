@@ -10,7 +10,6 @@ This module contains:
 - SWiGLUExpertMoE: Expert implementation using SwiGLU activation
 """
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -45,7 +44,7 @@ class RotaryEmbeddings(nn.Module):
 
         Args:
             seq: Input sequence tensor.
-           
+
 
         Returns:
             Tensor with rotary embeddings applied.
@@ -73,7 +72,7 @@ class RotaryEmbeddings(nn.Module):
         return out
 
     def forward(
-        self, x: torch.Tensor, q: Optional[torch.Tensor] = None, k: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, q: torch.Tensor | None = None, k: torch.Tensor | None = None
     ):
         """Forward pass for rotary embeddings.
 
@@ -88,16 +87,16 @@ class RotaryEmbeddings(nn.Module):
         if q is not None and k is not None:
             # Flash attention case: apply to both q and k
             batch_size, num_heads, seq_len, head_dim = q.shape
-            
+
             # Create rotary embeddings for this sequence length
             token_idx = torch.arange(0, seq_len, device=self.device).unsqueeze(1)
             positions = torch.arange(0, head_dim, 2, device=self.device).unsqueeze(0)
             theta = 10000 ** (-2 * positions / head_dim)
             angles = token_idx * theta
-            
+
             cos_angles = torch.cos(angles).unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, head_dim//2]
             sin_angles = torch.sin(angles).unsqueeze(0).unsqueeze(0)
-            
+
             # Apply to q
             q_reshaped = q.reshape(batch_size, num_heads, seq_len, head_dim // 2, 2)
             q_rotated = torch.stack(
@@ -107,7 +106,7 @@ class RotaryEmbeddings(nn.Module):
                 ],
                 dim=-1,
             ).reshape(batch_size, num_heads, seq_len, head_dim)
-            
+
             # Apply to k
             k_reshaped = k.reshape(batch_size, num_heads, seq_len, head_dim // 2, 2)
             k_rotated = torch.stack(
@@ -117,7 +116,7 @@ class RotaryEmbeddings(nn.Module):
                 ],
                 dim=-1,
             ).reshape(batch_size, num_heads, seq_len, head_dim)
-            
+
             return q_rotated, k_rotated
         else:
             # Non-flash attention case: apply to single tensor
@@ -367,7 +366,7 @@ class AttentionHead(nn.Module):
         self.dropout_p = attn_dropout
         self.device = device
 
-        
+
         self.rotary = RotaryEmbeddings(
             embeddings_dims=embeddings_dims, device=device, block_size=2048
         )
@@ -399,7 +398,7 @@ class AttentionHead(nn.Module):
         weights_normalized = self.dropout(weights_normalized)
         out = weights_normalized @ v
         return out
-    
+
 
 
 class MHA(nn.Module):
@@ -411,7 +410,7 @@ class MHA(nn.Module):
         no_of_heads: int,
         device: torch.device,
         attn_dropout: float = 0.1,
-   
+
     ):
         """Initialize multi-head attention.
 
@@ -420,12 +419,12 @@ class MHA(nn.Module):
             no_of_heads: Number of attention heads.
             device: Device to place tensors on.
             attn_dropout: Dropout probability for attention.
-      
+
         """
         super().__init__()
         self.no_of_heads = no_of_heads
-       
-        
+
+
         # Non-flash attention uses separate heads
         self.heads = nn.ModuleList(
             [
@@ -438,7 +437,7 @@ class MHA(nn.Module):
                 for _ in range(no_of_heads)
             ]
         )
-    
+
         self.dropout = nn.Dropout(p=attn_dropout)
         self.linear = nn.Linear(
             in_features=embeddings_dims,  # heads output head_size each (or full dim for flash), concatenated to embeddings_dims
@@ -597,4 +596,3 @@ class Mixtral(nn.Module):
             Total number of parameters.
         """
         return sum(p.numel() for p in self.parameters())
-    

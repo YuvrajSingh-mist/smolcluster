@@ -67,7 +67,7 @@ def _discover_mdns(cluster: str, world_size: int, timeout: float):
         raise ImportError(
             "grove not found. Expected at <repo>/grove/. "
             "Run: cd grove && uv pip install -e ."
-        )
+        ) from None
 
     os.environ.setdefault("GROVE_IS_COORDINATOR", "0")
     my_rank, peers, zc = _discover_peers(cluster, world_size, timeout)
@@ -79,10 +79,10 @@ def _discover_mdns(cluster: str, world_size: int, timeout: float):
 def _discover_awdl(cluster: str, world_size: int, timeout: float):
     sys.path.insert(0, _grove_path())
     try:
-        from grove.transport.p2p import discover_p2p_clusters
         from grove._utils import get_local_ip
+        from grove.transport.p2p import discover_p2p_clusters
     except ImportError:
-        raise ImportError("grove not found — required for AWDL discovery.")
+        raise ImportError("grove not found — required for AWDL discovery.") from None
 
     clusters = discover_p2p_clusters(timeout=timeout)
     match = next((c for c in clusters if c.get("name") == cluster), None)

@@ -14,10 +14,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from smolcluster.algorithms.ExpertParallelism.worker import compute_expert_contributions, route_tokens
+from smolcluster.algorithms.ExpertParallelism.worker import (
+    compute_expert_contributions,
+    route_tokens,
+)
 from smolcluster.models.moe import ExpertBlock, Mixtral, Router, TextEmbeddings
 from smolcluster.utils import get_expert_per_node, get_model_per_node
-
 
 # ---------------------------------------------------------------------------
 # get_expert_per_node
@@ -79,7 +81,7 @@ class TestGetModelPerNodeEP:
         )
 
     def _cfg(self, ep_top_k, device, noisy_topk=False):
-        return dict(top_k=ep_top_k, device=device, noisy_topk=noisy_topk)
+        return {"top_k": ep_top_k, "device": device, "noisy_topk": noisy_topk}
 
     def _call(self, rank, num_nodes, num_experts, num_layers, cfg, mixtral):
         return get_model_per_node(
@@ -319,7 +321,7 @@ class TestEPPipeline:
         activations = text_embeddings(tokens)
         expert_probs, expert_indices = router(activations)
 
-        model_cfg = dict(top_k=top_k, device=device, noisy_topk=False)
+        model_cfg = {"top_k": top_k, "device": device, "noisy_topk": False}
         aggregated = torch.zeros(batch_size, seq_len, model_dim, device=device)
 
         for worker_rank in range(num_nodes):

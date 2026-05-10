@@ -3,7 +3,7 @@ import logging
 import os
 import socket
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import yaml
@@ -17,7 +17,7 @@ from smolcluster.utils import (
     sample_next_token,
     send_message,
 )
-                
+
 CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "configs"
 
 with open(CONFIG_DIR / "inference" / "model_config_inference.yaml") as f:
@@ -28,7 +28,7 @@ with open(CONFIG_DIR / "inference" / "cluster_config_inference.yaml") as f:
 
 model_configs = inference_config.get("dp", inference_config)
 MODEL_NAME = model_configs.get("active_model", "hf_model")
-HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN") or None
+HF_TOKEN: str | None = os.environ.get("HF_TOKEN") or None
 
 
 def resolve_model_config(cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -83,7 +83,7 @@ def main() -> None:
         raise RuntimeError("Tokenizer is required for SyncPS inference server")
     if model is None:
         logger.warning("Model not loaded - server rank 0 generation will not be available")
-    
+
     device = get_device()
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -178,11 +178,11 @@ def main() -> None:
         worker_rank = payload.get("worker_rank")
         if worker_rank is None:
             worker_rank = min(worker_sockets.keys()) if worker_sockets else 0
-        
+
         if not prompt and not messages:
             send_message(client_socket, ("error", {"message": "Empty prompt or messages"}))
             continue
-        
+
         # Check if requesting rank 0 (server) or a worker - do this BEFORE worker socket validation
         if worker_rank == 0:
             # Server-side generation will be handled below after tokenization
@@ -215,13 +215,13 @@ def main() -> None:
                 if hasattr(tokenized_prompt, "input_ids"):
                     tokenized_prompt = tokenized_prompt.input_ids
                 if logger:
-                    logger.info(f"Applied chat template for instruction-based model")
+                    logger.info("Applied chat template for instruction-based model")
             except Exception as e:
                 logger.error(f"Failed to apply chat template: {e}")
                 send_message(client_socket, ("error", {"message": f"Chat template error: {str(e)}"}))
                 continue
         else:
-            
+
             tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids
 
         original_prompt_length = tokenized_prompt.shape[1]
@@ -234,21 +234,21 @@ def main() -> None:
 
         # SyncPS with logit averaging: aggregate logits from all workers
         logger.info(f"Generating with logit averaging across all {len(worker_sockets)} workers + server")
-        
+
         # Include server rank 0 in ensemble if model is loaded
         current_ids = tokenized_prompt.clone()
-        
+
         for token_idx in range(max_tokens):
             gathered_logits = []
-            
+
             # Get server (rank 0) logits if model is loaded
             if model is not None:
                 with torch.inference_mode():
                     server_logits = model(current_ids.to(device)).logits.cpu()
                 gathered_logits.append(server_logits)
-            
+
             # Request logits from all workers
-            for rank, worker_socket in sorted(worker_sockets.items()):
+            for _rank, worker_socket in sorted(worker_sockets.items()):
                 send_message(
                     worker_socket,
                     (
@@ -258,7 +258,7 @@ def main() -> None:
                         },
                     ),
                 )
-            
+
             # Gather logits from all workers
             for rank, worker_socket in sorted(worker_sockets.items()):
                 response = receive_message(worker_socket)
@@ -266,23 +266,23 @@ def main() -> None:
                     logger.error(f"Worker {rank} disconnected during logit generation")
                     send_message(client_socket, ("error", {"message": f"Worker {rank} disconnected"}))
                     break
-                
+
                 resp_command, resp_payload = response
                 if resp_command != "logits_ready":
                     logger.error(f"Unexpected response from worker {rank}: {resp_command}")
                     send_message(client_socket, ("error", {"message": f"Worker {rank} error: {resp_command}"}))
                     break
-                
+
                 gathered_logits.append(resp_payload["logits"])
-            
+
             # Check if we had errors during gathering
             if len(gathered_logits) != len(worker_sockets) + (1 if model is not None else 0):
                 logger.error("Failed to gather logits from all workers")
                 break
-            
+
             # Average logits across all workers + server
             averaged_logits = torch.stack(gathered_logits, dim=0).mean(dim=0)
-            
+
             # Sample next token
             current_ids, should_stop = sample_next_token(
                 averaged_logits,
@@ -293,10 +293,10 @@ def main() -> None:
                 top_p=top_p,
                 top_k=top_k,
             )
-            
+
             new_token_id = current_ids[0, -1].item()
             token_text = tokenizer.decode([new_token_id], skip_special_tokens=True)
-            
+
             send_message(
                 client_socket,
                 (
@@ -307,10 +307,10 @@ def main() -> None:
                     },
                 ),
             )
-            
+
             if should_stop:
                 break
-        
+
         total_tokens = current_ids.shape[1] - original_prompt_length
         logger.info(f"Generated {total_tokens} tokens with ensemble averaging")
         send_message(client_socket, ("inference_complete", {"worker_rank": 0}))

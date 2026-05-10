@@ -6,14 +6,13 @@ import math
 import socket
 import time
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torchinfo
-import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import wandb
 from smolcluster.utils import (
     CheckpointManager,
     get_model_per_node,
@@ -62,7 +61,7 @@ def evaluate(
     criterion: torch.nn.Module,
     worker_queue: list,
     decoder_type_ppl: bool = False,
-) -> tuple[float, Optional[float]]:
+) -> tuple[float, float | None]:
     """Evaluate model on validation set using distributed model layers.
 
     Activations flow through server layers -> worker 1 -> worker 2 -> back to server

@@ -10,12 +10,13 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
+
     from dashboard.node_manager import NodeManager
 
 # Set by lifespan at startup — typed as Any here to avoid import cycles at runtime.
-node_manager: "NodeManager | None" = None
+node_manager: NodeManager | None = None
 server_hostname: str = ""
-redis: "aioredis.Redis | None" = None
+redis: aioredis.Redis | None = None
 
 # Populated from ~/.ssh/config at startup; keyed by SSH alias.
 static_nodes: dict = {}

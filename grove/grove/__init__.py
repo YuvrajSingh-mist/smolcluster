@@ -82,6 +82,7 @@ def status(msg: str) -> None:
 
 def peers(timeout: float = 30.0) -> dict:
     import time as _time
+
     from ._utils import get_local_ip
 
     if world_size <= 1:

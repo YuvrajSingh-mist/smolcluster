@@ -10,9 +10,10 @@ log = logging.getLogger("grove.init")
 
 def _init_cluster(cluster: str, ws: int, timeout: float) -> None:
     import grove
+
+    from ._types import DEFAULT_BASE_PORT
     from .cluster import _discover_peers
     from .coordinator import CoordinatorServer, WorkerClient
-    from ._types import DEFAULT_BASE_PORT
 
     my_rank, peers, _zc = _discover_peers(cluster, ws, timeout)
     grove.rank = my_rank
@@ -38,9 +39,10 @@ def _init_cluster(cluster: str, ws: int, timeout: float) -> None:
 
 def _init_p2p(cluster: str, ws: int, timeout: float) -> None:
     import grove
-    from .transport.hybrid import HybridTransport
+
+    from .control import MsgType, decode_ctrl, encode_ctrl
     from .coordinator import P2PCoordinatorServer, P2PWorkerClient
-    from .control import MsgType, encode_ctrl, decode_ctrl
+    from .transport.hybrid import HybridTransport
 
     is_coord = os.environ.get("GROVE_IS_COORDINATOR") == "1"
     uid = os.environ.get("GROVE_P2P_UID", "")

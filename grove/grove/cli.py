@@ -8,7 +8,6 @@ import signal
 import subprocess
 import sys
 
-
 _ADJECTIVES = ["swift", "calm", "bold", "warm", "bright", "keen", "vast", "pure", "fair", "deep"]
 _NOUNS = ["oak", "pine", "elm", "ash", "bay", "fern", "moss", "reed", "sage", "vale"]
 
@@ -69,6 +68,7 @@ def _register_cleanup():
 
 def _run_with_dashboard(worker_fn, stats_source, name, uid, rank=None):
     import logging
+
     from .dashboard import Dashboard, WorkerDashboard
     logging.disable(logging.NOTSET)
     if rank is not None:
@@ -153,9 +153,9 @@ def cmd_start(args, passthrough=None):
         t = grove._comm._group._transport
         if hasattr(t, '_upgraded'):
             if t._upgraded:
-                console.print(f"  [green]wifi[/] direct TCP data plane")
+                console.print("  [green]wifi[/] direct TCP data plane")
             else:
-                console.print(f"  [dim]awdl[/] peer-to-peer data plane")
+                console.print("  [dim]awdl[/] peer-to-peer data plane")
 
     # Apply passthrough args so the script's main() sees them in sys.argv.
     # On workers, _distribute_script will transmit these and cmd_join restores them.
@@ -178,7 +178,6 @@ def cmd_start(args, passthrough=None):
 
 def cmd_join(args, passthrough=None):
     import logging
-    import time
     if not args.logs:
         from .dashboard import _disable_tqdm_locks
         _disable_tqdm_locks()
@@ -213,9 +212,9 @@ def cmd_join(args, passthrough=None):
         t = grove._comm._group._transport
         if hasattr(t, '_upgraded'):
             if t._upgraded:
-                console.print(f"  [green]wifi[/] direct TCP data plane")
+                console.print("  [green]wifi[/] direct TCP data plane")
             else:
-                console.print(f"  [dim]awdl[/] peer-to-peer data plane")
+                console.print("  [dim]awdl[/] peer-to-peer data plane")
     console.print()
 
     if grove._received_script is None:
@@ -248,6 +247,7 @@ def cmd_join(args, passthrough=None):
 
 def _discover_p2p(args, console):
     import time
+
     from .transport.p2p import P2PLiveBrowser, discover_p2p_clusters
 
     if args.cluster_name:
@@ -269,7 +269,8 @@ def _discover_p2p(args, console):
 
 def _discover_tcp(args, console):
     import time
-    from .cluster import browse_clusters_live, browse_clusters
+
+    from .cluster import browse_clusters, browse_clusters_live
 
     if args.cluster_name:
         clusters = browse_clusters(timeout=5.0)
@@ -292,6 +293,7 @@ def _discover_tcp(args, console):
 def cmd_status(_args):
     from rich.console import Console
     from rich.table import Table
+
     import grove
 
     console = Console()
@@ -375,11 +377,16 @@ def main():
             parser.error(f"unrecognized arguments: {' '.join(unknown)}")
 
     match args.command:
-        case "run": cmd_run(args)
-        case "start": cmd_start(args, passthrough)
-        case "join": cmd_join(args, passthrough)
-        case "status": cmd_status(args)
-        case _: parser.print_help()
+        case "run":
+            cmd_run(args)
+        case "start":
+            cmd_start(args, passthrough)
+        case "join":
+            cmd_join(args, passthrough)
+        case "status":
+            cmd_status(args)
+        case _:
+            parser.print_help()
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import subprocess
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +26,14 @@ def _build_ssh_target(ssh_user: str, hostname: str) -> str:
 
 class _ProbeMixin:
     @staticmethod
-    async def probe_username(hostname: str, ssh_user: str = "") -> Optional[str]:
+    async def probe_username(hostname: str, ssh_user: str = "") -> str | None:
         info = await _ProbeMixin.probe_metadata(hostname, ssh_user)
         if info:
             return info.get("username") or None
         return None
 
     @staticmethod
-    async def probe_metadata(hostname: str, ssh_user: str = "") -> Optional[dict]:
+    async def probe_metadata(hostname: str, ssh_user: str = "") -> dict | None:
         target = _build_ssh_target(ssh_user, hostname)
         remote = (
             "sh -lc 'whoami; uname -s; uname -r; uname -m; "

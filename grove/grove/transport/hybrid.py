@@ -1,15 +1,16 @@
 """AWDL discovery and control, with WiFi data plane upgrade when available."""
 
-import os
 import socket
 import struct
 import threading
+
 import numpy as np
-from .base import Transport, Connection
-from .p2p import P2PTransport, P2PConnection
-from .socket_conn import SocketConnection
+
 from .._types import DEFAULT_BASE_PORT
-from .._utils import get_logger, get_local_ip, configure_socket
+from .._utils import configure_socket, get_local_ip, get_logger
+from .base import Connection, Transport
+from .p2p import P2PConnection, P2PTransport
+from .socket_conn import SocketConnection
 
 log = get_logger("hybrid")
 

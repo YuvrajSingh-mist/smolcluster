@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import yaml
@@ -31,7 +31,7 @@ with open(CONFIG_DIR / "inference" / "cluster_config_inference.yaml") as f:
 
 model_configs = inference_config.get("dp", inference_config)
 MODEL_NAME = model_configs.get("active_model", "hf_model")
-HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN") or None
+HF_TOKEN: str | None = os.environ.get("HF_TOKEN") or None
 
 
 def resolve_model_config(cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -112,7 +112,7 @@ def connect_with_retry(
             sock.settimeout(None)
             logger.info(f"Connected to {host}:{port} on attempt {attempt + 1}")
             return sock
-        except (OSError, ConnectionRefusedError, socket.timeout) as exc:
+        except (TimeoutError, OSError, ConnectionRefusedError) as exc:
             sock.close()
             if attempt < max_retries - 1:
                 logger.warning(
@@ -177,9 +177,9 @@ def run_rank_zero(
             continue
 
         prompt = (payload.get("prompt") or "").strip()
-        
+
         original_prompt_length = len(tokenizer(prompt, return_tensors="pt").input_ids[0])
-        
+
         if not prompt:
             send_message(client_socket, ("error", {"message": "Empty prompt"}))
             continue
@@ -190,7 +190,7 @@ def run_rank_zero(
             send_message(client_socket, ("error", {"message": str(exc)}))
             continue
         tokenized_prompt = tokenizer(prompt, return_tensors="pt").input_ids
-        
+
         for token_idx in range(max_tokens):
             with torch.inference_mode():
                 local_logits = model(tokenized_prompt.to(device)).logits.cpu()

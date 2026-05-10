@@ -1,7 +1,7 @@
 """Pytest configuration and shared fixtures for smolcluster tests."""
 
-import torch
 import pytest
+import torch
 
 
 @pytest.fixture

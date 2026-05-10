@@ -1,10 +1,9 @@
 """GSM8K dataset loader — formats grade-school math problems and answers for GRPO training and evaluation."""
+import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from datasets import load_dataset
-import logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +21,7 @@ PROMPT = (
 # )
 
 
-def extract_answer_from_gsm8k(gsm8k_answer: str) -> Optional[float]:
+def extract_answer_from_gsm8k(gsm8k_answer: str) -> float | None:
     match = re.search(r"### (.*)", gsm8k_answer)
     if not match:
         return None
@@ -31,10 +30,10 @@ def extract_answer_from_gsm8k(gsm8k_answer: str) -> Optional[float]:
     except ValueError:
         logger.warning("[data] Failed to parse GSM8K answer as float: %.80r", gsm8k_answer)
         return None
-    
 
-def _format_prompt(question: str, tokenizer: Optional[Any]) -> str:
-    
+
+def _format_prompt(question: str, tokenizer: Any | None) -> str:
+
     try:
         if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
             messages = [
@@ -53,10 +52,10 @@ def _format_prompt(question: str, tokenizer: Optional[Any]) -> str:
 
 
 def build_train_val_examples(
-    data_config: Dict[str, Any],
-    tokenizer: Optional[Any] = None,
+    data_config: dict[str, Any],
+    tokenizer: Any | None = None,
     seed: int = 42,
-) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
+) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
     """Load a HuggingFace dataset and return pre-formatted (prompt, answer) pairs.
 
     Prompts are formatted at load time so each training step skips the per-step
@@ -80,12 +79,12 @@ def build_train_val_examples(
 
     train_examples = [
         (_format_prompt(q, tokenizer), ans)
-        for q, a in zip(train_split["question"], train_split["answer"])
+        for q, a in zip(train_split["question"], train_split["answer"], strict=False)
         if (ans := extract_answer_from_gsm8k(a)) is not None
     ]
     val_examples = [
         (_format_prompt(q, tokenizer), ans)
-        for q, a in zip(val_split["question"], val_split["answer"])
+        for q, a in zip(val_split["question"], val_split["answer"], strict=False)
         if (ans := extract_answer_from_gsm8k(a)) is not None
     ]
     return train_examples, val_examples

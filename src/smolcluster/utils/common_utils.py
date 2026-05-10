@@ -1,14 +1,16 @@
 """Shared socket-based messaging helpers and gradient/weight extraction utilities used across training algorithms."""
+import logging
 import pickle
 import socket
 import struct
 import time
-import logging
 from copy import deepcopy
-from typing import Any, Optional
+from typing import Any
+
 import torch
+
 from smolcluster.utils.logging_utils import emit_smol_event, emit_transport_event
-        
+
 # Module logger
 logger = logging.getLogger(__name__)
 
@@ -162,24 +164,24 @@ def calculate_bandwidth_metrics(
 ) -> dict[str, float]:
     """
     Calculate bandwidth metrics from transfer size and time lists.
-    
+
     Args:
         sizes: List of transfer sizes in MB
         times: List of transfer times in seconds
         window_size: Number of recent samples to consider
-        
+
     Returns:
         Dictionary with bandwidth_mbps and avg_size_mb
     """
     recent_sizes = sizes[-window_size:]
     recent_times = times[-window_size:]
-    
+
     total_mb = sum(recent_sizes)
     total_time = sum(recent_times)
-    
+
     bandwidth_mbps = (total_mb * 8) / total_time if total_time > 0 else 0
     avg_size_mb = total_mb / len(recent_sizes) if len(recent_sizes) > 0 else 0
-    
+
     return {
         "bandwidth_mbps": bandwidth_mbps,
         "avg_size_mb": avg_size_mb
@@ -241,8 +243,8 @@ def send_tensor(sock, tensor: torch.Tensor):
 def send_message(
     sock: socket.SocketType,
     message: Any,
-    buffer_size_mb: Optional[int] = None,
-    smol_event: Optional[dict] = None,
+    buffer_size_mb: int | None = None,
+    smol_event: dict | None = None,
 ) -> None:
     """Send a message with optional buffer size configuration and metrics tracking.
 
@@ -283,9 +285,9 @@ def send_message(
 
 def receive_message(
     sock: socket.SocketType,
-    buffer_size_mb: Optional[int] = None,
-    smol_event: Optional[dict] = None,
-) -> Optional[dict]:
+    buffer_size_mb: int | None = None,
+    smol_event: dict | None = None,
+) -> dict | None:
     """Receive a message with optional buffer size configuration and metrics tracking.
 
     Args:
@@ -350,12 +352,12 @@ def receive_message(
 def load_model_and_tokenizer(
     hf_model_name: str,
     device: Any,
-    hf_token: Optional[str] = None,
-    tokenizer_cfg: Optional[dict[str, Any]] = None,
+    hf_token: str | None = None,
+    tokenizer_cfg: dict[str, Any] | None = None,
     load_model: bool = True,
     load_tokenizer: bool = True,
-    logger: Optional[logging.Logger] = None,
-) -> tuple[Optional[Any], Optional[Any]]:
+    logger: logging.Logger | None = None,
+) -> tuple[Any | None, Any | None]:
     """Load a causal LM on target device, and optionally its tokenizer.
 
     Args:
@@ -370,7 +372,7 @@ def load_model_and_tokenizer(
     Returns:
         Tuple of (model or None, tokenizer or None).
     """
-  
+
     from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
 
     model = None
@@ -402,7 +404,7 @@ def load_model_and_tokenizer(
 
 
 def parse_tokenizer_config(
-    tokenizer_cfg: Optional[dict[str, Any]],
+    tokenizer_cfg: dict[str, Any] | None,
 ) -> tuple[bool, dict[str, Any]]:
     """Return tokenizer mode and kwargs from config.
 
@@ -427,9 +429,9 @@ def parse_tokenizer_config(
 
 def get_generation_config_defaults(
     hf_model_name: str,
-    hf_token: Optional[str] = None,
-    logger: Optional[logging.Logger] = None,
-    generation_config_source: Optional[str] = None,
+    hf_token: str | None = None,
+    logger: logging.Logger | None = None,
+    generation_config_source: str | None = None,
 ) -> dict[str, Any]:
     """Extract generation config defaults from HuggingFace model.
 
@@ -491,8 +493,8 @@ def get_generation_config_defaults(
                     "%s",
                     source, e,
                     (
-                        f"Set tokenizer.generation_config_source in model_config_inference.yaml "
-                        f"to point to the original base model (e.g. the non-quantized HF repo)."
+                        "Set tokenizer.generation_config_source in model_config_inference.yaml "
+                        "to point to the original base model (e.g. the non-quantized HF repo)."
                         if not is_fallback else
                         f"Check that '{source}' is correct and accessible."
                     ),
@@ -510,8 +512,8 @@ def get_generation_config_defaults(
 
 def get_effective_decoding_strategies(
     model_cfg: dict[str, Any],
-    hf_token: Optional[str] = None,
-    logger: Optional[logging.Logger] = None,
+    hf_token: str | None = None,
+    logger: logging.Logger | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Build effective decoding strategy defaults for inference.
 
@@ -668,7 +670,7 @@ def avg_grads(incoming_grads: dict[str, torch.Tensor], model: torch.nn.Module, n
     Incrementally accumulate gradients with averaging factor.
     Takes incoming gradients, divides by num_workers, and adds to current gradients.
     This allows accumulating gradients worker-by-worker without creating full gradients at once.
-    
+
     Args:
         incoming_grads: Dictionary of gradients from a peer worker
         model: The model whose gradients will be accumulated
@@ -714,7 +716,7 @@ def set_weights_by_layer(
     """
     Update model with received weights from other workers (ZeRO Stage 1 + 2).
     Each worker sends only their owned parameters, so we just copy them into the model.
-    
+
     Args:
         weights_received_dict: Dict of {rank: owned_state_dict} received from other workers
         model: Full model to update
@@ -722,26 +724,26 @@ def set_weights_by_layer(
     """
     if not weights_received_dict:
         return
-    
+
     # Build model parameter dict for fast lookup
-    model_params = {name: param for name, param in model.named_parameters()}
-    
+    model_params = dict(model.named_parameters())
+
     with torch.no_grad():
         for rank, state_dict in weights_received_dict.items():
-            
+
             if rank == worker_rank:
                 continue
             # Each rank sends only their owned parameters
             # Just copy all parameters from their state_dict into the model
-            
+
             for param_name, param_value in state_dict.items():
-                
+
                 if param_name.startswith('model.'):
                     param_name = param_name[len("model."):]
                     if param_name in list(model_params.keys()):
-                        
+
                         model_params[param_name].data.copy_(param_value.to(model_params[param_name].device))
-                        
+
                 else:
                     if param_name in list(model_params.keys()):
                         model_params[param_name].data.copy_(param_value.to(model_params[param_name].device))
@@ -766,7 +768,7 @@ def load_params_into_skeleton(model: Any, params: dict, device: torch.device) ->
             module = model
             for part in parts[:-1]:
                 module = getattr(module, part)
-            
+
             # Materialize this shard tensor on the execution device and mark it as
             # trainable so autograd can attach gradients during backward.
             param = getattr(module, parts[-1])

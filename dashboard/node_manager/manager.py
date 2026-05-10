@@ -2,12 +2,11 @@
 import asyncio
 import logging
 import time
-from typing import Dict, Optional
 
 from .constants import _sanitize_log_line
+from .launch import _InferLaunchMixin, _TrainLaunchMixin
+from .lifecycle import _CleanupMixin, _LifecycleMixin
 from .ssh import _ProbeMixin
-from .lifecycle import _LifecycleMixin, _CleanupMixin
-from .launch import _TrainLaunchMixin, _InferLaunchMixin
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +24,8 @@ class NodeManager(
     """
 
     def __init__(self):
-        self.selected:  Dict[str, dict] = {}
-        self.processes: Dict[str, dict] = {}
+        self.selected:  dict[str, dict] = {}
+        self.processes: dict[str, dict] = {}
         self._lock  = asyncio.Lock()
         # Unbounded queue — drained by _log_broadcaster into the Redis Stream.
         self._queue: asyncio.Queue = asyncio.Queue()
@@ -41,7 +40,7 @@ class NodeManager(
     # ── Selection ──────────────────────────────────────────────────────────────
 
     async def select(self, hostname: str, ssh_user: str = "",
-                     rank: Optional[int] = None) -> int:
+                     rank: int | None = None) -> int:
         async with self._lock:
             if rank is None:
                 taken = {v["rank"] for v in self.selected.values()}
@@ -57,13 +56,13 @@ class NodeManager(
 
     # ── Snapshots ──────────────────────────────────────────────────────────────
 
-    def snapshot_selected(self) -> Dict[str, dict]:
+    def snapshot_selected(self) -> dict[str, dict]:
         return {
             h: {"rank": v["rank"], "ssh_user": v["ssh_user"]}
             for h, v in self.selected.items()
         }
 
-    def snapshot_processes(self) -> Dict[str, dict]:
+    def snapshot_processes(self) -> dict[str, dict]:
         def _status(v):
             rc = v["proc"].returncode
             if rc is None:

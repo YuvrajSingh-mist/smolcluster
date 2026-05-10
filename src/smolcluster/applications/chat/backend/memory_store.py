@@ -9,9 +9,7 @@ import uuid
 from dataclasses import dataclass
 
 import numpy as np
-
 import redis
-
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,6 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # ANSI colour palette
@@ -141,7 +140,7 @@ def setup_logging(
 class RankFilter(logging.Filter):
     """Attach rank and component fields to every log record."""
 
-    def __init__(self, rank: Optional[int] = None, component: str = "server"):
+    def __init__(self, rank: int | None = None, component: str = "server"):
         super().__init__()
         self.rank = rank if rank is not None else -1
         self.component = component
@@ -155,9 +154,9 @@ class RankFilter(logging.Filter):
 def setup_cluster_logging(
     logger: logging.Logger,
     component: str,
-    rank: Optional[int] = None,
-    hostname: Optional[str] = None,
-    log_dir: Optional[str] = None,
+    rank: int | None = None,
+    hostname: str | None = None,
+    log_dir: str | None = None,
     level: int = logging.INFO,
     algorithm: str = "",
     arch: str = "",
@@ -167,7 +166,7 @@ def setup_cluster_logging(
     def _project_log_dir() -> Path:
         return Path(__file__).resolve().parents[3] / "logging" / "cluster-logs"
 
-    def _pick_writable(preferred: Optional[str]) -> Path:
+    def _pick_writable(preferred: str | None) -> Path:
         default = _project_log_dir()
         for candidate in [Path(preferred) if preferred else default, default, Path.cwd() / "smolcluster-logs"]:
             try:
@@ -227,7 +226,7 @@ def log_step(logger: logging.Logger, step: int, message: str, level: int = loggi
     logger.log(level, "step:%d | %s", step, message)
 
 
-def log_metric(logger: logging.Logger, step: int, metric_name: str, value: float, extra_info: Optional[str] = None) -> None:
+def log_metric(logger: logging.Logger, step: int, metric_name: str, value: float, extra_info: str | None = None) -> None:
     msg = f"step:{step} | metric:{metric_name} | value:{value:.6f}"
     if extra_info:
         msg += f" | {extra_info}"

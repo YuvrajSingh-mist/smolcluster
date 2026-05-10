@@ -7,7 +7,7 @@ Implements the key stability techniques from mixed precision training:
 """
 
 import logging
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import mlx.core as mx
 import mlx.optimizers as optim
@@ -108,7 +108,7 @@ class MasterWeightAdamW:
         self,
         model: Any,
         learning_rate: float,
-        betas: Tuple[float, float] = (0.9, 0.99),
+        betas: tuple[float, float] = (0.9, 0.99),
         eps: float = 1e-8,
         weight_decay: float = 1e-1,
         enabled: bool = True,
@@ -127,7 +127,7 @@ class MasterWeightAdamW:
         self._weight_decay = float(weight_decay)
         self._step = 0
 
-        self._param_dtypes: Dict[Any, Any] = {}
+        self._param_dtypes: dict[Any, Any] = {}
         self._master_params: Any = None
         self._m: Any = None
         self._v: Any = None
@@ -136,7 +136,7 @@ class MasterWeightAdamW:
             self._init_state(model)
 
     @property
-    def state(self) -> Dict[str, Any]:
+    def state(self) -> dict[str, Any]:
         if not self.enabled:
             return self._fallback.state
         return {

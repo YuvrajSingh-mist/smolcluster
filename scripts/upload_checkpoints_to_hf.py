@@ -5,7 +5,6 @@ from pathlib import Path
 
 from huggingface_hub import HfApi, create_repo
 
-
 HF_USER = "YuvrajSingh9886"
 
 CHECKPOINTS = [

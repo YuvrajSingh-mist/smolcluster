@@ -5,29 +5,31 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-import numpy as np
-import wandb
 import yaml
 from tqdm.auto import tqdm
 
-from smolcluster.applications.reasoning.grpo.data.summarization import build_train_val_examples
+import wandb
+from smolcluster.applications.reasoning.grpo.data.summarization import (
+    build_train_val_examples,
+)
 from smolcluster.applications.reasoning.grpo.rewards import (
-    calculate_summary_quality,
-    calculate_length_reward,
     compute_summarization_rewards,
 )
 from smolcluster.applications.reasoning.grpo.utils import (
+    GradScaler,
+    MasterWeightAdamW,
+    RolloutPrefetcher,
     _add_grads,
     _log_mem,
     _scale_grads,
-    build_batched_rollout_texts,
+    apply_lora_if_quantized,
     build_completion_mask,
     build_rollouts_per_prompt,
     compute_advantages,
@@ -37,19 +39,14 @@ from smolcluster.applications.reasoning.grpo.utils import (
     filter_to_uniform_groups,
     get_dtype_from_config,
     get_mlx_device,
+    get_optimizer_lr,
     iterate_batches,
     load_model,
-    apply_lora_if_quantized,
-    tokenize_rollouts,
-    parse_answer,
-    save_policy_weights,
-    sync_and_reload_workers,
-    GradScaler,
-    MasterWeightAdamW,
-    RolloutPrefetcher,
-    set_global_seed,
-    get_optimizer_lr,
     publish_dashboard_metrics,
+    save_policy_weights,
+    set_global_seed,
+    sync_and_reload_workers,
+    tokenize_rollouts,
 )
 from smolcluster.utils import emit_smol_event, setup_logging
 
@@ -76,8 +73,8 @@ _debug_dir = _module_dir.parents[4] / ".grpo_debug"
 _debug_dir.mkdir(parents=True, exist_ok=True)
 _answers_log_path = _debug_dir / "rollout_answers.jsonl"
 _answers_log_lock = threading.Lock()
-_LAST_DASHBOARD_GRAD_TS: Optional[float] = None
-_last_net_stats: Dict[str, float] = {}
+_LAST_DASHBOARD_GRAD_TS: float | None = None
+_last_net_stats: dict[str, float] = {}
 
 
 def _append_answers_log(record: dict) -> None:
@@ -89,14 +86,14 @@ def _append_answers_log(record: dict) -> None:
 def evaluate_batch(
     model: Any,
     tokenizer: Any,
-    config: Dict[str, Any],
-    prompts: List[str],
-    true_answers: List[str],
-    ref_model: Optional[Any] = None,
+    config: dict[str, Any],
+    prompts: list[str],
+    true_answers: list[str],
+    ref_model: Any | None = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
-    step: Optional[int] = None,
-) -> Optional[Dict[str, float]]:
+    step: int | None = None,
+) -> dict[str, float] | None:
     per_prompt_raw = build_rollouts_per_prompt(prompts, true_answers, config, step=step)
     effective_rollouts = len(per_prompt_raw[0][0]) if per_prompt_raw and per_prompt_raw[0][0] else int(config["num_rollouts"])
     per_prompt = filter_to_uniform_groups(per_prompt_raw, effective_rollouts)
@@ -105,15 +102,15 @@ def evaluate_batch(
 
     T = len(per_prompt)
     C = effective_rollouts
-    rollout_texts: List[str] = []
-    rollout_targets: List[str] = []
-    rollout_questions: List[str] = []
-    for (texts, ans), prompt in zip(per_prompt, prompts[:T]):
+    rollout_texts: list[str] = []
+    rollout_targets: list[str] = []
+    rollout_questions: list[str] = []
+    for (texts, ans), prompt in zip(per_prompt, prompts[:T], strict=False):
         rollout_texts.extend(texts)
         rollout_targets.extend([ans] * C)
         rollout_questions.extend([prompt] * C)
 
-    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts)]
+    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts, strict=False)]
     flat_ids, flat_mask = tokenize_rollouts(tokenizer, full_texts, config["max_input_tokens"], device=device)
     D = flat_ids.shape[1]
     input_ids      = flat_ids.reshape(T, C, D)   # [T, C, D]
@@ -146,7 +143,7 @@ def evaluate_batch(
     rewards = rewards_flat.reshape(T, C)          # [T, C]
     advantages = compute_advantages(rewards, dtype=dtype)  # [T, C]
 
-    ref_logprobs: Optional[mx.array] = None
+    ref_logprobs: mx.array | None = None
     if ref_model is not None and config.get("use_kl", True):
         ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
 
@@ -166,22 +163,22 @@ def evaluate_batch(
 def train_step(
     model: Any,
     tokenizer: Any,
-    config: Dict[str, Any],
-    prompts: List[str],
-    true_answers: List[str],
+    config: dict[str, Any],
+    prompts: list[str],
+    true_answers: list[str],
     epoch_idx: int,
     step_in_epoch: int,
     total_steps_in_epoch: int,
-    ref_model: Optional[Any] = None,
+    ref_model: Any | None = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
-    device_stream: Optional[mx.Stream] = None,
-    scaler: Optional[GradScaler] = None,
-    prefetched_rollouts: Optional[Tuple[List[str], List[str], List[str]]] = None,
-    rollout_group_sizes: Optional[List[int]] = None,
-    
-    step: Optional[int] = None,
-) -> Optional[Tuple[Dict[str, float], Any]]:
+    device_stream: mx.Stream | None = None,
+    scaler: GradScaler | None = None,
+    prefetched_rollouts: tuple[list[str], list[str], list[str]] | None = None,
+    rollout_group_sizes: list[int] | None = None,
+
+    step: int | None = None,
+) -> tuple[dict[str, float], Any] | None:
     step_tag = f"[train_step epoch={epoch_idx + 1} step={step_in_epoch}/{total_steps_in_epoch}]"
 
     num_rollouts = int(config["num_rollouts"])
@@ -190,13 +187,13 @@ def train_step(
         # Reconstruct per_prompt from flat lists + group_sizes so we can apply
         # uniform-group filtering consistently with the non-prefetch path.
         flat_texts, flat_targets, flat_questions = prefetched_rollouts
-        per_prompt_raw: List[Tuple[List[str], str]] = []
+        per_prompt_raw: list[tuple[list[str], str]] = []
         idx = 0
         for size in (rollout_group_sizes or []):
             per_prompt_raw.append((flat_texts[idx : idx + size], flat_targets[idx] if idx < len(flat_targets) else ""))
             idx += size
         logger.info("\n%s Using prefetched rollouts (%d)", step_tag, len(flat_texts))
-        rollout_time_s: Optional[float] = None  # prefetched while previous step was running
+        rollout_time_s: float | None = None  # prefetched while previous step was running
     else:
         logger.info("\n%s Generating rollouts for %d prompt(s) ...", step_tag, len(prompts))
         _t0 = time.time()
@@ -216,10 +213,10 @@ def train_step(
 
     T = len(per_prompt)
     C = effective_rollouts
-    rollout_texts: List[str] = []
-    rollout_targets: List[str] = []
-    rollout_questions: List[str] = []
-    for (texts, ans), prompt in zip(per_prompt, prompts[:T]):
+    rollout_texts: list[str] = []
+    rollout_targets: list[str] = []
+    rollout_questions: list[str] = []
+    for (texts, ans), prompt in zip(per_prompt, prompts[:T], strict=False):
         rollout_texts.extend(texts)
         rollout_targets.extend([ans] * C)
         rollout_questions.extend([prompt] * C)
@@ -228,7 +225,7 @@ def train_step(
     # Tokenize prompt+completion together so the model sees full context.
     # completion_mask zeros out prompt positions so log-prob averaging is over
     # generated tokens only, giving p(completion | prompt).
-    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts)]
+    full_texts = [q + t for q, t in zip(rollout_questions, rollout_texts, strict=False)]
     flat_ids, flat_mask = tokenize_rollouts(tokenizer, full_texts, config["max_input_tokens"], device=device)
     D = flat_ids.shape[1]
     input_ids      = flat_ids.reshape(T, C, D)    # [T, C, D]
@@ -283,7 +280,7 @@ def train_step(
     model.train()
 
     # ref_logprobs: frozen initial model, used only for KL penalty (use_kl=True).
-    ref_logprobs: Optional[mx.array] = None
+    ref_logprobs: mx.array | None = None
     if ref_model is not None and config.get("use_kl", True):
         logger.info("%s Computing reference model log-probs ...", step_tag)
         ref_logprobs = compute_logprobs(ref_model, input_ids, attention_mask, dtype=dtype, completion_mask=completion_mask)  # [T, C]
@@ -306,7 +303,7 @@ def train_step(
     _t_grad = time.time()
 
     # Store curr_logprobs for ratio diagnostics (avoid recomputing after grad loop)
-    curr_lps: List[mx.array] = []
+    curr_lps: list[mx.array] = []
 
     for t_start in range(0, T, chunk_T):
         t_end = min(t_start + chunk_T, T)
@@ -327,12 +324,13 @@ def train_step(
 
             # Capture loop variables by value via default args to avoid closure bugs
             def chunk_loss_fn(m, _ids=c_ids, _mask=c_mask, _comp=c_comp,
-                              _adv=c_adv, _old=c_old, _ref=c_ref) -> mx.array:
+                              _adv=c_adv, _old=c_old, _ref=c_ref,
+                              _scale=chunk_scale) -> mx.array:
                 lp = compute_logprobs(m, _ids, _mask, dtype=dtype, use_checkpoint=use_ckpt, completion_mask=_comp)  # [chunk_T, chunk_C]
                 curr_lps.append(lp)
                 chunk_loss = compute_grpo_loss(
                     lp, _adv, config, old_logprobs=_old, ref_logprobs=_ref
-                ) * chunk_scale
+                ) * _scale
                 if scaler is not None:
                     return scaler.scale_loss(chunk_loss)
                 return chunk_loss
@@ -359,7 +357,7 @@ def train_step(
     # completion_mask is [T, C, D]; sum over token dim → per-rollout completion lengths [T, C]
     lengths = mx.sum(completion_mask, axis=-1).astype(dtype)
     lp = mx.array(reward_components["length_penalty"]) if reward_components else None
-    metrics_extra: Dict[str, float] = {
+    metrics_extra: dict[str, float] = {
         "reward_std":       float(mx.std(rewards).item()),
         "reward_min":       float(mx.min(rewards).item()),
         "reward_max":       float(mx.max(rewards).item()),
@@ -399,19 +397,19 @@ def train_step(
 
 def validate(
     model: Any,
-    config: Dict[str, Any],
-    val_examples: Sequence[Tuple[str, str]],
+    config: dict[str, Any],
+    val_examples: Sequence[tuple[str, str]],
     tokenizer: Any,
     global_step: int,
-    ref_model: Optional[Any] = None,
+    ref_model: Any | None = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     model.eval()
 
-    loss_values: List[float] = []
-    reward_values: List[float] = []
-    rollout_counts: List[float] = []
+    loss_values: list[float] = []
+    reward_values: list[float] = []
+    rollout_counts: list[float] = []
 
     logger.info("Running evaluation at step %s", global_step)
     for prompts, true_answers in iterate_batches(
@@ -456,20 +454,20 @@ def validate(
 
 def train(
     model: Any,
-    config: Dict[str, Any],
-    train_examples: Sequence[Tuple[str, str]],
-    val_examples: Sequence[Tuple[str, str]],
+    config: dict[str, Any],
+    train_examples: Sequence[tuple[str, str]],
+    val_examples: Sequence[tuple[str, str]],
     optimizer: Any,
     tokenizer: Any,
-    ref_model: Optional[Any] = None,
+    ref_model: Any | None = None,
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
-    scaler: Optional[GradScaler] = None,
-    model_cfg: Optional[Dict[str, Any]] = None,
+    scaler: GradScaler | None = None,
+    model_cfg: dict[str, Any] | None = None,
 ) -> None:
     global _LAST_DASHBOARD_GRAD_TS
     model.train()
-  
+
     global_step = 0
     total_epochs = config["num_epochs"]
     val_steps = config["val_steps"]
@@ -540,7 +538,7 @@ def train(
             micro_batch_size = max(1, num_prompts // grad_accum_steps)
 
             accum_grads = None
-            accum_metrics: List[Dict[str, float]] = []
+            accum_metrics: list[dict[str, float]] = []
             valid_micro_batches = 0
 
             # Process each micro-batch and accumulate gradients
@@ -560,11 +558,11 @@ def train(
                 micro_pre = None
                 micro_group_sizes = None
                 if pre is not None:
-                    texts: List[str] = []
-                    targets: List[str] = []
-                    questions: List[str] = []
+                    texts: list[str] = []
+                    targets: list[str] = []
+                    questions: list[str] = []
                     micro_group_sizes = []
-                    for (rollout_texts, true_answer), prompt in zip(pre[micro_step:end_idx], micro_prompts):
+                    for (rollout_texts, true_answer), prompt in zip(pre[micro_step:end_idx], micro_prompts, strict=False):
                         micro_group_sizes.append(len(rollout_texts))
                         texts.extend(rollout_texts)
                         targets.extend([true_answer] * len(rollout_texts))
@@ -592,23 +590,23 @@ def train(
                     rollout_group_sizes=micro_group_sizes,
                     step=current_rollout_step,
                 )
-                
+
                 if result is None:
                     logger.info(
                         "step %d — micro-batch %d/%d had no usable rollouts, skipping",
                         step_in_epoch, micro_idx, grad_accum_steps,
                     )
                     continue
-                
+
                 micro_metrics, grads = result
                 valid_micro_batches += 1
-                
+
                 # Scale gradients before accumulating
                 accum_grads = grads if accum_grads is None else _add_grads(accum_grads, grads)
                 # Materialise accumulated grads to release the lazy addition graph
                 mx.eval(accum_grads)
                 accum_metrics.append(micro_metrics)
-            
+
             # If no valid micro-batches produced gradients, skip optimizer step
             if accum_grads is None:
                 logger.warning("step %d — no micro-batches produced valid rollouts, skipping step", step_in_epoch)
@@ -617,7 +615,7 @@ def train(
             if valid_micro_batches > 1:
                 accum_grads = _scale_grads(accum_grads, 1.0 / valid_micro_batches)
                 mx.eval(accum_grads)
-            
+
             # --- Apply optimizer update after gradient accumulation ---
             max_grad_norm = float(config.get("max_grad_norm") or 0)
             clip_max = max_grad_norm if max_grad_norm > 0 else float("inf")
@@ -798,11 +796,11 @@ def train(
 
 
 def main() -> None:
-    
+
     for _log in [_answers_log_path, _debug_dir / "vllm_rollouts.jsonl"]:
         _log.write_text("", encoding="utf-8")
-    
-    
+
+
     setup_logging(force=True)
 
     if mx.metal.is_available():

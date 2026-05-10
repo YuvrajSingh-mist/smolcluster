@@ -3,7 +3,6 @@
 import logging
 import urllib.request
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from tqdm import tqdm
@@ -26,8 +25,8 @@ def load_model_weights_config() -> dict:
 
 def download_and_convert_model(
     model_name: str = "gpt2",
-    output_dir: Optional[Path] = None,
-    output_filename: Optional[str] = None,
+    output_dir: Path | None = None,
+    output_filename: str | None = None,
 ) -> Path:
     """
     Download a model safetensors file directly from HuggingFace.
@@ -115,7 +114,7 @@ def download_and_convert_model(
 
 
 def ensure_model_weights(
-    model_identifier: str = "gpt2", weights_path: Optional[Path] = None
+    model_identifier: str = "gpt2", weights_path: Path | None = None
 ) -> Path:
     """
     Ensure model weights exist, downloading if necessary.

@@ -1,17 +1,17 @@
 """smolcluster models package — exports GPT, MoE, and SimpleNN architectures."""
 from .gpt import BaseTransformer, BaseTransformerBlock
 from .moe import (
-    AttentionHead,
-    LayerNormalization,
     MHA,
+    AttentionHead,
+    ExpertBlock,
+    LayerNormalization,
     Mixtral,
     RotaryEmbeddings,
+    Router,
     SWiGLUExpertMoE,
     Swish,
     TextEmbeddings,
     TransformerDecoderBlock,
-    ExpertBlock,
-    Router
 )
 from .SimpleNN import SimpleMNISTModel
 

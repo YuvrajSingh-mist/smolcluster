@@ -4,7 +4,7 @@ import glob
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -21,8 +21,8 @@ class CheckpointManager:
         save_optimizer: bool = True,
         rank: int = 0,
         algorithm: str = "syncps",
-        save_optimizer_state: Optional[bool] = None,
-        prefix: Optional[str] = None,
+        save_optimizer_state: bool | None = None,
+        prefix: str | None = None,
     ):
         """
         Initialize checkpoint manager.
@@ -57,10 +57,10 @@ class CheckpointManager:
         step: int,
         epoch: int,
         model: torch.nn.Module,
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        scheduler: Optional[Any] = None,
-        loss: Optional[float] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        optimizer: torch.optim.Optimizer | None = None,
+        scheduler: Any | None = None,
+        loss: float | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """
         Save a checkpoint.
@@ -121,9 +121,9 @@ class CheckpointManager:
         self,
         checkpoint_path: str,
         model: torch.nn.Module,
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        scheduler: Optional[Any] = None,
-        device: Optional[torch.device] = None,
+        optimizer: torch.optim.Optimizer | None = None,
+        scheduler: Any | None = None,
+        device: torch.device | None = None,
     ) -> dict[str, Any]:
         """
         Load a checkpoint.
@@ -184,7 +184,7 @@ class CheckpointManager:
             logger.error(f"Failed to load checkpoint from {checkpoint_path}: {e}")
             raise
 
-    def find_latest_checkpoint(self) -> Optional[str]:
+    def find_latest_checkpoint(self) -> str | None:
         """
         Find the latest checkpoint for this rank.
 

@@ -118,7 +118,7 @@ def connect_to_service(
                 f"Connected to {service_name} at {host}:{port} on attempt {attempt + 1}"
             )
             return sock
-        except (OSError, ConnectionRefusedError, socket.timeout) as e:
+        except (TimeoutError, OSError, ConnectionRefusedError) as e:
             sock.close()  # Close the failed socket
             # Re-ping every 5 attempts to keep network fresh
             if attempt > 0 and attempt % 5 == 0:

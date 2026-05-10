@@ -26,20 +26,16 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import evaluate
 import mlx.core as mx
-import mlx.nn as nn
-import numpy as np
-from datasets import load_dataset
-from mlx_lm import load as mlx_load
+import yaml
 from mlx_lm import generate as mlx_generate
+from mlx_lm import load as mlx_load
 from mlx_lm.sample_utils import make_sampler
-from mlx.utils import tree_unflatten
 from tqdm import tqdm
 from transformers import AutoTokenizer
-import yaml
 
 # Allow running as a standalone script from any directory.
 _script_dir = Path(__file__).parent
@@ -47,18 +43,18 @@ _smolcluster_root = _script_dir.parents[3]
 _project_root = _smolcluster_root.parent.parent
 sys.path.insert(0, str(_project_root / "src"))
 
+from smolcluster.applications.reasoning.grpo.data.gsm8k import build_train_val_examples
+from smolcluster.applications.reasoning.grpo.rewards import (
+    calculate_answer_reward,
+    calculate_formatted_reward,
+    calculate_think_reward,
+)
 from smolcluster.applications.reasoning.grpo.utils import (
     build_rollouts_per_prompt,
     build_vllm_worker_urls,
     get_mlx_device,
     parse_answer,
     sync_and_reload_workers,
-)
-from smolcluster.applications.reasoning.grpo.data.gsm8k import build_train_val_examples
-from smolcluster.applications.reasoning.grpo.rewards import (
-    calculate_answer_reward,
-    calculate_formatted_reward,
-    calculate_think_reward,
 )
 from smolcluster.utils import setup_logging
 
@@ -75,7 +71,7 @@ def _eval_answers_log_path() -> Path:
     return _eval_rollouts_dir() / "rollout_answers.jsonl"
 
 
-def _append_eval_answers_log(record: Dict[str, Any]) -> None:
+def _append_eval_answers_log(record: dict[str, Any]) -> None:
     answers_path = _eval_answers_log_path()
     answers_path.parent.mkdir(parents=True, exist_ok=True)
     with _answers_log_lock:
@@ -88,7 +84,7 @@ def _build_answer_log_record(
     question: str,
     generated_text: str,
     true_answer: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     predicted_answer = parse_answer(generated_text)
     answer_reward = calculate_answer_reward(predicted_answer, true_answer)
     think_reward = calculate_think_reward(generated_text)
@@ -124,7 +120,7 @@ def enable_eval_rollout_logging() -> Path:
     return log_path
 
 
-def load_eval_configs() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def load_eval_configs() -> tuple[dict[str, Any], dict[str, Any]]:
     """Load the GRPO and model configs used by training and evaluation."""
     grpo_cfg_path = _smolcluster_root / "configs" / "reasoning" / "grpo" / "config.yaml"
     model_cfg_path = _smolcluster_root / "configs" / "inference" / "model_config_inference.yaml"
@@ -154,7 +150,7 @@ def load_prompt_tokenizer(model_name: str) -> Any:
     return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 
-def maybe_sync_vllm_checkpoint(model_path: str, grpo_config: Dict[str, Any], model_config: Dict[str, Any]) -> str:
+def maybe_sync_vllm_checkpoint(model_path: str, grpo_config: dict[str, Any], model_config: dict[str, Any]) -> str:
     """If model_path points at a local GRPO checkpoint, sync it to the rollout workers."""
     resolved_model_path = resolve_project_path(model_path)
     if is_local_checkpoint_dir(resolved_model_path):
@@ -165,11 +161,11 @@ def maybe_sync_vllm_checkpoint(model_path: str, grpo_config: Dict[str, Any], mod
 
 
 def get_split_examples(
-    grpo_config: Dict[str, Any],
+    grpo_config: dict[str, Any],
     split: str,
     tokenizer: Any,
-    max_examples: Optional[int] = None,
-) -> List[Tuple[str, float]]:
+    max_examples: int | None = None,
+) -> list[tuple[str, float]]:
     train_examples, val_examples = build_train_val_examples(grpo_config["data"], tokenizer=tokenizer)
     examples = train_examples if split == "train" else val_examples
     if max_examples is not None:
@@ -188,7 +184,7 @@ def configure_eval_device(device_name: str) -> None:
     mx.set_default_device(device)
     logger.info("Evaluation device: %s", device_name.upper())
 
-def load_model_and_tokenizer(model_path: str) -> Tuple[Any, Any]:
+def load_model_and_tokenizer(model_path: str) -> tuple[Any, Any]:
     """Load a model and tokenizer from an HF model ID or local checkpoint path."""
     logger.info("Loading model from %s", model_path)
     model, tokenizer = mlx_load(model_path, tokenizer_config={"trust_remote_code": True})
@@ -234,7 +230,7 @@ def run_generation(
 ) -> str:
     """Generate a single completion using mlx_lm."""
     sampler = make_sampler(temp=temperature, top_p=top_p)
-    kwargs: Dict[str, Any] = {"max_tokens": max_new_tokens, "verbose": False, "sampler": sampler}
+    kwargs: dict[str, Any] = {"max_tokens": max_new_tokens, "verbose": False, "sampler": sampler}
 
     return mlx_generate(model, tokenizer, prompt=prompt, **kwargs)
 
@@ -242,7 +238,7 @@ def run_generation(
 # ---------------------------------------------------------------------------
 # Answer parsing / matching
 # ---------------------------------------------------------------------------
-def _answers_match(predicted: Optional[float], true: float) -> bool:
+def _answers_match(predicted: float | None, true: float) -> bool:
     if predicted is None:
         return False
     return calculate_answer_reward(predicted, true) > 0.0
@@ -270,9 +266,9 @@ def evaluate_pass_k_vllm(
     num_rollouts: int = 4,
     max_tokens: int = 512,
     split: str = "test",
-    output_file: Optional[str] = None,
-    max_examples: Optional[int] = None,
-) -> Dict[str, Any]:
+    output_file: str | None = None,
+    max_examples: int | None = None,
+) -> dict[str, Any]:
     """Evaluate pass@k using the same prompt builder and vLLM rollout path as training."""
     rollout_log_path = enable_eval_rollout_logging()
 
@@ -303,9 +299,9 @@ def evaluate_pass_k_vllm(
         requested_total_rollouts,
     )
 
-    detailed: List[Dict[str, Any]] = []
-    rollout_counts: List[int] = []
-    rollout_correct_counts: List[int] = []
+    detailed: list[dict[str, Any]] = []
+    rollout_counts: list[int] = []
+    rollout_correct_counts: list[int] = []
 
     for i, (prompt, true_answer) in enumerate(
         tqdm(examples, total=len(examples), desc="Generating vLLM rollouts")
@@ -348,11 +344,11 @@ def evaluate_pass_k_vllm(
 
     effective_total_rollouts = min(rollout_counts) if rollout_counts else 1
     k_values = [1] if effective_total_rollouts <= 1 else [1, effective_total_rollouts]
-    pass_at_k_results: Dict[str, float] = {}
+    pass_at_k_results: dict[str, float] = {}
     for k in k_values:
         per_question = [
             _estimate_pass_at_k(n, c, k)
-            for n, c in zip(rollout_counts, rollout_correct_counts)
+            for n, c in zip(rollout_counts, rollout_correct_counts, strict=False)
         ]
         pass_at_k_results[f"pass@{k}"] = float(sum(per_question) / len(per_question)) if per_question else 0.0
 
@@ -401,8 +397,8 @@ def evaluate_pass_k_vllm(
 
 
 def evaluate_accuracy_vllm(
-    val_examples: List[Tuple[str, float]],
-    rollout_config: Dict[str, Any],
+    val_examples: list[tuple[str, float]],
+    rollout_config: dict[str, Any],
     max_new_tokens: int = 512,
     label: str = "",
 ) -> float:
@@ -413,8 +409,8 @@ def evaluate_accuracy_vllm(
     rollout_config["max_output_tokens"] = max_new_tokens
     rollout_config["vllm_request_overrides"] = {"temperature": 0.0, "top_p": 1.0}
 
-    predictions: List[str] = []
-    references: List[str] = []
+    predictions: list[str] = []
+    references: list[str] = []
 
     bar = tqdm(val_examples, desc=f"Evaluating {label}", leave=True)
     for prompt, true_answer in bar:
@@ -446,7 +442,7 @@ def evaluate_accuracy_vllm(
 # Checkpoint comparison helpers
 # ---------------------------------------------------------------------------
 
-def _find_step0_and_final(checkpoint_dir: Path) -> Tuple[Optional[Path], Optional[Path]]:
+def _find_step0_and_final(checkpoint_dir: Path) -> tuple[Path | None, Path | None]:
     if not checkpoint_dir.is_dir():
         return None, None
     step_dirs = [d for d in checkpoint_dir.iterdir() if d.is_dir() and d.name.startswith("step_")]
@@ -468,11 +464,11 @@ def _find_step0_and_final(checkpoint_dir: Path) -> Tuple[Optional[Path], Optiona
 
 def run_comparison(
     model_path: str,
-    step0_path: Optional[str],
-    final_path: Optional[str],
-    checkpoint_dir: Optional[str],
+    step0_path: str | None,
+    final_path: str | None,
+    checkpoint_dir: str | None,
     max_new_tokens: int,
-    max_examples: Optional[int],
+    max_examples: int | None,
 ) -> None:
     """Compare checkpoints using vLLM worker generation only."""
     grpo_config, model_config = load_eval_configs()

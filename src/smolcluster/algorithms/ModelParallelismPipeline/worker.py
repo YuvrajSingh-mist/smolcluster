@@ -5,17 +5,16 @@ import math
 import socket
 import time
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torchinfo
-import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import wandb
 from smolcluster.utils import (
-    calculate_bandwidth_metrics,
     CheckpointManager,
+    calculate_bandwidth_metrics,
     emit_smol_event,
     get_model_per_node,
     get_network_metrics,
@@ -73,7 +72,7 @@ def evaluate(
     prev_sock: socket.socket,
     worker_rank: int = 0,
     decoder_type_ppl: bool = False,
-) -> tuple[float, Optional[float]]:
+) -> tuple[float, float | None]:
     """Evaluate model on validation set using distributed model layers.
 
     Pipeline flow: Worker 0 → Worker 1 → Worker 2 (computes loss)

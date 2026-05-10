@@ -86,17 +86,24 @@ function renderCfgRows(rows) {
 function toggleSection(el, key) {
   const collapsed = el.classList.toggle('collapsed');
   el.querySelector('.cfg-chevron').textContent = collapsed ? '▶' : '▼';
-  document.getElementById('cfg-kv-body')
-    .querySelectorAll('.cfg-row[data-parent], .cfg-section[data-key]')
-    .forEach(row => {
-      const k = row.dataset.parent || row.dataset.key;
-      if (k && k !== key && isDescendant(k, key)) row.style.display = collapsed ? 'none' : '';
-    });
+  document.getElementById('cfg-kv-body').querySelectorAll('.cfg-row').forEach(row => {
+    const parentKey = row.dataset.parent;
+    const ownKey    = row.dataset.key;
+    if (parentKey !== undefined) {
+      // value / list-item row — hide if its parent is the toggled key or deeper
+      if (parentKey === key || isUnder(parentKey, key))
+        row.style.display = collapsed ? 'none' : '';
+    } else if (ownKey && ownKey !== key) {
+      // nested section row — hide if it lives under the toggled key
+      if (isUnder(ownKey, key))
+        row.style.display = collapsed ? 'none' : '';
+    }
+  });
 }
 
-function isDescendant(candidateKey, ancestorKey) {
-  let cur = _cfgAllRows.find(r => r.key === candidateKey);
-  while (cur) {
+function isUnder(childKey, ancestorKey) {
+  let cur = _cfgAllRows.find(r => r.key === childKey);
+  while (cur && cur.parent) {
     if (cur.parent === ancestorKey) return true;
     cur = _cfgAllRows.find(r => r.key === cur.parent);
   }

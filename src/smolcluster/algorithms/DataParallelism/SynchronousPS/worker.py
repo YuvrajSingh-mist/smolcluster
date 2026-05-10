@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 
 import torch
-import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import wandb
 from smolcluster.utils import (
     CheckpointManager,
     emit_smol_event,
@@ -120,7 +120,7 @@ def connect_to_server(
                 f"Connected to server at {host}:{port} on attempt {attempt + 1}"
             )
             return sock
-        except (OSError, ConnectionRefusedError, socket.timeout) as e:
+        except (TimeoutError, OSError, ConnectionRefusedError) as e:
             sock.close()  # Close the failed socket
             # Re-ping every 5 attempts to keep ARP fresh
             if attempt > 0 and attempt % 5 == 0:

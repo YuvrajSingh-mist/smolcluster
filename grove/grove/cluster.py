@@ -5,8 +5,9 @@ import socket
 import threading
 import time
 import uuid
+
 from ._types import DEFAULT_BASE_PORT
-from ._utils import get_logger, get_local_ip
+from ._utils import get_local_ip, get_logger
 
 log = get_logger("cluster")
 
@@ -26,7 +27,7 @@ def advertise_cluster(
     script: str,
     host: str | None = None,
 ) -> tuple:
-    from zeroconf import Zeroconf, ServiceInfo
+    from zeroconf import ServiceInfo, Zeroconf
 
     host = host or get_local_ip()
     zc = Zeroconf()
@@ -68,7 +69,7 @@ def update_cluster_count(zc, info, count: int) -> None:
 
 class LiveBrowser:
     def __init__(self) -> None:
-        from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
+        from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
 
         self._clusters: dict[str, dict] = {}
         self._lock = threading.Lock()
@@ -107,7 +108,7 @@ def browse_clusters_live() -> LiveBrowser:
 
 
 def browse_clusters(timeout: float = 5.0) -> list[dict]:
-    from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
+    from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
 
     zc = Zeroconf()
     clusters: dict[str, dict] = {}
@@ -134,7 +135,7 @@ def browse_clusters(timeout: float = 5.0) -> list[dict]:
 
 
 def _discover_peers(cluster: str, world_size: int, timeout: float) -> tuple[int, dict]:
-    from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo, ServiceStateChange
+    from zeroconf import ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
     host = get_local_ip()
     pid = os.getpid()

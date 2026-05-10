@@ -1,14 +1,11 @@
 """Custom neural-network layer helpers and HuggingFace model sharding utilities for distributed inference."""
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import torch
 from safetensors import safe_open
 
-
 from smolcluster.models.moe import ExpertBlock, Router, TextEmbeddings
-
 
 logger = logging.getLogger(__name__)
 
@@ -169,8 +166,8 @@ def get_model_per_node(
     total_layers: int,
     model_type: str = "causal_gpt2",
     num_experts: int = None,
-    model_config: Optional[Dict] = None,
-) -> Tuple[torch.nn.ModuleList, dict]:
+    model_config: dict | None = None,
+) -> tuple[torch.nn.ModuleList, dict]:
     """Partition model components across nodes.
 
     For 'causal_gpt2': extracts layer slices from a pre-built model.
@@ -230,7 +227,7 @@ def get_model_per_node(
         # Expert Parallelism: extract components from the passed Mixtral model.
         # Last rank gets the full Mixtral transformer; all ranks get ExpertBlocks
         # built from model attributes; rank 0 additionally gets TextEmbeddings + Router.
-        
+
         assert num_experts is not None, "num_experts required for causal_mixtral"
         assert model_config is not None, "model_config required for causal_mixtral"
 
@@ -242,7 +239,7 @@ def get_model_per_node(
         noisy_topk     = model_config.get("noisy_topk", True)
 
         expert_shard_indices = get_expert_per_node(local_rank, num_nodes, num_experts)
-      
+
         # Rank 0: TextEmbeddings + Router (built fresh — not part of Mixtral)
         if local_rank == 0:
             out_layers["model.text_embeddings"] = TextEmbeddings(
@@ -252,7 +249,7 @@ def get_model_per_node(
                 embeddings_dims=embedding_dims, num_experts=num_experts,
                 top_k=top_k, device=device, noisy_topk=noisy_topk,
             )
-            logger.info(f"Rank 0: built TextEmbeddings + Router")
+            logger.info("Rank 0: built TextEmbeddings + Router")
 
         # All ranks: ExpertBlocks for their shard (built fresh — not part of Mixtral)
         for idx in expert_shard_indices:
@@ -271,9 +268,9 @@ def get_model_per_node(
     return torch.nn.ModuleList(list(out_layers.values())), out_layers
 
 
-def get_expert_per_node(local_rank: int, num_nodes: int, num_experts: int) -> List[int]:
+def get_expert_per_node(local_rank: int, num_nodes: int, num_experts: int) -> list[int]:
     assert local_rank < num_nodes, "local rank must be less than number of total nodes"
-  
+
 
     expert_indices = torch.arange(num_experts)
     split_indices = torch.chunk(expert_indices, num_nodes)

@@ -3,14 +3,14 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 from deepeval.metrics import GEval
 
 
-def batch_items(items: List[Any], batch_size: int) -> List[List[Any]]:
+def batch_items(items: list[Any], batch_size: int) -> list[list[Any]]:
     return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
 
 
@@ -37,8 +37,8 @@ def resolve_path(path: str, project_root: Path) -> Path:
 
 def build_geval_metrics(
     judge_model: str,
-    metric_specs: List[Dict[str, Any]],
-) -> List[GEval]:
+    metric_specs: list[dict[str, Any]],
+) -> list[GEval]:
     return [GEval(model=judge_model, **spec) for spec in metric_specs]
 
 
@@ -46,7 +46,7 @@ def normalise_metric_name(metric_name: str) -> str:
     return metric_name.removesuffix(" [GEval]")
 
 
-def serialise_metric_result(metric_result: Any) -> Optional[Dict[str, Any]]:
+def serialise_metric_result(metric_result: Any) -> dict[str, Any] | None:
     raw_metric_name = getattr(metric_result, "name", None) or getattr(metric_result, "metric", None)
     if raw_metric_name is None:
         return None
@@ -67,7 +67,7 @@ def serialise_metric_result(metric_result: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def extract_metric_results(test_result: Any) -> List[Any]:
+def extract_metric_results(test_result: Any) -> list[Any]:
     metric_results = getattr(test_result, "metrics_data", None)
     if metric_results is None:
         metric_results = getattr(test_result, "metrics_metadata", [])
@@ -75,13 +75,13 @@ def extract_metric_results(test_result: Any) -> List[Any]:
 
 
 def parse_test_results(
-    test_results: List[Any],
-    expected_metric_names: List[str],
-    expected_num_tests: Optional[int] = None,
-) -> Dict[str, Any]:
-    metric_scores: Dict[str, List[float]] = {name: [] for name in expected_metric_names}
-    parsed_records: List[Dict[str, Any]] = []
-    round_errors: List[str] = []
+    test_results: list[Any],
+    expected_metric_names: list[str],
+    expected_num_tests: int | None = None,
+) -> dict[str, Any]:
+    metric_scores: dict[str, list[float]] = {name: [] for name in expected_metric_names}
+    parsed_records: list[dict[str, Any]] = []
+    round_errors: list[str] = []
     total_evaluation_cost = 0.0
     any_evaluation_cost = False
     test_passed = 0
@@ -99,9 +99,9 @@ def parse_test_results(
         else:
             test_failed += 1
 
-        scores_for_example: Dict[str, float] = {}
-        metric_details: List[Dict[str, Any]] = []
-        metric_errors: List[str] = []
+        scores_for_example: dict[str, float] = {}
+        metric_details: list[dict[str, Any]] = []
+        metric_errors: list[str] = []
 
         for metric_result in extract_metric_results(test_result):
             metric_payload = serialise_metric_result(metric_result)
@@ -166,11 +166,11 @@ def parse_test_results(
 
 
 def aggregate_metric_statistics(
-    metric_scores: Dict[str, List[float]],
-    metric_thresholds: Dict[str, float],
-) -> Dict[str, Any]:
-    metric_means: Dict[str, Optional[float]] = {}
-    metric_pass_rates: Dict[str, Optional[float]] = {}
+    metric_scores: dict[str, list[float]],
+    metric_thresholds: dict[str, float],
+) -> dict[str, Any]:
+    metric_means: dict[str, float | None] = {}
+    metric_pass_rates: dict[str, float | None] = {}
     composite = 0.0
 
     for metric_name, scores in metric_scores.items():
@@ -198,7 +198,7 @@ def run_output_dir(base_dir: Path, run_tag: str) -> Path:
 
 
 def save_rollouts(
-    records: List[Dict[str, Any]],
+    records: list[dict[str, Any]],
     base_dir: Path,
     run_tag: str,
 ) -> Path:
@@ -210,7 +210,7 @@ def save_rollouts(
     return out_path
 
 
-def save_summary(summary: Dict[str, Any], base_dir: Path, run_tag: str) -> Path:
+def save_summary(summary: dict[str, Any], base_dir: Path, run_tag: str) -> Path:
     out_dir = run_output_dir(base_dir, run_tag)
     out_path = out_dir / "summary.json"
     with out_path.open("w", encoding="utf-8") as f:

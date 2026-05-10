@@ -22,13 +22,17 @@ from pathlib import Path
 
 import torch
 import torchinfo
-import wandb
 import yaml
 
+import wandb
+from smolcluster.algorithms.DataParallelism.SynchronousPS.server import (
+    run_syncps_server,
+)
+from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import (
+    run_syncps_worker,
+)
 from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
-from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
-from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
 from smolcluster.models.SimpleNN import SimpleMNISTModel
 from smolcluster.utils import get_device
 

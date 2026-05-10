@@ -6,9 +6,10 @@ import socket
 import sys
 import threading
 import time
-from .control import MsgType, send_msg, recv_msg, encode_ctrl, decode_ctrl
+
+from ._utils import configure_socket, get_local_ip, get_logger
+from .control import MsgType, decode_ctrl, encode_ctrl, recv_msg, send_msg
 from .membership import Membership
-from ._utils import get_logger, configure_socket, get_local_ip
 
 log = get_logger("coordinator")
 
@@ -78,7 +79,7 @@ class CoordinatorServer:
                 conn.settimeout(5.0)
                 t = threading.Thread(target=self._handle_worker, args=(conn,), daemon=True)
                 t.start()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 break
@@ -140,7 +141,7 @@ class CoordinatorServer:
                                          if not self._reform_acks.get(f"{epoch}_{r}")]
                             if not remaining:
                                 event.set()
-        except (ConnectionError, OSError, socket.timeout):
+        except (TimeoutError, ConnectionError, OSError):
             pass
         finally:
             with self._lock:
@@ -171,7 +172,7 @@ class CoordinatorServer:
         with self._lock:
             socks = {r: s for r, s in self._worker_socks.items()
                      if r in self._live_ranks}
-        for rank, sock in socks.items():
+        for _rank, sock in socks.items():
             try:
                 send_msg(sock, MsgType.STATS_UPDATE, stats)
             except (ConnectionError, OSError):
@@ -238,7 +239,7 @@ class CoordinatorServer:
         event = threading.Event()
         with self._lock:
             self._reform_acks[membership.epoch] = event
-            for r in membership.live_ranks:
+            for _r in membership.live_ranks:
                 for r2 in membership.live_ranks:
                     self._reform_acks.pop(f"{membership.epoch}_{r2}", None)
 
@@ -253,7 +254,7 @@ class CoordinatorServer:
                 log.warning(f"Failed to send membership update to rank {rank}")
 
         if event.wait(timeout=15.0):
-            for rank, sock in socks.items():
+            for _rank, sock in socks.items():
                 try:
                     send_msg(sock, MsgType.REFORM_COMPLETE, {"epoch": membership.epoch})
                 except (ConnectionError, OSError):
@@ -367,7 +368,7 @@ class WorkerClient:
                         self._script_response = payload
                     if self._script_event:
                         self._script_event.set()
-        except (ConnectionError, OSError, socket.timeout):
+        except (TimeoutError, ConnectionError, OSError):
             log.warning("Control connection lost")
             self._membership_event.set()
 
@@ -463,7 +464,7 @@ class P2PCoordinatorServer:
 
         self._last_heartbeat: dict[int, float] = {}
         self._reform_acks: dict = {}
-        self._local_worker: "P2PWorkerClient | None" = None
+        self._local_worker: P2PWorkerClient | None = None
 
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._recv_thread.start()

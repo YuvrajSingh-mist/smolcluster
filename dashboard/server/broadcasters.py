@@ -6,10 +6,21 @@ import time
 from pathlib import Path
 
 from . import ctx
-from .helpers import _self_node, _ssh_aliases_snapshot, canonicalize_log_hostname, _read_json
+from .helpers import (
+    _read_json,
+    _self_node,
+    _ssh_aliases_snapshot,
+    canonicalize_log_hostname,
+)
 from .paths import (
-    CLUSTER_LOG_DIR, GRAD_INTERVAL, GRAD_PING, LAST_TOKEN, METRICS_FILE,
-    INFERENCE_FILE, TOKEN_INTERVAL, TOKEN_PING,
+    CLUSTER_LOG_DIR,
+    GRAD_INTERVAL,
+    GRAD_PING,
+    INFERENCE_FILE,
+    LAST_TOKEN,
+    METRICS_FILE,
+    TOKEN_INTERVAL,
+    TOKEN_PING,
 )
 from .redis import REDIS_EVENTS_KEY, redis_mark, redis_snapshot
 

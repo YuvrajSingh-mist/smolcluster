@@ -3,9 +3,11 @@
 import socket
 import struct
 import threading
+
 import numpy as np
-from .base import Connection
+
 from .._types import MAGIC
+from .base import Connection
 
 _HEADER_FMT = "<4sIII"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)

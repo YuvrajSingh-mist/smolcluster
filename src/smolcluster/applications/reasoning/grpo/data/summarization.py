@@ -1,7 +1,6 @@
 """CNN/DailyMail summarization dataset loader — formats article/summary pairs for GRPO training."""
 import logging
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from datasets import load_dataset
 
@@ -15,8 +14,8 @@ PROMPT = (
 
 
 
-def _format_prompt(question: str, tokenizer: Optional[Any]) -> str:
-    
+def _format_prompt(question: str, tokenizer: Any | None) -> str:
+
     try:
         if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
             messages = [
@@ -36,10 +35,10 @@ def _format_prompt(question: str, tokenizer: Optional[Any]) -> str:
 
 
 def build_train_val_examples(
-    data_config: Dict[str, Any],
-    tokenizer: Optional[Any] = None,
+    data_config: dict[str, Any],
+    tokenizer: Any | None = None,
     seed: int = 42,
-) -> Tuple[List[Tuple[str, Optional[str]]], List[Tuple[str, Optional[str]]]]:
+) -> tuple[list[tuple[str, str | None]], list[tuple[str, str | None]]]:
     """Load a HuggingFace dataset and return pre-formatted (prompt, answer) pairs.
 
     Prompts are formatted at load time so each training step skips the per-step
@@ -62,12 +61,12 @@ def build_train_val_examples(
 
     train_examples = [
         (_format_prompt(q, tokenizer), a)
-        for q, a in zip(train_split["prompt"], train_split["completion"])
-       
+        for q, a in zip(train_split["prompt"], train_split["completion"], strict=False)
+
     ]
     val_examples = [
         (_format_prompt(q, tokenizer), a)
-        for q, a in zip(val_split["prompt"], val_split["completion"])
-     
+        for q, a in zip(val_split["prompt"], val_split["completion"], strict=False)
+
     ]
     return train_examples, val_examples

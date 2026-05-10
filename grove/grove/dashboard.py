@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import threading
+
 from .tui import DashboardApp, LogCapture
 
 

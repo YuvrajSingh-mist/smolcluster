@@ -8,7 +8,13 @@ from fastapi import APIRouter, HTTPException
 from .. import ctx as _ctx
 from ..helpers import build_nodes_info
 from ..models import InferenceLaunchRequest
-from ..paths import INFER_CONFIG_FILE, INFER_SCRIPT_FILE, INFERENCE_FILE, TOKEN_INTERVAL, TOKEN_PING
+from ..paths import (
+    INFER_CONFIG_FILE,
+    INFER_SCRIPT_FILE,
+    INFERENCE_FILE,
+    TOKEN_INTERVAL,
+    TOKEN_PING,
+)
 from ..redis import REDIS_UI_KEY, redis_mark
 
 logger = logging.getLogger(__name__)
@@ -23,7 +29,7 @@ async def start_inference():
     try:
         await _ctx.node_manager.start_inference(_ctx.server_hostname)
     except ValueError as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(409, str(e)) from e
     return {"status": "started"}
 
 
@@ -76,6 +82,6 @@ async def launch_inference_script(req: InferenceLaunchRequest):
             script_path     = str(INFER_SCRIPT_FILE),
         )
     except ValueError as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(409, str(e)) from e
 
     return {"status": "launched", "algorithm": req.algorithm, "server": server_hostname}

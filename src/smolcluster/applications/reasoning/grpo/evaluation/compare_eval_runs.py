@@ -6,7 +6,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parents[5]))
 from smolcluster.utils import setup_logging  # noqa: E402
@@ -28,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def final_scores_for_record(record: Dict[str, object]) -> Tuple[Dict[str, float], Optional[float]]:
+def final_scores_for_record(record: dict[str, object]) -> tuple[dict[str, float], float | None]:
     top_scores = record.get("geval_scores")
     top_composite = record.get("geval_composite")
     if isinstance(top_scores, dict):
@@ -40,8 +39,8 @@ def final_scores_for_record(record: Dict[str, object]) -> Tuple[Dict[str, float]
         composite = float(top_composite) if top_composite is not None else None
         return scores, composite
 
-    metric_values: Dict[str, List[float]] = {metric_name: [] for metric_name in _METRIC_NAMES}
-    composite_values: List[float] = []
+    metric_values: dict[str, list[float]] = {metric_name: [] for metric_name in _METRIC_NAMES}
+    composite_values: list[float] = []
     for round_result in record.get("geval_rounds", []):
         if not isinstance(round_result, dict):
             continue
@@ -65,9 +64,9 @@ def final_scores_for_record(record: Dict[str, object]) -> Tuple[Dict[str, float]
     return averaged_scores, averaged_composite
 
 
-def load_scores_by_idx(run_dir: Path) -> Dict[int, Dict[str, float]]:
+def load_scores_by_idx(run_dir: Path) -> dict[int, dict[str, float]]:
     rollouts = json.loads((run_dir / "rollouts.json").read_text(encoding="utf-8"))
-    scores_by_idx: Dict[int, Dict[str, float]] = {}
+    scores_by_idx: dict[int, dict[str, float]] = {}
     for record in rollouts:
         idx = record.get("idx")
         if idx is None:
@@ -80,7 +79,7 @@ def load_scores_by_idx(run_dir: Path) -> Dict[int, Dict[str, float]]:
     return scores_by_idx
 
 
-def paired_test(baseline: List[float], candidate: List[float], alpha: float) -> Dict[str, float]:
+def paired_test(baseline: list[float], candidate: list[float], alpha: float) -> dict[str, float]:
     baseline_arr = np.asarray(baseline, dtype=float)
     candidate_arr = np.asarray(candidate, dtype=float)
     delta_arr = candidate_arr - baseline_arr
@@ -153,10 +152,10 @@ def main() -> None:
     if not shared_indices:
         raise ValueError("No overlapping example indices between the two runs")
 
-    results: Dict[str, Dict[str, float]] = {}
+    results: dict[str, dict[str, float]] = {}
     for metric_name in [*_METRIC_NAMES, "Composite"]:
-        baseline_values: List[float] = []
-        candidate_values: List[float] = []
+        baseline_values: list[float] = []
+        candidate_values: list[float] = []
         for idx in shared_indices:
             baseline_value = baseline_scores[idx].get(metric_name)
             candidate_value = candidate_scores[idx].get(metric_name)

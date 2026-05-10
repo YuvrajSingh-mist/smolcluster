@@ -1,6 +1,7 @@
 """Abstract base classes for transports and connections."""
 
 from abc import ABC, abstractmethod
+
 import numpy as np
 
 

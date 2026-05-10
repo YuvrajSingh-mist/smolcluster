@@ -10,14 +10,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ctx
-from . import node_meta, redis as _redis_mod
+from dashboard.node_manager import NodeManager
+
+from . import ctx, node_meta
+from . import redis as _redis_mod
+from . import sse as _sse
 from .broadcasters import events_broadcaster, log_broadcaster
 from .paths import FRONTEND_DIR
-from .ssh_config import _build_static_nodes_inventory, _lookup_ssh_entry, local_node_metadata
-from .routes import inference as _routes_inference, misc as _routes_misc, nodes as _routes_nodes, training as _routes_training
-from . import sse as _sse
-from dashboard.node_manager import NodeManager
+from .routes import inference as _routes_inference
+from .routes import misc as _routes_misc
+from .routes import nodes as _routes_nodes
+from .routes import training as _routes_training
+from .ssh_config import (
+    _build_static_nodes_inventory,
+    _lookup_ssh_entry,
+    local_node_metadata,
+)
 
 logger = logging.getLogger(__name__)
 

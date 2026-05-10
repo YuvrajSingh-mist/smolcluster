@@ -3,14 +3,16 @@ import json
 import logging
 import platform
 import re
-import yaml
 from pathlib import Path
-from typing import Optional
+
+import yaml
 
 from . import ctx
 from .ssh_config import (
-    _SSH_CONFIG, _get_local_ip, _get_server_alias, _lookup_ssh_entry,
-    local_node_metadata,
+    _SSH_CONFIG,
+    _get_local_ip,
+    _get_server_alias,
+    _lookup_ssh_entry,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,7 +141,7 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def _get_inference_api_url() -> Optional[str]:
+def _get_inference_api_url() -> str | None:
     """Return the inference API base URL, reading the port from cluster config."""
     from .paths import _REPO_ROOT
     config_path = _REPO_ROOT / "src" / "smolcluster" / "configs" / "inference" / "cluster_config_inference.yaml"

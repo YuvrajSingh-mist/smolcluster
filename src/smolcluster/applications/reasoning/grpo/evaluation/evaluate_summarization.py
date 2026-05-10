@@ -19,7 +19,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import mlx.core as mx
 import yaml
@@ -59,8 +59,8 @@ _EVAL_ROLLOUTS_DIR = _script_dir / "eval-rollouts"
 
 _config_path = _smolcluster_root / "configs" / "reasoning" / "grpo" / "config.yaml"
 with _config_path.open() as _f:
-    _GRPO_CONFIG: Dict[str, Any] = yaml.safe_load(_f)
-_DATA_CONFIG: Dict[str, Any] = _GRPO_CONFIG["data"]
+    _GRPO_CONFIG: dict[str, Any] = yaml.safe_load(_f)
+_DATA_CONFIG: dict[str, Any] = _GRPO_CONFIG["data"]
 
 # ---------------------------------------------------------------------------
 # G-Eval metric specs  (each independently scored 0–1)
@@ -120,11 +120,11 @@ _DEFAULT_INTER_BATCH_SLEEP_SECONDS = 1.0
 
 
 def _evaluate_round_attempt(
-    test_cases: List[LLMTestCase],
+    test_cases: list[LLMTestCase],
     judge_model: str,
     num_eval_rounds: int,
-    expected_metric_names: List[str],
-    metric_thresholds: Dict[str, float],
+    expected_metric_names: list[str],
+    metric_thresholds: dict[str, float],
     max_eval_retries_per_round: int,
     eval_batch_size: int,
     eval_max_concurrent: int,
@@ -132,15 +132,15 @@ def _evaluate_round_attempt(
     inter_batch_sleep_seconds: float,
     round_index: int,
     attempt_index: int,
-) -> Dict[str, Any]:
-    combined_records: List[Dict[str, Any]] = []
-    combined_metric_scores: Dict[str, List[float]] = {name: [] for name in expected_metric_names}
+) -> dict[str, Any]:
+    combined_records: list[dict[str, Any]] = []
+    combined_metric_scores: dict[str, list[float]] = {name: [] for name in expected_metric_names}
     combined_test_passed = 0
     combined_test_failed = 0
     combined_evaluation_cost = 0.0
     any_evaluation_cost = False
     total_judge_duration_seconds = 0.0
-    batch_failures: List[Dict[str, Any]] = []
+    batch_failures: list[dict[str, Any]] = []
 
     batches = batch_items(test_cases, eval_batch_size)
     async_config = AsyncConfig(
@@ -273,7 +273,7 @@ def _evaluate_round_attempt(
         **round_stats,
     }
 
-def load_model_from_checkpoint(hf_model_name: str, checkpoint_dir: Path) -> Tuple[Any, Any]:
+def load_model_from_checkpoint(hf_model_name: str, checkpoint_dir: Path) -> tuple[Any, Any]:
     """Load base model weights then overlay the GRPO checkpoint."""
     logger.info("Loading base model: %s", hf_model_name)
     model, tokenizer = mlx_load(hf_model_name, tokenizer_config={"trust_remote_code": True})
@@ -342,13 +342,13 @@ def run_eval_pipeline(
     val_split = _DATA_CONFIG["val_split"]
     logger.info("Loading %s / %s split=%s …", dataset_name, subset, val_split)
     ds = load_dataset(dataset_name, subset)[val_split]
-    all_examples: List[Tuple[str, str]] = list(zip(ds["prompt"], ds["completion"]))
+    all_examples: list[tuple[str, str]] = list(zip(ds["prompt"], ds["completion"], strict=False))
     examples = all_examples if num_examples == -1 else all_examples[:num_examples]
     logger.info("Evaluating on %d / %d examples.", len(examples), len(all_examples))
 
     # 3. Generate summaries, build deepeval test cases, and collect rollout records
-    test_cases: List[LLMTestCase] = []
-    rollout_records: List[Dict[str, Any]] = []
+    test_cases: list[LLMTestCase] = []
+    rollout_records: list[dict[str, Any]] = []
     logger.info("Generating summaries …")
     for idx, (raw_doc, reference) in enumerate(tqdm(examples, desc="Generating")):
         generated = generate_summary(model, tokenizer, raw_doc, max_tokens=max_tokens)
@@ -371,8 +371,8 @@ def run_eval_pipeline(
     logger.info("Saved %d rollout records to %s", len(rollout_records), rollouts_path)
 
     # 4. Run multiple G-Eval rounds until we complete the requested count.
-    successful_rounds: List[Dict[str, Any]] = []
-    failed_round_attempts: List[Dict[str, Any]] = []
+    successful_rounds: list[dict[str, Any]] = []
+    failed_round_attempts: list[dict[str, Any]] = []
     logger.info(
         "Running G-Eval with judge: %s (%d successful rounds required, max %d attempt(s) per round, batch_size=%d, max_concurrent=%d, throttle=%.2fs)",
         judge_model,
@@ -447,8 +447,8 @@ def run_eval_pipeline(
     # 5. Average successful round outputs and attach them to the rollout records.
     for i, rollout_record in enumerate(rollout_records):
         round_records = [round_result["records"][i] for round_result in successful_rounds]
-        average_scores: Dict[str, float] = {}
-        average_metrics: List[Dict[str, Any]] = []
+        average_scores: dict[str, float] = {}
+        average_metrics: list[dict[str, Any]] = []
         round_successes = [record["geval_passed"] for record in round_records]
         round_errors = [
             error
@@ -458,9 +458,9 @@ def run_eval_pipeline(
 
         for metric_name in expected_metric_names:
             metric_rounds = []
-            round_scores: List[float] = []
-            round_metric_successes: List[Optional[bool]] = []
-            round_evaluation_models: List[str] = []
+            round_scores: list[float] = []
+            round_metric_successes: list[bool | None] = []
+            round_evaluation_models: list[str] = []
             for record in round_records:
                 metric_payload = next(
                     (metric for metric in record["geval_metrics"] if metric["name"] == metric_name),
@@ -504,7 +504,7 @@ def run_eval_pipeline(
                 "judge_duration_seconds": round_result["judge_duration_seconds"],
                 **record,
             }
-            for round_result, record in zip(successful_rounds, round_records)
+            for round_result, record in zip(successful_rounds, round_records, strict=False)
         ]
         rollout_record["geval_round_pass_rate"] = round_pass_rate
         rollout_record["geval_failed"] = round_pass_rate < 0.5

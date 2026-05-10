@@ -2,12 +2,12 @@
 
 import logging
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import mlx.core as mx
+from typing import Any
 
 import evaluate
+import mlx.core as mx
 from rouge_score import rouge_scorer as _rouge_scorer
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ def calculate_summary_quality(
     use_rouge: bool = True,
     use_meteor: bool = True,
     use_bleu: bool = True,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute individual summary quality scores.
 
     Returns a dict with keys ``rouge_l``, ``meteor``, ``bleu`` (only for
@@ -69,7 +69,7 @@ def calculate_summary_quality(
 def calculate_length_reward(
     predicted_answer: str,
     max_length: int,
-    tokenizer: Optional[Any] = None,
+    tokenizer: Any | None = None,
 ) -> float:
     """Reward based on proximity to a target length.
 
@@ -80,7 +80,7 @@ def calculate_length_reward(
     if tokenizer is not None:
         hf_tok = getattr(tokenizer, "_tokenizer", tokenizer)
         length = len(hf_tok.encode(predicted_answer, add_special_tokens=False))
-        
+
     # length = len(predicted_answer)
     return -((abs(length - max_length)) / max_length)
 
@@ -93,8 +93,8 @@ MAX_LENGTH_OF_SUMMARIZATION = 64
 
 
 def _compute_single_reward(
-    args: Tuple[int, str, str, str, Any, bool, bool, bool, bool],
-) -> Tuple[int, float, dict]:
+    args: tuple[int, str, str, str, Any, bool, bool, bool, bool],
+) -> tuple[int, float, dict]:
     idx, question, generated_text, true_answer, tokenizer, use_rouge, use_meteor, use_bleu, use_length_penalty = args
     quality_scores = calculate_summary_quality(
         generated_text, true_answer,
@@ -119,20 +119,20 @@ def _compute_single_reward(
 
 
 def compute_summarization_rewards(
-    rollout_texts: List[str],
-    rollout_targets: List[str],
+    rollout_texts: list[str],
+    rollout_targets: list[str],
     dtype: type = mx.float32,
     device: mx.Device = mx.cpu,
-    max_workers: Optional[int] = None,
-    step: Optional[int] = None,
-    rollout_questions: Optional[List[str]] = None,
-    tokenizer: Optional[Any] = None,
+    max_workers: int | None = None,
+    step: int | None = None,
+    rollout_questions: list[str] | None = None,
+    tokenizer: Any | None = None,
     use_rouge: bool = False,
     use_meteor: bool = False,
     use_bleu: bool = False,
     use_length_penalty: bool = True,
-    log_fn: Optional[Callable[[dict], None]] = None,
-) -> Tuple[mx.array, Dict[str, List[float]]]:
+    log_fn: Callable[[dict], None] | None = None,
+) -> tuple[mx.array, dict[str, list[float]]]:
     """Returns (reward_tensor [T*C], components) where components has per-rollout
     lists for each enabled quality metric plus length_penalty and total_reward.
 
@@ -144,14 +144,14 @@ def compute_summarization_rewards(
     questions = rollout_questions if rollout_questions is not None else [""] * len(rollout_texts)
     indexed_args = [
         (i, q, text, target, tokenizer, use_rouge, use_meteor, use_bleu, use_length_penalty)
-        for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets))
+        for i, (q, text, target) in enumerate(zip(questions, rollout_texts, rollout_targets, strict=False))
     ]
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         results = list(executor.map(_compute_single_reward, indexed_args))
 
-    reward_values: List[float] = []
-    log_records: List[dict] = []
+    reward_values: list[float] = []
+    log_records: list[dict] = []
     for _idx, total_reward, log_record in results:
         reward_values.append(total_reward)
         log_records.append(log_record)
@@ -160,7 +160,7 @@ def compute_summarization_rewards(
         log_fn({"step": step, "rollouts": log_records})
 
     quality_keys = sorted({k for r in log_records for k in r if k.startswith("quality_")})
-    components: Dict[str, List[float]] = {
+    components: dict[str, list[float]] = {
         **{k: [r[k] for r in log_records] for k in quality_keys},
         "length_penalty": [r["length_penalty"] for r in log_records],
         "total_reward":   [r["total_reward"]   for r in log_records],

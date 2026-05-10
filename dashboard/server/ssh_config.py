@@ -5,7 +5,6 @@ import re
 import socket
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ def parse_ssh_config() -> dict:
     if not config_path.exists():
         return {}
     result: dict = {}
-    current_host: Optional[str] = None
+    current_host: str | None = None
     current: dict = {}
 
     def _flush():

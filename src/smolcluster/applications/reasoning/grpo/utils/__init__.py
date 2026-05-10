@@ -1,33 +1,6 @@
 """GRPO training utilities — re-exports MLX gradient helpers, tokenisation, loss/advantage computation, AMP (GradScaler, MasterWeightAdamW), rollout prefetcher, and answer parsing."""
 
-from .training_utils import (
-    _add_grads,
-    _log_mem,
-    _scale_grads,
-    build_completion_mask,
-    compute_advantages,
-    compute_grpo_loss,
-    compute_logprobs,
-    compute_ratio_stats,
-    filter_to_uniform_groups,
-    get_dtype_from_config,
-    get_mlx_device,
-    iterate_batches,
-    load_model,
-    apply_lora_if_quantized,
-    tokenize_rollouts,
-    parse_answer,
-    RolloutPrefetcher,
-    set_global_seed,
-    DASHBOARD_METRICS_FILE,
-    DASHBOARD_GRAD_PING,
-    DASHBOARD_GRAD_INTERVAL,
-    get_optimizer_lr,
-    publish_dashboard_metrics,
-)
 from .amp import GradScaler, MasterWeightAdamW
-from .rollouts import build_batched_rollout_texts, build_rollouts_per_prompt, build_vllm_worker_urls
-from .worker_sync import save_policy_weights, sync_and_reload_workers
 from .evaluation_utils import (
     aggregate_metric_statistics,
     backoff_seconds,
@@ -39,6 +12,37 @@ from .evaluation_utils import (
     save_rollouts,
     save_summary,
 )
+from .rollouts import (
+    build_batched_rollout_texts,
+    build_rollouts_per_prompt,
+    build_vllm_worker_urls,
+)
+from .training_utils import (
+    DASHBOARD_GRAD_INTERVAL,
+    DASHBOARD_GRAD_PING,
+    DASHBOARD_METRICS_FILE,
+    RolloutPrefetcher,
+    _add_grads,
+    _log_mem,
+    _scale_grads,
+    apply_lora_if_quantized,
+    build_completion_mask,
+    compute_advantages,
+    compute_grpo_loss,
+    compute_logprobs,
+    compute_ratio_stats,
+    filter_to_uniform_groups,
+    get_dtype_from_config,
+    get_mlx_device,
+    get_optimizer_lr,
+    iterate_batches,
+    load_model,
+    parse_answer,
+    publish_dashboard_metrics,
+    set_global_seed,
+    tokenize_rollouts,
+)
+from .worker_sync import save_policy_weights, sync_and_reload_workers
 
 __all__ = [
     "_add_grads",

@@ -11,9 +11,9 @@ from queue import Queue
 
 import torch
 import torchinfo
-import wandb
 from torch.utils.data import DataLoader
 
+import wandb
 from smolcluster.utils import (
     CheckpointManager,
     dequantize_model_weights,

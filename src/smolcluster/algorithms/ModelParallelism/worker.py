@@ -4,16 +4,16 @@ import math
 import socket
 import subprocess
 import time
-from typing import Any, Optional
+from typing import Any
 
 import torch
-import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import wandb
 from smolcluster.utils import (
-    calculate_bandwidth_metrics,
     CheckpointManager,
+    calculate_bandwidth_metrics,
     emit_smol_event,
     get_model_per_node,
     get_network_metrics,
@@ -39,7 +39,7 @@ def evaluate(
     val_loader: DataLoader,
     criterion: torch.nn.Module,
     decoder_type_ppl: bool = False,
-) -> tuple[float, Optional[float]]:
+) -> tuple[float, float | None]:
     """Evaluate model on validation set."""
     model.eval()
     total_val_loss = 0.0
@@ -141,7 +141,7 @@ def connect_to_server(
                 f"Connected to server at {host}:{port} on attempt {attempt + 1}"
             )
             return sock
-        except (OSError, ConnectionRefusedError, socket.timeout) as e:
+        except (TimeoutError, OSError, ConnectionRefusedError) as e:
             sock.close()  # Close the failed socket
             # Re-ping every 5 attempts to keep ARP fresh
             if attempt > 0 and attempt % 5 == 0:

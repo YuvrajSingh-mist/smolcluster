@@ -2,6 +2,7 @@
 
 import logging
 import socket
+
 from ._types import DEFAULT_SOCK_BUF_SIZE
 
 _log = logging.getLogger("grove.utils")

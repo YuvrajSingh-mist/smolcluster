@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import yaml
@@ -15,7 +15,6 @@ from smolcluster.utils import (
     get_device,
     load_model_and_tokenizer,
     receive_message,
-    sample_next_token,
     send_message,
 )
 
@@ -29,7 +28,7 @@ with open(CONFIG_DIR / "inference" / "cluster_config_inference.yaml") as f:
 
 model_configs = inference_config.get("dp", inference_config)
 MODEL_NAME = model_configs.get("active_model", "hf_model")
-HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN") or None
+HF_TOKEN: str | None = os.environ.get("HF_TOKEN") or None
 
 
 def resolve_model_config(cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -84,7 +83,7 @@ def connect_to_server(
             sock.settimeout(None)
             logger.info(f"Connected to server at {host}:{port} on attempt {attempt + 1}")
             return sock
-        except (OSError, ConnectionRefusedError, socket.timeout) as exc:
+        except (TimeoutError, OSError, ConnectionRefusedError) as exc:
             sock.close()
             if attempt < max_retries - 1:
                 logger.warning(
@@ -122,7 +121,7 @@ def main() -> None:
         load_tokenizer=True,
         logger=logger,
     )
-    
+
     if model is None:
         raise RuntimeError("Failed to load model")
     if tokenizer is None:
@@ -150,14 +149,14 @@ def main() -> None:
             break
 
         command, payload = message
-        
+
         if command == "generate_logits":
             # Compute logits for ensemble averaging (similar to ClassicDP)
             input_ids = payload["input_ids"].to(device)
-            
+
             with torch.inference_mode():
                 logits = model(input_ids).logits.cpu()
-            
+
             send_message(
                 sock,
                 (
@@ -168,8 +167,8 @@ def main() -> None:
                     },
                 ),
             )
-        
-     
+
+
         else:
             logger.warning(f"Unknown command: {command}")
             continue

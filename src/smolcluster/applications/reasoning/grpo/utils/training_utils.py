@@ -5,11 +5,12 @@ import logging
 import os
 import queue
 import random
+import re
 import threading
 import time
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
-import re
+from typing import Any
 
 import mlx.core as mx
 import numpy as np
@@ -47,7 +48,7 @@ def _log_mem(tag: str) -> None:
 # Config helpers
 # ---------------------------------------------------------------------------
 
-def get_dtype_from_config(config: Dict[str, Any]) -> type:
+def get_dtype_from_config(config: dict[str, Any]) -> type:
     """Map config dtype string ('float32', 'bfloat16') to an MLX dtype."""
     dtype_str = str(config.get("dtype", "float32")).lower()
     if dtype_str == "bfloat16":
@@ -58,7 +59,7 @@ def get_dtype_from_config(config: Dict[str, Any]) -> type:
     return mx.float32
 
 
-def get_mlx_device(config: Dict[str, Any]) -> mx.Device:
+def get_mlx_device(config: dict[str, Any]) -> mx.Device:
     """Return the MLX Device for config['device'] ('cpu', 'gpu', or 'metal')."""
     device_str = str(config.get("device", "cpu")).lower()
     return mx.gpu if device_str in ("gpu", "metal") else mx.cpu
@@ -69,11 +70,11 @@ def get_mlx_device(config: Dict[str, Any]) -> mx.Device:
 # ---------------------------------------------------------------------------
 
 def iterate_batches(
-    examples: Sequence[Tuple[str, str]],
+    examples: Sequence[tuple[str, str]],
     batch_size: int,
     shuffle: bool,
     seed: int,
-) -> Iterator[Tuple[List[str], List[str]]]:
+) -> Iterator[tuple[list[str], list[str]]]:
     indices = np.arange(len(examples))
     if shuffle:
         rng = np.random.default_rng(seed)
@@ -98,11 +99,11 @@ def _unwrap_tokenizer(tokenizer: Any) -> Any:
 
 def tokenize_rollouts(
     tokenizer: Any,
-    rollout_texts: List[str],
+    rollout_texts: list[str],
     max_length: int,
     device: mx.Device = mx.cpu,
     padding_side: str = "right",
-) -> Tuple[mx.array, mx.array]:
+) -> tuple[mx.array, mx.array]:
     if not rollout_texts:
         with mx.stream(mx.default_stream(device)):
             return mx.array([], dtype=mx.int32), mx.array([], dtype=mx.int32)
@@ -131,14 +132,14 @@ def tokenize_rollouts(
 
 def build_completion_mask(
     tokenizer: Any,
-    rollout_questions: List[str],
+    rollout_questions: list[str],
     flat_mask: mx.array,
     num_prompts: int,
     num_rollouts: int,
 ) -> mx.array:
     """Return [T*C, D] mask that is 1 only for completion tokens."""
     hf_tok = _unwrap_tokenizer(tokenizer)
-    prompt_lens_flat: List[int] = []
+    prompt_lens_flat: list[int] = []
     for prompt_index in range(num_prompts):
         prompt_len = len(hf_tok.encode(rollout_questions[prompt_index * num_rollouts], add_special_tokens=False))
         prompt_lens_flat.extend([prompt_len] * num_rollouts)
@@ -152,13 +153,13 @@ def build_completion_mask(
 
 
 def filter_to_uniform_groups(
-    per_prompt: List[Tuple[List[str], str]],
+    per_prompt: list[tuple[list[str], str]],
     num_rollouts: int,
-    log: Optional[logging.Logger] = None,
-) -> List[Tuple[List[str], str]]:
+    log: logging.Logger | None = None,
+) -> list[tuple[list[str], str]]:
     """Keep only prompts that produced exactly num_rollouts completions."""
     active_logger = log or logger
-    filtered: List[Tuple[List[str], str]] = []
+    filtered: list[tuple[list[str], str]] = []
     for index, (texts, answer) in enumerate(per_prompt):
         if len(texts) == 0:
             active_logger.warning("filter_to_uniform_groups: prompt %d produced 0 rollouts - dropping", index)
@@ -185,9 +186,9 @@ def compute_advantages(rewards: mx.array, dtype: type = mx.float32) -> mx.array:
 def compute_grpo_loss(
     curr_logprobs: mx.array,
     advantages: mx.array,
-    config: Dict[str, Any],
-    old_logprobs: Optional[mx.array] = None,
-    ref_logprobs: Optional[mx.array] = None,
+    config: dict[str, Any],
+    old_logprobs: mx.array | None = None,
+    ref_logprobs: mx.array | None = None,
 ) -> mx.array:
     """GRPO macro-averaged loss."""
     if old_logprobs is not None:
@@ -215,7 +216,7 @@ def compute_logprobs(
     attention_mask: mx.array,
     dtype: type = mx.float32,
     use_checkpoint: bool = False,
-    completion_mask: Optional[mx.array] = None,
+    completion_mask: mx.array | None = None,
 ) -> mx.array:
     """Compute per-sequence mean log-probs over completion tokens."""
     num_prompts, num_rollouts, seq_len = input_ids.shape
@@ -248,9 +249,9 @@ def compute_logprobs(
 def compute_ratio_stats(
     curr_logprobs: mx.array,
     ref_logprobs: mx.array,
-    config: Dict[str, Any],
+    config: dict[str, Any],
     dtype: type = mx.float32,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute ratio/clip/KL diagnostics given already-computed logprob vectors."""
     ratio = mx.exp(curr_logprobs - ref_logprobs)
     lo = 1.0 - float(config["clip_ratio"])
@@ -271,13 +272,13 @@ class RolloutPrefetcher:
 
     def __init__(
         self,
-        fetch_fn: Callable[[List[str], List[str], Optional[int]], List[Tuple[List[str], str]]],
+        fetch_fn: Callable[[list[str], list[str], int | None], list[tuple[list[str], str]]],
     ) -> None:
         self._fetch_fn = fetch_fn
         self._queue: queue.Queue = queue.Queue(maxsize=1)
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
-    def submit(self, prompts: List[str], answers: List[str], step: Optional[int] = None) -> None:
+    def submit(self, prompts: list[str], answers: list[str], step: int | None = None) -> None:
         import time as _time
         _start = _time.monotonic()
 
@@ -289,7 +290,7 @@ class RolloutPrefetcher:
         self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
 
-    def get(self) -> Tuple[List[Tuple[List[str], str]], float]:
+    def get(self) -> tuple[list[tuple[list[str], str]], float]:
         """Return ``(rollouts, rollout_time_s)`` — blocks until the background fetch finishes."""
         return self._queue.get()
 
@@ -327,17 +328,17 @@ def parse_answer(text: str) -> Any:
     match = re.search(r"<answer>(.*?)</answer>", text, flags=re.IGNORECASE | re.DOTALL)
     if not match:
         return float("nan")
-    
+
     answer_text = match.group(1).strip()
-    
+
     # Normalize: remove commas and spaces (for thousands separators)
     # But validate we're not removing actual content
     normalized = answer_text.replace(",", "").replace(" ", "")
-    
+
     # Reject if contains alphabetic characters (likely spurious text)
     if re.search(r"[a-zA-Z]", normalized):
         return float("nan")
-    
+
     # Try to parse as float
     try:
         return float(normalized)
@@ -352,9 +353,9 @@ def parse_answer(text: str) -> Any:
 
 def load_model(
     dtype: type,
-    config: Dict[str, Any],
-    model_config: Dict[str, Any],
-) -> Tuple[Any, Optional[Any], Any, Dict[str, Any]]:
+    config: dict[str, Any],
+    model_config: dict[str, Any],
+) -> tuple[Any, Any | None, Any, dict[str, Any]]:
     """Load the policy model (and optionally the reference model) from HF.
 
     Args:
@@ -381,7 +382,7 @@ def load_model(
         mx.eval(model.parameters())
     _log_mem("load_model: after policy model load")
 
-    ref_model: Optional[Any] = None
+    ref_model: Any | None = None
     if config.get("use_kl", True):
         logger.info("Loading reference model (use_kl=true) ...")
         ref_model, _ = mlx_load(model_name, tokenizer_config=tokenizer_config)
@@ -399,7 +400,7 @@ def load_model(
 # LoRA adapter application
 # ---------------------------------------------------------------------------
 
-def apply_lora_if_quantized(model: Any, config: Dict[str, Any]) -> bool:
+def apply_lora_if_quantized(model: Any, config: dict[str, Any]) -> bool:
     """Wrap linear layers with bfloat16 LoRA adapters.
 
     Applied automatically when the model contains uint32 (4-bit quantized) weights,
@@ -410,7 +411,7 @@ def apply_lora_if_quantized(model: Any, config: Dict[str, Any]) -> bool:
     from mlx_lm.tuner.utils import linear_to_lora_layers
 
     flat = tree_flatten(model.parameters())
-    dtypes: Dict[str, int] = {}
+    dtypes: dict[str, int] = {}
     for _, v in flat:
         key = str(v.dtype)
         dtypes[key] = dtypes.get(key, 0) + 1
@@ -473,7 +474,7 @@ DASHBOARD_GRAD_PING = Path("/tmp/smolcluster_grad_ping")
 DASHBOARD_GRAD_INTERVAL = Path("/tmp/smolcluster_grad_interval_ms")
 
 
-def get_optimizer_lr(optimizer: Any, config: Dict[str, Any]) -> float:
+def get_optimizer_lr(optimizer: Any, config: dict[str, Any]) -> float:
     """Return the current learning rate for different MLX optimizer wrappers."""
     lr_obj = getattr(optimizer, "learning_rate", None)
     if lr_obj is not None:
@@ -483,7 +484,7 @@ def get_optimizer_lr(optimizer: Any, config: Dict[str, Any]) -> float:
             logger.info("Could not parse learning_rate from optimizer, falling back to config value")
     if hasattr(optimizer, "_lr"):
         try:
-            return float(getattr(optimizer, "_lr"))
+            return float(optimizer._lr)
         except Exception:
             logger.info("Could not parse _lr from optimizer, falling back to config value")
     return float(config.get("learning_rate", 0.0))
@@ -497,10 +498,10 @@ def publish_dashboard_metrics(
     grad_norm: float,
     lr: float,
     skipped_update: bool,
-    last_ts: Optional[float],
+    last_ts: float | None,
     grove: Any = None,
-    net_stats: Optional[Dict[str, float]] = None,
-) -> Optional[float]:
+    net_stats: dict[str, float] | None = None,
+) -> float | None:
     """Write step metrics to the dashboard file and return the updated timestamp.
 
     Args:

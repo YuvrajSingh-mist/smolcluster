@@ -11,7 +11,6 @@ Examples:
     python train.py server mini1 --algorithm mp
 """
 
-import argparse
 import gc
 import logging
 import os
@@ -20,46 +19,55 @@ from pathlib import Path
 
 # Load .env before anything else so WANDB_API_KEY and HF_TOKEN are set
 from dotenv import load_dotenv as _load_dotenv
+
 _load_dotenv(Path.home() / ".env", override=False)  # ~/.env for remote nodes
 _load_dotenv(override=False)                         # CWD/.env for local runs
 
 
 import torch
 import torchinfo
-import wandb
 import yaml
+
 import grove
-
 import smolcluster as _sm_pkg
-from smolcluster.utils import (
-    ALGORITHMS as _ALGORITHMS,
-    MODES as _MODES,
-    build_discover_parser,
-    build_main_parser,
-    grove_world_size,
-    parse_server_worker_mode,
-    run_dashboard,
-    should_autodiscover,
+import wandb
+from smolcluster.algorithms.DataParallelism.ClassicDP.worker import run_classicdp_worker
+from smolcluster.algorithms.DataParallelism.SynchronousPS.server import (
+    run_syncps_server,
 )
-
+from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import (
+    run_syncps_worker,
+)
 from smolcluster.algorithms.EDP.server import run_edp_server
 from smolcluster.algorithms.EDP.worker import run_edp_worker
+from smolcluster.algorithms.ExpertParallelism.worker import run_ep_worker
+from smolcluster.algorithms.FSDP.worker_stage0 import (
+    run_fsdp_worker as run_fsdp_worker_stage0,
+)
+from smolcluster.algorithms.FSDP.worker_stage1 import (
+    run_fsdp_worker as run_fsdp_worker_stage1,
+)
+from smolcluster.algorithms.FSDP.worker_stage2 import (
+    run_fsdp_worker as run_fsdp_worker_stage2,
+)
 from smolcluster.algorithms.ModelParallelism.server import run_modelparallelism_server
 from smolcluster.algorithms.ModelParallelism.worker import run_modelparallelism_worker
 from smolcluster.algorithms.ModelParallelismPipeline.worker import (
     run_modelparallelism_pipeline_worker,
 )
-from smolcluster.algorithms.DataParallelism.ClassicDP.worker import run_classicdp_worker
-from smolcluster.algorithms.DataParallelism.SynchronousPS.server import run_syncps_server
-from smolcluster.algorithms.DataParallelism.SynchronousPS.worker import run_syncps_worker
-from smolcluster.algorithms.FSDP.worker_stage0 import run_fsdp_worker as run_fsdp_worker_stage0
-from smolcluster.algorithms.FSDP.worker_stage1 import run_fsdp_worker as run_fsdp_worker_stage1
-from smolcluster.algorithms.FSDP.worker_stage2 import run_fsdp_worker as run_fsdp_worker_stage2
-from smolcluster.algorithms.ExpertParallelism.worker import run_ep_worker
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.models.moe import Mixtral
-from smolcluster.utils import get_device, get_model_per_node
+from smolcluster.utils import (
+    build_discover_parser,
+    build_main_parser,
+    get_device,
+    get_model_per_node,
+    grove_world_size,
+    parse_server_worker_mode,
+    run_dashboard,
+    should_autodiscover,
+)
 
 # -----------------------------------------------------------------------------
 # Configuration and Data Loading
@@ -267,7 +275,7 @@ def run_server(
             "❌ FATAL: fsdp algorithm does not use a server. Only launch workers."
         )
         sys.exit(1)
-    
+
     logger.info(f"Starting {algo_name} server...")
     if algorithm == "edp":
         run_edp_server(
@@ -429,7 +437,7 @@ def run_worker(
                 )
         else:
             host_ip = cluster_config["host_ip"][hostname]
-    
+
     port_config = cluster_config["port"]
     if isinstance(port_config, dict):
         # For mp_pipeline, classicdp, fsdp, and ep: get worker rank 0's hostname; for others, use server
@@ -482,12 +490,12 @@ def run_worker(
             ff_dim=gpt_config["ff_dim"],
             dropout=gpt_config["dropout"],
         )
-   
-    
+
+
     # For FSDP Stage 3 and EP, skip moving full model to device
     # Model sharding happens later on CPU or per-worker
     if algorithm not in ['fsdp', 'ep']:
-        
+
         model = model.to(device)
         logger.info(f"Model initialized on device: {device}")
 
@@ -645,7 +653,7 @@ def run_worker(
             logger.info(f"Sharding model for FSDP Stage 3 worker rank {local_rank}...")
             num_nodes = cluster_config["num_nodes"]
             num_layers = cluster_config["num_layers"]
-            
+
             # Extract this worker's parameter shard on CPU
             _, out_layers = get_model_per_node(
                 model=model,
@@ -653,26 +661,26 @@ def run_worker(
                 local_rank=local_rank,
                 total_layers=num_layers,
             )
-            
+
             # Extract owned parameters as dict (layer_name -> parameter tensor)
             owned_params_dict = {}
             for layer_name, module in out_layers.items():
                 for param_name, param in module.named_parameters():
                     full_param_name = f"{layer_name}.{param_name}"
                     owned_params_dict[full_param_name] = param.data.cpu().clone()
-            
+
             logger.info(f"Worker rank {local_rank} will own {len(owned_params_dict)} parameters")
-            
+
             # Create empty skeleton from full model (structure only, no weights)
             model_skeleton = model
             with torch.no_grad():
                 for param in model_skeleton.parameters():
                     param.data = torch.empty(0, device='cpu')
-            
+
             # Delete full model and shards to free memory
             del model, out_layers
             gc.collect()
-            
+
             # Pass empty skeleton and shard dict to worker (no full model weights!)
             run_fsdp_worker_stage2(
                 model_skeleton=model_skeleton,

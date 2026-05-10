@@ -6,7 +6,6 @@ import subprocess
 import time
 
 from . import ctx
-from .ssh_config import _lookup_ssh_entry
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +71,9 @@ def ensure_redis_running() -> str:
 
 async def restore_state_from_redis() -> None:
     """Restore selected nodes, probed usernames, and node OS info from Redis."""
-    from .helpers import canonicalize_node_hostname  # local import avoids cycles at module load
+    from .helpers import (
+        canonicalize_node_hostname,  # local import avoids cycles at module load
+    )
 
     try:
         selected = await ctx.redis.hgetall("smolcluster:selected")

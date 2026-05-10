@@ -1,7 +1,6 @@
 """Convert a trained GPT-2 shard to Core ML format for on-device inference on Apple Silicon."""
 import os
 from pathlib import Path
-from typing import Optional
 
 import coremltools as ct
 import numpy as np
@@ -23,7 +22,7 @@ coremlmodel_path = Path(__file__).parent.parent.parent / "data" / "coremlmodel"
 def upload_to_huggingface(
     model_path: str,
     repo_id: str = "YuvrajSingh9886/tablet_model_parallelism",
-    commit_message: Optional[str] = None,
+    commit_message: str | None = None,
     private: bool = False,
 ) -> bool:
     """Upload CoreML model to Hugging Face Hub.
@@ -100,8 +99,8 @@ class GPT2Shard(nn.Module):
 def convert_to_coreml_weights(
     local_rank: int = 0,
     hf_model_identifier: str = "openai-community/gpt2",
-    cluster_config_path: Optional[str] = None,
-    nn_config: Optional[dict] = None,
+    cluster_config_path: str | None = None,
+    nn_config: dict | None = None,
     upload_to_hf: bool = False,
 ) -> None:
     # Load cluster config

@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 from pathlib import Path
+
 from .._utils import get_logger
 
 log = get_logger("swift")

@@ -1,12 +1,13 @@
 """Terminal UI components."""
 
 import io
-import time
 import threading
-from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Static, RichLog
-from textual.binding import Binding
+import time
+
 from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.widgets import DataTable, RichLog, Static
 
 
 class LogCapture(io.TextIOBase):

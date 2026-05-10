@@ -6,10 +6,12 @@ import struct
 import subprocess
 import threading
 import time
+
 import numpy as np
-from .base import Transport, Connection
+
 from .._types import MAGIC
 from .._utils import get_logger
+from .base import Connection, Transport
 
 log = get_logger("p2p")
 
@@ -90,7 +92,7 @@ def discover_p2p_clusters(timeout: float = 10.0) -> list[dict]:
                         "hostname": "awdl-peer",
                         "started": str(time.time()),
                     })
-        except socket.timeout:
+        except TimeoutError:
             continue
 
     sock.close()
@@ -158,7 +160,7 @@ class P2PLiveBrowser:
                     uid = text.split()[1]
                     with self._lock:
                         self._clusters.pop(uid, None)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except (ConnectionError, OSError):
                 break

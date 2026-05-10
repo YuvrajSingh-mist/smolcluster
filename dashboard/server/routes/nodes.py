@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from .. import ctx as _ctx
-from ..helpers import canonicalize_node_hostname, _self_node, _ssh_aliases_snapshot
+from ..helpers import _self_node, _ssh_aliases_snapshot, canonicalize_node_hostname
 from ..models import SelectRequest
 from ..node_meta import refresh_node_metadata
 from ..redis import redis_mark

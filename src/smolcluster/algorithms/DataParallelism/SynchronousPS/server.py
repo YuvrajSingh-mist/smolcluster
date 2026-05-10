@@ -11,10 +11,10 @@ from pathlib import Path
 
 import torch
 import torchinfo
-import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import wandb
 from smolcluster.utils import (
     CheckpointManager,
     emit_smol_event,

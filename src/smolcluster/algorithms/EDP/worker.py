@@ -10,13 +10,13 @@ import time
 from pathlib import Path
 
 import torch
-import wandb
 import yaml
 
+import wandb
 from smolcluster.data.prepare_dataset import prepare_dataset
 from smolcluster.utils import (
-    calculate_compression_ratio,
     CheckpointManager,
+    calculate_compression_ratio,
     dequantize_model_weights,
     emit_smol_event,
     get_weights,
@@ -137,7 +137,7 @@ def connect_to_server(
                 f"Connected to server at {host}:{port} on attempt {attempt + 1}"
             )
             return sock
-        except (OSError, ConnectionRefusedError, socket.timeout) as e:
+        except (TimeoutError, OSError, ConnectionRefusedError) as e:
             sock.close()  # Close the failed socket
             # Re-ping every 5 attempts to keep ARP fresh
             if attempt > 0 and attempt % 5 == 0:
@@ -602,7 +602,7 @@ def run_edp_worker(
                 logger.info(
                     f"Updated to model version {recv_model_version} from server."
                 )
-            except socket.timeout:
+            except TimeoutError:
                 logger.warning("Timeout while pulling weights from server.")
 
             except BlockingIOError:

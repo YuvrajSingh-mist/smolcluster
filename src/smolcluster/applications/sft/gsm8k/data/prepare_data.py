@@ -26,7 +26,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
@@ -42,6 +42,7 @@ from smolcluster.applications.reasoning.grpo.data.gsm8k import (
     _format_prompt,
     extract_answer_from_gsm8k,
 )
+
 
 def _build_cot(gsm8k_solution: str, numeric_answer: float) -> str:
     """Wrap the GSM8K solution in <think> tags and the answer in <answer> tags.
@@ -65,10 +66,10 @@ def _build_cot(gsm8k_solution: str, numeric_answer: float) -> str:
 def _build_examples(
     split: Any,
     tokenizer: Any,
-    max_examples: Optional[int] = None,
-) -> List[Dict[str, str]]:
+    max_examples: int | None = None,
+) -> list[dict[str, str]]:
     records = []
-    for question, answer_raw in zip(split["question"], split["answer"]):
+    for question, answer_raw in zip(split["question"], split["answer"], strict=False):
         numeric = extract_answer_from_gsm8k(answer_raw)
         if numeric is None:
             continue
@@ -80,7 +81,7 @@ def _build_examples(
     return records
 
 
-def _write_jsonl(records: List[Dict[str, str]], path: Path) -> None:
+def _write_jsonl(records: list[dict[str, str]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for rec in records:

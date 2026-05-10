@@ -7,6 +7,7 @@ Repo naming:
 """
 
 from pathlib import Path
+
 from huggingface_hub import HfApi, create_repo
 
 HF_USER = "YuvrajSingh9886"
@@ -65,7 +66,6 @@ def fmt(v):
 def build_readme(repo_id: str, run_name: str, prefix: str, base_model: str, gen_cfg_source: str | None) -> str:
     r = RESULTS.get(prefix, {}).get(run_name, {})
     reward = REWARD_LABELS.get(run_name, run_name)
-    gen_cfg_line = f"\n  generation_config_source: {gen_cfg_source}" if gen_cfg_source else ""
     scores_block = (
         f"\n| Faithfulness | Coverage | Conciseness | Clarity | Composite |\n"
         f"|:---:|:---:|:---:|:---:|:---:|\n"

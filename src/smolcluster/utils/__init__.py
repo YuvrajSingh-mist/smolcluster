@@ -39,10 +39,24 @@ from .common_utils import (
 from .data import get_data_indices
 from .decoding import sample_next_token
 from .device import get_device
-from .layers import get_expert_per_node, get_hfmodel_per_node, get_model_per_node, load_weights_per_node
-from .logging_utils import emit_smol_event, emit_transport_event, setup_cluster_logging, setup_logging
+from .layers import (
+    get_expert_per_node,
+    get_hfmodel_per_node,
+    get_model_per_node,
+    load_weights_per_node,
+)
+from .logging_utils import (
+    emit_smol_event,
+    emit_transport_event,
+    setup_cluster_logging,
+    setup_logging,
+)
 from .model_downloader import download_and_convert_model, ensure_model_weights
-from .quantization import calculate_compression_ratio, dequantize_model_weights, quantize_model_weights
+from .quantization import (
+    calculate_compression_ratio,
+    dequantize_model_weights,
+    quantize_model_weights,
+)
 
 __all__ = [
     # checkpointing

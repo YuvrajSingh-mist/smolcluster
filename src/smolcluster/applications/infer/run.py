@@ -52,7 +52,7 @@ def run_server(server_hostname: str, num_workers: int):
                 "workers": workers, "total": num_workers,
                 "message": f"{len(workers)} / {num_workers} workers connected",
             })
-        except socket.timeout:
+        except TimeoutError:
             break
 
     ok = len(workers) == num_workers

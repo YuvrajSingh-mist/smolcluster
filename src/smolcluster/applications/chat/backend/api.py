@@ -8,10 +8,9 @@ import logging
 import os
 import socket
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
-from typing import Optional
 
 import uvicorn
 import yaml
@@ -121,7 +120,7 @@ app.add_middleware(
 )
 
 # Global socket connection to server
-server_socket: Optional[socket.socket] = None
+server_socket: socket.socket | None = None
 
 # Get server connection details from cluster config
 server_hostname = cluster_config["server"]
@@ -144,8 +143,8 @@ API_PORT = cluster_config["web_interface"]["api_port"]
 MAX_CONNECTION_RETRIES = 10
 RETRY_DELAY = 3  # seconds
 
-memory_store: Optional[RedisVectorMemory] = None
-memory_store_error: Optional[str] = None
+memory_store: RedisVectorMemory | None = None
+memory_store_error: str | None = None
 try:
     memory_store = RedisVectorMemory(redis_url=REDIS_URL)
     logger.info("Redis vector memory connected at %s", REDIS_URL)
@@ -179,35 +178,35 @@ class ChatRequest(BaseModel):
     Example — specific worker:
         {"text": "Hello", "worker_rank": 1}
     """
-    text: Optional[str] = None
-    messages: Optional[list[dict[str, str]]] = None
-    max_tokens: Optional[int] = None  # Always honoured; falls back to model config default
-    worker_rank: Optional[int] = None
-    session_id: Optional[str] = "default"
+    text: str | None = None
+    messages: list[dict[str, str]] | None = None
+    max_tokens: int | None = None  # Always honoured; falls back to model config default
+    worker_rank: int | None = None
+    session_id: str | None = "default"
     use_memory: bool = True
 
     # Decoding overrides — only applied when use_hf_defaults=True.
     # Leave unset (and use_hf_defaults=False) to rely entirely on model config.
     use_hf_defaults: bool = False
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    decoding_strategy: Optional[str] = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    decoding_strategy: str | None = None
 
 
 class ChatResponse(BaseModel):
     generated_text: str
     success: bool
-    error: Optional[str] = None
+    error: str | None = None
     # Inference metrics
-    total_time_ms: Optional[float] = None
-    time_to_first_token_ms: Optional[float] = None
-    tokens_per_second: Optional[float] = None
-    num_tokens: Optional[int] = None
+    total_time_ms: float | None = None
+    time_to_first_token_ms: float | None = None
+    tokens_per_second: float | None = None
+    num_tokens: int | None = None
 
 
 class QueryResponse(ChatResponse):
-    worker_rank: Optional[int] = None
+    worker_rank: int | None = None
 
 
 class MemoryClearRequest(BaseModel):
@@ -466,7 +465,7 @@ async def chat(chat_request: ChatRequest, http_request: Request):
                 except Exception as e:
                     logger.warning(f"Memory search failed, continuing without context: {e}")
                     memories = []
-                
+
                 if memories:
                     memory_lines = [
                         f"- {item.role}: {item.content}"
@@ -508,7 +507,7 @@ async def chat(chat_request: ChatRequest, http_request: Request):
                 if chat_request.top_k is not None:
                     inference_request["top_k"] = chat_request.top_k
             selected_worker_rank = inference_request["worker_rank"]
-            
+
             # Add prompt or messages
             if chat_request.messages:
                 inference_request["messages"] = chat_request.messages
@@ -527,7 +526,7 @@ async def chat(chat_request: ChatRequest, http_request: Request):
             full_text = ""
             client_disconnected = False
             _last_tok_time: float = 0.0  # wall-clock time of previous token (for interval)
-            
+
             while True:
                 response = receive_message(sock)
 
@@ -557,9 +556,9 @@ async def chat(chat_request: ChatRequest, http_request: Request):
                     except OSError:
                         pass
                     token_idx = result.get("token_idx", 0)
-                    
+
                     full_text += token_text
-                    
+
                     # Record token for metrics
                     metrics_tracker.record_token()
 
@@ -588,7 +587,7 @@ async def chat(chat_request: ChatRequest, http_request: Request):
                     logger.info(f"Streaming complete. Metrics: {perf_metrics}")
 
                     worker_rank = result.get("worker_rank", 0)
-                    
+
                     # Send final metrics
                     final_data = {
                         "done": True,

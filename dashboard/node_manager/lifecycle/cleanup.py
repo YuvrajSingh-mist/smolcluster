@@ -4,7 +4,6 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict
 
 from ..ssh import _build_ssh_target
 
@@ -72,7 +71,7 @@ class _CleanupMixin:
         except Exception as e:
             self._log(log_label, f"[stop] Cleanup script error: {e}")
 
-    async def _cleanup_tmux_sessions(self, log_label: str, selected: Dict[str, dict]) -> None:
+    async def _cleanup_tmux_sessions(self, log_label: str, selected: dict[str, dict]) -> None:
         self._log(log_label, "[stop] Killing local tmux sessions…")
         result = await asyncio.to_thread(
             subprocess.run, ["bash", "-lc", _KILL_CMD], capture_output=True, text=True,

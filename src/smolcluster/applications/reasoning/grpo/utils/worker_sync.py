@@ -33,13 +33,12 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 import mlx.core as mx
 import requests
 import yaml
 from mlx.utils import tree_flatten
-import os
 
 from smolcluster.utils import emit_smol_event
 
@@ -52,7 +51,7 @@ _project_root = _smolcluster_root.parent.parent
 
 _cluster_config_path = _smolcluster_root / "configs" / "inference" / "cluster_config_inference.yaml"
 with open(_cluster_config_path) as _f:
-    _cluster_cfg: Dict[str, Any] = yaml.safe_load(_f)
+    _cluster_cfg: dict[str, Any] = yaml.safe_load(_f)
 
 _DEFAULT_VLLM_START_CMD = (
     "tmux kill-session -t vllm_worker 2>/dev/null || true; "
@@ -71,9 +70,9 @@ _DEFAULT_VLLM_START_CMD = (
 def save_policy_weights(
     model: Any,
     checkpoint_dir: str,
-    step: Union[int, str],
-    tokenizer: Optional[Any] = None,
-    model_cfg: Optional[Dict[str, Any]] = None,
+    step: int | str,
+    tokenizer: Any | None = None,
+    model_cfg: dict[str, Any] | None = None,
 ) -> Path:
     """
     Save policy weights (or LoRA adapters for quantized models) as safetensors,
@@ -110,6 +109,7 @@ def save_policy_weights(
         ``<project_root>/checkpoints/grpo/latest/``.
     """
     import json
+
     from mlx_lm.utils import save_config as mlx_save_config
 
     step_dir_name = f"step_{step}" if isinstance(step, int) else str(step)
@@ -295,8 +295,8 @@ def _sync_single_worker(
     hostname: str,
     host_ip: str,
     local_weights_dir: Path,
-    sync_cfg: Dict[str, Any],
-    vllm_cluster: Dict[str, Any],
+    sync_cfg: dict[str, Any],
+    vllm_cluster: dict[str, Any],
     local_model_dir: Path = None,
     max_model_len: int = 1024,
 ) -> None:
@@ -403,8 +403,8 @@ def _sync_single_worker(
 
 def sync_and_reload_workers(
     local_weights_dir: Path,
-    grpo_config: Dict[str, Any],
-    model_config: Dict[str, Any],
+    grpo_config: dict[str, Any],
+    model_config: dict[str, Any],
 ) -> None:
     """
     Distribute the saved policy weights to all vLLM workers, kill their running
@@ -440,10 +440,10 @@ def sync_and_reload_workers(
         len(workers),
     )
 
-    errors: Dict[int, Exception] = {}
+    errors: dict[int, Exception] = {}
     errors_lock = threading.Lock()
 
-    def _task(worker: Dict[str, Any]) -> None:
+    def _task(worker: dict[str, Any]) -> None:
         rank = worker["rank"]
         hostname = worker["hostname"]
         ip = host_ip_map[hostname]

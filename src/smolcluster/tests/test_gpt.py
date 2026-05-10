@@ -45,7 +45,7 @@ class TestBaseTransformerBlock:
         )
         x = torch.randn(batch_size, small_seq_len, model_dim)
         output = block(x)
-        
+
         assert output.shape == (batch_size, small_seq_len, model_dim)
 
     def test_gradient_flow(self, model_dim, num_heads, ff_dim, num_layers, batch_size, small_seq_len):
@@ -61,7 +61,7 @@ class TestBaseTransformerBlock:
         output = block(x)
         loss = output.sum()
         loss.backward()
-        
+
         assert x.grad is not None
         assert not torch.isnan(x.grad).any()
 
@@ -90,7 +90,7 @@ class TestBaseTransformer:
             num_layers=num_layers,
             num_heads=num_heads,
         )
-        
+
         assert model.vocab_size == small_vocab_size
         assert model.max_seq_len == small_seq_len
         assert model.model_dim == model_dim
@@ -107,10 +107,10 @@ class TestBaseTransformer:
             num_heads=num_heads,
         )
         model.eval()
-        
+
         with torch.no_grad():
             output = model(sample_input)
-        
+
         batch_size, seq_len = sample_input.shape
         assert output.shape == (batch_size, seq_len, small_vocab_size)
 
@@ -125,10 +125,10 @@ class TestBaseTransformer:
             num_layers=num_layers,
             num_heads=num_heads,
         )
-        
+
         num_params = model.get_num_params()
         expected_params = sum(p.numel() for p in model.parameters())
-        
+
         assert num_params == expected_params
         assert num_params > 0
 
@@ -143,7 +143,7 @@ class TestBaseTransformer:
             num_layers=num_layers,
             num_heads=num_heads,
         )
-        
+
         # Check that weights are not all zeros (except for biases which are often zero-initialized)
         for name, param in model.named_parameters():
             # Bias terms are often correctly initialized to zero
@@ -163,14 +163,14 @@ class TestBaseTransformer:
             num_heads=num_heads,
             dropout=0.0,  # Disable dropout for gradient test
         )
-        
+
         output = model(sample_input)
         loss = nn.functional.cross_entropy(
             output.view(-1, small_vocab_size),
             sample_labels.view(-1)
         )
         loss.backward()
-        
+
         # Check that all parameters have gradients
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -189,7 +189,7 @@ class TestBaseTransformer:
             num_heads=num_heads,
             tie_weights=True,
         )
-        
+
         # Check that weights are tied
         assert model.token_embedding.weight is model.lm_head.weight
 
@@ -205,14 +205,14 @@ class TestBaseTransformer:
             num_heads=num_heads,
         )
         model.eval()
-        
+
         # Test with shorter sequence
         short_seq = small_seq_len // 2
         input_ids = torch.randint(0, small_vocab_size, (batch_size, short_seq))
-        
+
         with torch.no_grad():
             output = model(input_ids)
-        
+
         assert output.shape == (batch_size, short_seq, small_vocab_size)
 
     def test_custom_ff_dim(
@@ -228,7 +228,7 @@ class TestBaseTransformer:
             num_heads=num_heads,
             ff_dim=custom_ff_dim,
         )
-        
+
         # Check that the custom ff_dim was used
         assert model.blocks[0].ffn[0].out_features == custom_ff_dim
 
@@ -244,13 +244,13 @@ class TestBaseTransformer:
             num_heads=num_heads,
             dropout=0.5,  # High dropout for testing
         )
-        
+
         model.train()
-        
+
         # Two forward passes with dropout should produce different results
         output1 = model(sample_input)
         output2 = model(sample_input)
-        
+
         assert not torch.allclose(output1, output2)
 
     def test_eval_mode_deterministic(
@@ -265,13 +265,13 @@ class TestBaseTransformer:
             num_heads=num_heads,
             dropout=0.5,
         )
-        
+
         model.eval()
-        
+
         with torch.no_grad():
             output1 = model(sample_input)
             output2 = model(sample_input)
-        
+
         assert torch.allclose(output1, output2)
 
     def test_batch_independence(
@@ -286,14 +286,14 @@ class TestBaseTransformer:
             num_heads=num_heads,
         )
         model.eval()
-        
+
         # Create a batch where first two samples are identical
         input_ids = torch.randint(0, small_vocab_size, (3, small_seq_len))
         input_ids[1] = input_ids[0]
-        
+
         with torch.no_grad():
             output = model(input_ids)
-        
+
         # First two outputs should be identical
         assert torch.allclose(output[0], output[1])
         # Third output should be different
@@ -309,7 +309,7 @@ class TestBaseTransformer:
             num_layers=6,
             num_heads=8,
         )
-        
+
         num_params = model.get_num_params()
         assert num_params > 1_000_000  # Should have over 1M parameters
 
@@ -326,12 +326,12 @@ class TestBaseTransformer:
             num_layers=num_layers,
             num_heads=num_heads,
         ).to(device)
-        
+
         input_ids = sample_input.to(device)
-        
+
         with torch.no_grad():
             output = model(input_ids)
-        
+
         assert output.device.type == "cuda"
 
 
@@ -339,7 +339,7 @@ class TestGPTIntegration:
     """Integration tests for GPT-2 model."""
 
     def test_training_step(
-        self, small_vocab_size, small_seq_len, model_dim, num_layers, num_heads, 
+        self, small_vocab_size, small_seq_len, model_dim, num_layers, num_heads,
         sample_input, sample_labels
     ):
         """Test a full training step."""
@@ -350,21 +350,21 @@ class TestGPTIntegration:
             num_layers=num_layers,
             num_heads=num_heads,
         )
-        
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-        
+
         # Forward pass
         output = model(sample_input)
         loss = nn.functional.cross_entropy(
             output.view(-1, small_vocab_size),
             sample_labels.view(-1)
         )
-        
+
         # Backward pass
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        
+
         assert loss.item() > 0
 
     def test_overfitting_single_batch(
@@ -380,12 +380,12 @@ class TestGPTIntegration:
             num_heads=num_heads,
             dropout=0.0,  # Disable dropout for overfitting
         )
-        
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
-        
+
         initial_loss = None
         final_loss = None
-        
+
         # Train for a few iterations
         for i in range(50):
             output = model(sample_input)
@@ -393,16 +393,16 @@ class TestGPTIntegration:
                 output.view(-1, small_vocab_size),
                 sample_labels.view(-1)
             )
-            
+
             if i == 0:
                 initial_loss = loss.item()
-            
+
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-            
+
             if i == 49:
                 final_loss = loss.item()
-        
+
         # Loss should decrease significantly
         assert final_loss < initial_loss * 0.5

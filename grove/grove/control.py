@@ -4,6 +4,7 @@ import json
 import socket
 import struct
 from enum import IntEnum
+
 from ._utils import recvall
 
 _CTRL_HEADER_FMT = "<HI"

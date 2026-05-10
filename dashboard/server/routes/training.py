@@ -7,15 +7,21 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from dashboard.node_manager import _build_ssh_target
+
 from .. import ctx as _ctx
 from ..helpers import _read_json, build_nodes_info
 from ..models import InferenceLaunchRequest, StartRequest
 from ..paths import (
-    GRAD_INTERVAL, GRAD_PING, GRPO_TRAIN_SCRIPT_FILE,
-    INFER_SCRIPT_FILE, METRICS_FILE, TRAIN_CONFIGS_DIR, TRAIN_SCRIPTS_DIR,
+    GRAD_INTERVAL,
+    GRAD_PING,
+    GRPO_TRAIN_SCRIPT_FILE,
+    INFER_SCRIPT_FILE,
+    METRICS_FILE,
+    TRAIN_CONFIGS_DIR,
+    TRAIN_SCRIPTS_DIR,
 )
 from ..redis import REDIS_UI_KEY, redis_mark
-from dashboard.node_manager import _build_ssh_target
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +86,7 @@ async def start_training(req: StartRequest):
     try:
         await _ctx.node_manager.start_training(req.algorithm, _ctx.server_hostname)
     except ValueError as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(409, str(e)) from e
     return {"status": "started"}
 
 
@@ -140,6 +146,6 @@ async def launch_training_script(req: InferenceLaunchRequest):
             scripts_dir     = TRAIN_SCRIPTS_DIR,
         )
     except ValueError as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(409, str(e)) from e
 
     return {"status": "launched", "algorithm": req.algorithm, "server": server_hostname}

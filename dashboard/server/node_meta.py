@@ -5,9 +5,10 @@ import re
 import socket
 import subprocess
 
-from . import ctx
-from .ssh_config import _get_server_alias, _lookup_ssh_entry, local_node_metadata
 from dashboard.node_manager import NodeManager
+
+from . import ctx
+from .ssh_config import _lookup_ssh_entry, local_node_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,9 @@ def collect_local_ips() -> set:
 
 
 async def refresh_node_metadata(hostname: str, ssh_hint: str = "") -> None:
-    from .helpers import canonicalize_node_hostname  # local import avoids load-time cycle
+    from .helpers import (
+        canonicalize_node_hostname,  # local import avoids load-time cycle
+    )
     canonical = canonicalize_node_hostname(hostname)
     if not canonical:
         return

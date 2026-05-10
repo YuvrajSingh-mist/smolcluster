@@ -15,9 +15,7 @@ import torch
 import torch.nn as nn
 
 from smolcluster.models.moe import (
-    AttentionHead,
     LayerNormalization,
-    MHA,
     Mixtral,
     RotaryEmbeddings,
     SWiGLUExpertMoE,
@@ -47,7 +45,7 @@ class TestSwish:
         swish = Swish()
         x = torch.tensor([[-1.0, 0.0, 1.0]])
         output = swish(x)
-        
+
         # Swish is not linear: swish(2x) != 2*swish(x)
         x2 = x * 2
         output2 = swish(x2)
@@ -124,7 +122,7 @@ class TestLayerNormalization:
         ln = LayerNormalization(embeddings_dims=model_dim)
         x = torch.randn(batch_size, small_seq_len, model_dim) * 10  # Large values
         output = ln(x)
-        
+
         # Check that output has approximately mean 0 and std 1 along last dim
         mean = output.mean(dim=-1)
         std = output.std(dim=-1)
@@ -163,7 +161,7 @@ class TestSWiGLUExpertMoE:
         output = expert(x)
         loss = output.sum()
         loss.backward()
-        
+
         assert x.grad is not None
         assert not torch.isnan(x.grad).any()
 

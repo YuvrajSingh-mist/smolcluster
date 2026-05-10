@@ -5,7 +5,6 @@ import logging
 import os
 import shlex
 from pathlib import Path
-from typing import Dict
 
 from ruamel.yaml import YAML as _YAML
 
@@ -17,7 +16,7 @@ class _InferLaunchMixin:
         self,
         algorithm: str,
         server_hostname: str,
-        nodes_info: Dict[str, dict],  # hostname → {ssh_alias, user, rank, ip}
+        nodes_info: dict[str, dict],  # hostname → {ssh_alias, user, rank, ip}
         config_path: str,
         script_path: str,
     ) -> None:
