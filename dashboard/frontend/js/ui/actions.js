@@ -73,6 +73,7 @@ async function startTraining() {
   });
   if (r.ok) {
     inferLocked = true;
+    showConfig(algo);
     // Bounce the log SSE so it fetches fresh history (catches any early launch
     // logs) and establishes a real stream cursor — fixes first-run blank log panel.
     if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
@@ -108,6 +109,7 @@ async function startInference() {
   });
   if (r.ok) {
     inferLocked = true;
+    showConfig(algo);
     syncGenerationAvailability();
   } else {
     alert(`Error: ${(await r.json()).detail}`);

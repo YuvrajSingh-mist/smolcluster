@@ -126,7 +126,7 @@ def enable_eval_rollout_logging() -> Path:
 
 def load_eval_configs() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Load the GRPO and model configs used by training and evaluation."""
-    grpo_cfg_path = _smolcluster_root / "configs" / "inference" / "reasoning" / "grpo" / "config.yaml"
+    grpo_cfg_path = _smolcluster_root / "configs" / "reasoning" / "grpo" / "config.yaml"
     model_cfg_path = _smolcluster_root / "configs" / "inference" / "model_config_inference.yaml"
 
     with open(grpo_cfg_path) as f:

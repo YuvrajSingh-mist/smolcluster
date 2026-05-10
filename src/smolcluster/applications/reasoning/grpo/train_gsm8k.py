@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 _module_dir = Path(__file__).parent
 _smolcluster_root = _module_dir.parents[2]
-grpo_config_path = _smolcluster_root / "configs" / "inference" / "reasoning" / "grpo" / "config.yaml"
+grpo_config_path = _smolcluster_root / "configs" / "reasoning" / "grpo" / "config.yaml"
 model_config_path = _smolcluster_root / "configs" / "inference" / "model_config_inference.yaml"
 
 with open(grpo_config_path) as f:

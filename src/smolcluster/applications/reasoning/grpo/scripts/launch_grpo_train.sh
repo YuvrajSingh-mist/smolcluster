@@ -35,7 +35,7 @@ if [[ -f "$PROJECT_DIR/.env" ]]; then
     set -u
 fi
 
-GRPO_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/reasoning/grpo/config.yaml"
+GRPO_CONFIG="$PROJECT_DIR/src/smolcluster/configs/reasoning/grpo/config.yaml"
 CLUSTER_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/cluster_config_inference.yaml"
 MODEL_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/model_config_inference.yaml"
 VLLM_TMUX_SESSION="vllm_worker"

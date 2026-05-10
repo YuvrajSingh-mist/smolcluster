@@ -20,6 +20,9 @@ function getLayout() {
     else workers.push({h, ...info});
   }
   workers.sort((a,b) => a.rank - b.rank);
+  // Re-index worker ranks so labels always show RANK 1, RANK 2 … regardless of
+  // which selection rank each node was originally assigned.
+  if (server) workers.forEach((w, i) => { w.rank = i + 1; });
 
   const sx = W/2, sy = H * 0.22;
 

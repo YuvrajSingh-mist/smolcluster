@@ -10,6 +10,9 @@ function draw(ts) {
   // snap on ring spin and orbit damping.
   if (_tabWasHidden) { _tabWasHidden = false; _T3orbit.update(); return; }
 
+  // Drain any SSE-event burst that arrived between _onTabVisible() and now.
+  if (_tabCooldownFrames > 0) { _smolEventQueue.length = 0; _tabCooldownFrames--; }
+
   _T3orbit.update();
 
   // ── Active state ───────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ debug_lock = threading.Lock()
 # Resolve config paths relative to project root
 _module_dir = Path(__file__).parent
 _smolcluster_root = _module_dir.parents[3]  # Navigate from utils -> grpo -> reasoning -> applications -> smolcluster
-_config_path = _smolcluster_root / "configs" / "inference" / "reasoning" / "grpo" / "config.yaml"
+_config_path = _smolcluster_root / "configs" / "reasoning" / "grpo" / "config.yaml"
 _cluster_config_path = _smolcluster_root / "configs" / "inference" / "cluster_config_inference.yaml"
 _project_root = _smolcluster_root.parent.parent
 _debug_dir = _project_root / ".grpo_debug"

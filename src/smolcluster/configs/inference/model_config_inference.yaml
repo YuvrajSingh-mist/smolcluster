@@ -28,7 +28,7 @@ mp:
         k: 40
 
 dp:
-  hf_model_name: YuvrajSingh9886/Qwen2.5-0.5B-grpo-summarization-length-only
+  hf_model_name: mlx-community/Qwen2.5-0.5B-Instruct-bf16
 
   # Max tokens to generate per inference request.
   max_new_tokens: 256

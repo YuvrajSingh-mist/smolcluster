@@ -227,3 +227,119 @@ select {
 .hc6 { color: #80c0f0; }   /* blue */
 .hc7 { color: #e0e0a0; }   /* olive */
 
+
+/* ── Config side panel ──────────────────────────────────────────────────── */
+#cfg-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  pointer-events: none;
+}
+#cfg-overlay.visible { pointer-events: auto; }
+
+#cfg-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.28);
+  opacity: 0; transition: opacity .22s ease;
+}
+#cfg-overlay.visible #cfg-backdrop { opacity: 1; }
+
+#cfg-panel {
+  position: absolute; right: 0; top: 0; bottom: 0;
+  width: min(460px, 92vw);
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .22s cubic-bezier(.4,0,.2,1);
+  box-shadow: -6px 0 36px rgba(0,0,0,0.18);
+}
+#cfg-overlay.visible #cfg-panel { transform: translateX(0); }
+
+#cfg-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
+  flex-shrink: 0; gap: 8px;
+}
+#cfg-title-wrap {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+#cfg-title { font-size: 16px; font-weight: 700; color: var(--ink); }
+#cfg-key-count {
+  font-size: 11px; color: var(--ink-3); font-family: 'IBM Plex Mono', monospace;
+  background: var(--bg-0); padding: 2px 7px; border-radius: 5px;
+  border: 1px solid var(--line); flex-shrink: 0;
+}
+#cfg-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+#cfg-raw-btn {
+  font-size: 11px; font-weight: 600; color: var(--teal);
+  background: none; border: none; cursor: pointer; padding: 2px 0;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+#cfg-raw-btn:hover { opacity: .78; }
+#cfg-close {
+  background: none; border: none; cursor: pointer;
+  color: var(--ink-3); font-size: 15px; padding: 2px 5px; line-height: 1;
+}
+#cfg-close:hover { color: var(--ink); }
+
+#cfg-search-wrap {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-bottom: 1px solid var(--line);
+  flex-shrink: 0; background: var(--bg-0);
+  color: var(--ink-3);
+}
+#cfg-search {
+  flex: 1; background: none; border: none; outline: none;
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+  color: var(--ink); caret-color: var(--teal);
+}
+#cfg-search::placeholder { color: var(--ink-3); }
+
+#cfg-kv-body {
+  flex: 1; overflow-y: auto; padding: 6px 0 16px;
+}
+#cfg-kv-body::-webkit-scrollbar { width: 4px; }
+#cfg-kv-body::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; }
+
+.cfg-loading {
+  padding: 24px 16px; color: var(--ink-3);
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+}
+.cfg-err { color: #d45b5b; }
+
+.cfg-row {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 4px 12px; min-height: 28px;
+  border-bottom: 1px solid transparent;
+  cursor: default;
+}
+.cfg-row:hover { background: rgba(15,41,38,0.05); }
+.cfg-section { cursor: pointer; user-select: none; }
+.cfg-section:hover { background: rgba(15,41,38,0.07); }
+.cfg-chevron {
+  font-size: 8px; color: var(--ink-3); flex-shrink: 0;
+  width: 10px; margin-right: 2px;
+}
+.cfg-key {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+  color: var(--ink); flex-shrink: 0; min-width: 0;
+}
+.cfg-val {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;
+  font-weight: 500; flex: 1; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cfg-val-num  { color: #63b3ed; }
+.cfg-val-bool { color: #63d8e0; }
+.cfg-val-str  { color: #f0a060; }
+.cfg-val-null { color: var(--ink-3); font-style: italic; }
+.cfg-val-obj  { color: var(--ink-3); font-size: 11px; }
+
+#cfg-raw-body {
+  display: none; flex: 1; overflow-y: auto; margin: 0;
+  padding: 14px 16px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  color: var(--ink-2); line-height: 1.7;
+  white-space: pre; background: var(--bg-0);
+}
+#cfg-raw-body::-webkit-scrollbar { width: 4px; }
+#cfg-raw-body::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; }

@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import subprocess
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -49,6 +50,27 @@ async def _kill_vllm_on_all_nodes(selected: dict, log_label: str) -> None:
 @router.get("/api/training")
 async def get_training():
     return _read_json(METRICS_FILE)
+
+
+_ALGO_CONFIG_PATHS = {
+    "grpo": Path(TRAIN_CONFIGS_DIR) / "reasoning" / "grpo" / "config.yaml",
+}
+
+
+@router.get("/api/config")
+async def get_config(algorithm: str = ""):
+    """Return the config YAML for the chosen algorithm."""
+    from dashboard.node_manager.constants import _TRAINING_ALGO_MAP
+    if not algorithm:
+        raise HTTPException(400, "algorithm parameter required")
+    if algorithm not in _TRAINING_ALGO_MAP and algorithm not in _ALGO_CONFIG_PATHS:
+        raise HTTPException(404, f"Unknown algorithm: {algorithm}")
+    config_path = _ALGO_CONFIG_PATHS.get(algorithm)
+    if config_path is None:
+        config_path = Path(TRAIN_CONFIGS_DIR) / _TRAINING_ALGO_MAP[algorithm][0]
+    if not config_path.exists():
+        raise HTTPException(404, f"Config file not found: {config_path.name}")
+    return {"algorithm": algorithm, "filename": str(config_path.name), "yaml": config_path.read_text()}
 
 
 @router.post("/api/training/start")

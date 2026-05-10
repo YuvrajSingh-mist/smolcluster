@@ -14,8 +14,9 @@ loadUI().then(() => initBottomResizer());
 // scene starts clean from the next live event.
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
-    _tabWasHidden = true;   // draw() skips one stale-ts frame
-    _onTabVisible();        // clears particle + spawn queues
+    _tabWasHidden = true;       // draw() skips one stale-ts frame
+    _tabCooldownFrames = 2;     // discard any SSE burst that re-fills the queue
+    _onTabVisible();            // clears particle + spawn queues
   }
 });
 

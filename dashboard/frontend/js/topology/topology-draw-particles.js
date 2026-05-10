@@ -92,20 +92,22 @@ function _processSmolEvents(server, workers) {
     const col  = _EV_COL[ev.type]  || '220,185,40';
     const sz   = _EV_SZ[ev.type]   || 5.5;
     const arch = String(ev.arch || '');
-    const isAllReduce = arch === 'classicdp' || arch === 'fsdp';
-    const isPS        = arch === 'syncps' || arch === 'grpo';
+    const isAllReduce = arch === 'classicdp' || arch === 'fsdp' || arch === 'expertparallel';
+    const isPS        = arch === 'syncps' || arch === 'grpo' || arch === 'edp';
+    const isPipeline  = arch === 'pipeline';
     const count = Math.min(Math.max(1, ev.count || 1), 32);
 
     // Snapshot all (fp, tp, lane) pairs for this event right now so positions
     // are captured at event-fire time (after _drawSyncNodes has run).
     const pairs = [];
     if (isAllReduce && workers.length >= 2) {
+      const lane = ev.dir === 'in' ? 1 : -1;
       for (let i = 0; i < workers.length; i++)
         for (let j = 0; j < workers.length; j++) {
           if (i === j) continue;
           const fp = nodeMeshes.get(workers[i].h)?.group.position;
           const tp = nodeMeshes.get(workers[j].h)?.group.position;
-          if (fp && tp) pairs.push({ fp: fp.clone(), tp: tp.clone(), lane: i < j ? 1 : -1 });
+          if (fp && tp) pairs.push({ fp: fp.clone(), tp: tp.clone(), lane });
         }
     } else if (isPS) {
       // No coord: treat workers[0] as hub only if there is no server.
@@ -121,6 +123,21 @@ function _processSmolEvents(server, workers) {
           else
             pairs.push({ fp: hp.clone(), tp: wp.clone(), lane: -1 });
         });
+      }
+    } else if (isPipeline) {
+      // Chain: each worker sends to / receives from its neighbour.
+      // dir='out' → forward pass (fp→tp), dir='in' → backward pass (tp→fp).
+      // Universal lane rule: in=1 (upper arc), out=-1 (lower arc).
+      const chain = coord ? [coord, ...workers] : workers;
+      const lane = ev.dir === 'in' ? 1 : -1;
+      for (let i = 0; i < chain.length - 1; i++) {
+        const fp3 = nodeMeshes.get(chain[i].h)?.group.position;
+        const tp3 = nodeMeshes.get(chain[i + 1].h)?.group.position;
+        if (!fp3 || !tp3) continue;
+        if (ev.dir === 'in')
+          pairs.push({ fp: tp3.clone(), tp: fp3.clone(), lane });
+        else
+          pairs.push({ fp: fp3.clone(), tp: tp3.clone(), lane });
       }
     }
 

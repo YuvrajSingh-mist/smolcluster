@@ -43,7 +43,7 @@ if [[ -f "$PROJECT_DIR/.env" ]]; then
     set -u
 fi
 
-GRPO_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/reasoning/grpo/config.yaml"
+GRPO_CONFIG="$PROJECT_DIR/src/smolcluster/configs/reasoning/grpo/config.yaml"
 CLUSTER_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/cluster_config_inference.yaml"
 MODEL_CONFIG="$PROJECT_DIR/src/smolcluster/configs/inference/model_config_inference.yaml"
 EVAL_SCRIPT="$PROJECT_DIR/src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_gsm8k.py"
@@ -413,7 +413,7 @@ sys.path.insert(0, str(Path.cwd() / "src"))
 from smolcluster.applications.reasoning.grpo.utils.worker_sync import sync_and_reload_workers
 
 root = Path.cwd()
-grpo_cfg = yaml.safe_load(open(root / 'src/smolcluster/configs/inference/reasoning/grpo/config.yaml'))
+grpo_cfg = yaml.safe_load(open(root / 'src/smolcluster/configs/reasoning/grpo/config.yaml'))
 mdl_cfg = yaml.safe_load(open(root / 'src/smolcluster/configs/inference/model_config_inference.yaml'))
 weights_dir = root / 'checkpoints/sft_eval_payload'
 

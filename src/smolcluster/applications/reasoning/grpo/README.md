@@ -19,7 +19,7 @@ At a high level, each GRPO step in this repository looks like this:
 
 The default GRPO configuration lives in:
 
-- `src/smolcluster/configs/inference/reasoning/grpo/config.yaml`
+- `src/smolcluster/configs/reasoning/grpo/config.yaml`
 
 The main training entry points are:
 
@@ -179,7 +179,7 @@ src/smolcluster/applications/reasoning/grpo/
 
 Related config files outside this directory:
 
-- `src/smolcluster/configs/inference/reasoning/grpo/config.yaml`
+- `src/smolcluster/configs/reasoning/grpo/config.yaml`
 - `src/smolcluster/configs/inference/model_config_inference.yaml`
 - `src/smolcluster/configs/inference/cluster_config_inference.yaml`
 

@@ -16,7 +16,7 @@ let _tokenIntervalMs = 200;
 // ── Typed event queue ────────────────────────────────────────────────────────
 // Each entry: { type: 'gradients'|'weights'|'rollout'|'weight_sync',
 //               dir:  'in'|'out',
-//               arch: 'syncps'|'classicdp'|'fsdp'|'grpo',
+//               arch: 'syncps'|'classicdp'|'fsdp'|'grpo'|'edp'|'expertparallel'|'pipeline',
 //               count: number }
 // The draw loop drains this every frame.
 let _smolEventQueue = [];
@@ -32,6 +32,7 @@ let _particleSpawnQueue = [];
 // All accumulated animation events become stale.  On return we discard them so
 // the topology starts clean from the next real event — no burst catch-up.
 let _tabWasHidden = false;  // draw() reads this to skip one stale frame on return
+let _tabCooldownFrames = 0; // extra frames to discard smolEventQueue after tab-return burst
 
 // RTT tracking per event type (for metrics display only).
 const _evOutTs = {};

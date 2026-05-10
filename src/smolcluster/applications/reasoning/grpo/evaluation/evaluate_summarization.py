@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 _EVAL_ROLLOUTS_DIR = _script_dir / "eval-rollouts"
 
-_config_path = _smolcluster_root / "configs" / "inference" / "reasoning" / "grpo" / "config.yaml"
+_config_path = _smolcluster_root / "configs" / "reasoning" / "grpo" / "config.yaml"
 with _config_path.open() as _f:
     _GRPO_CONFIG: Dict[str, Any] = yaml.safe_load(_f)
 _DATA_CONFIG: Dict[str, Any] = _GRPO_CONFIG["data"]
