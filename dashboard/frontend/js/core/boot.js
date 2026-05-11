@@ -15,7 +15,7 @@ loadUI().then(() => initBottomResizer());
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     _tabWasHidden = true;       // draw() skips one stale-ts frame
-    _tabCooldownFrames = 2;     // discard any SSE burst that re-fills the queue
+    _tabCooldownFrames = 60;    // ~1 s at 60 fps — discards any SSE backlog that re-fills the queue after return
     _onTabVisible();            // clears particle + spawn queues
   }
 });

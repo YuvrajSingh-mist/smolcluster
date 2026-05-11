@@ -24,7 +24,13 @@ function _drawSyncNodes(ts, server, workers, crownedHost, isActive) {
     }
     if (!_dragEntry || _dragEntry.entry !== entry) {
       const tgt = _manualNodePos.get(n.h) || _toWorld(n.x, n.y);
-      entry.group.position.lerp(tgt, 0.12);
+      // Teleport brand-new nodes (position still at Three.js default origin) directly
+      // to their target so particles spawned this frame don't reference (0,0,0).
+      if (entry.group.position.lengthSq() < 0.0001 && tgt.lengthSq() > 0.0001) {
+        entry.group.position.copy(tgt);
+      } else {
+        entry.group.position.lerp(tgt, 0.12);
+      }
     }
 
     const pulse = 0.5 + 0.5 * Math.sin(ts / 380);

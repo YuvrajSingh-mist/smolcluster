@@ -45,6 +45,11 @@ let _lastLegendAlgo = '';
 function _handleSmolEvent(ev) {
   const type = ev.type || '';
   if (!type) return;
+  // Discard animation events while the tab is hidden or during the post-return
+  // cooldown window.  Browsers freeze rAF on hidden tabs but SSE / log callbacks
+  // keep running, so _smolEventQueue can fill with stale events.  Gating here
+  // (not just clearing in draw()) ensures the queue never re-fills between frames.
+  if (document.hidden || _tabCooldownFrames > 0) return;
 
   if (ev.dir === 'out') {
     _evOutTs[type] = performance.now();

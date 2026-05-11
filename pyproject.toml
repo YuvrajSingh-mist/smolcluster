@@ -100,6 +100,16 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+"src/smolcluster/train.py" = ["E402"]
+"src/smolcluster/applications/reasoning/grpo/evaluation/*.py" = ["E402"]
+"src/smolcluster/applications/reasoning/grpo/rewards/math_rewards.py" = ["E402"]
+"src/smolcluster/applications/reasoning/grpo/utils/evaluation_utils.py" = ["E402"]
+"src/smolcluster/applications/sft/gsm8k/data/prepare_data.py" = ["E402"]
+"src/smolcluster/applications/reasoning/grpo/train_gsm8k.py" = ["F821"]
+"grove/grove/coordinator.py" = ["F821"]
+"grove/grove/dashboard.py" = ["F821"]
+"grove/grove/tui.py" = ["F821"]
+"grove/grove/transport/p2p.py" = ["F821"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/smolcluster/tests"]

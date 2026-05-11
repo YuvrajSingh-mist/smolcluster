@@ -607,7 +607,7 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="G-Eval evaluation for summarization GRPO checkpoint")
     p.add_argument(
         "--checkpoint-dir",
-        default="checkpoints/LFM2.5-350M-bf16/grpo-summarization-length-quality-bleu-rouge/latest",
+        default="checkpoints/LFM2.5-350M-bf16/length-penalty-fine-tuned/grpo-summarization-length-quality-bleu/latest",
         help="Path to checkpoint dir containing model.safetensors (relative to project root or absolute)",
     )
     p.add_argument(
