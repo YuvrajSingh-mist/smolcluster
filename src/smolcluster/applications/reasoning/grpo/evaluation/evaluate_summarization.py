@@ -113,10 +113,10 @@ _METRIC_SPECS = [
 
 _DEFAULT_EVAL_ROUNDS = 5
 _DEFAULT_MAX_EVAL_RETRIES_PER_ROUND = 5
-_DEFAULT_EVAL_BATCH_SIZE = 10
-_DEFAULT_EVAL_MAX_CONCURRENT = 2
-_DEFAULT_EVAL_THROTTLE_SECONDS = 0.25
-_DEFAULT_INTER_BATCH_SLEEP_SECONDS = 1.0
+_DEFAULT_EVAL_BATCH_SIZE = 25
+_DEFAULT_EVAL_MAX_CONCURRENT = 10
+_DEFAULT_EVAL_THROTTLE_SECONDS = 0.05
+_DEFAULT_INTER_BATCH_SLEEP_SECONDS = 0.25
 
 
 def _evaluate_round_attempt(
@@ -607,12 +607,12 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="G-Eval evaluation for summarization GRPO checkpoint")
     p.add_argument(
         "--checkpoint-dir",
-        default="checkpoints/LFM2.5-350M-bf16/length-penalty-fine-tuned/grpo-summarization-length-quality-bleu/latest",
+        default="checkpoints/Qwen2.5-0.5B-instruct-bf16/length-penalty-fine-tuned/grpo-summarization-quality-rouge/latest",
         help="Path to checkpoint dir containing model.safetensors (relative to project root or absolute)",
     )
     p.add_argument(
         "--model-name",
-        default="LiquidAI/LFM2.5-350M-MLX-bf16",
+        default="mlx-community/Qwen2.5-0.5B-Instruct-bf16",
         help="Base HuggingFace model ID (must match the checkpoint architecture)",
     )
     p.add_argument(

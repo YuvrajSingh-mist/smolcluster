@@ -82,6 +82,7 @@ GRPO checkpoints in this directory are evaluated with task-specific scripts unde
 Computes sampled GSM8K accuracy-style metrics and supports checkpoint comparison.
 
 ```bash
+export OPENAI_API_KEY=your_key_here
 cd src/smolcluster/applications/reasoning/grpo/evaluation
 uv run evaluate_gsm8k.py --checkpoint-dir ../../checkpoints/grpo-gsm8k/latest
 ```
@@ -103,6 +104,7 @@ Generates summaries on the validation split, then scores each with four LLM-judg
 - Clarity
 
 ```bash
+export OPENAI_API_KEY=your_key_here
 cd src/smolcluster/applications/reasoning/grpo/evaluation
 uv run evaluate_summarization.py --checkpoint-dir ../../checkpoints/grpo-summarization-length-quality/latest
 ```
