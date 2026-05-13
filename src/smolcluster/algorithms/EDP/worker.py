@@ -13,7 +13,7 @@ import torch
 import yaml
 
 import wandb
-from smolcluster.data.prepare_dataset import prepare_dataset
+from smolcluster.utils.data import prepare_dataset
 from smolcluster.utils import (
     CheckpointManager,
     calculate_compression_ratio,

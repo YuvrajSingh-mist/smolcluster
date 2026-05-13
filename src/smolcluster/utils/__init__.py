@@ -36,7 +36,7 @@ from .common_utils import (
     set_weights_by_layer,
     unload_params_from_skeleton,
 )
-from .data import get_data_indices
+from .data import get_data_indices, prepare_dataset
 from .decoding import sample_next_token
 from .device import get_device
 from .layers import (
@@ -98,6 +98,7 @@ __all__ = [
     "unload_params_from_skeleton",
     # data
     "get_data_indices",
+    "prepare_dataset",
     # decoding
     "sample_next_token",
     # device

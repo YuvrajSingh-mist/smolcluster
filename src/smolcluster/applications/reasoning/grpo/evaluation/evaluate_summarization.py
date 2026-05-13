@@ -273,11 +273,15 @@ def _evaluate_round_attempt(
         **round_stats,
     }
 
-def load_model_from_checkpoint(hf_model_name: str, checkpoint_dir: Path) -> tuple[Any, Any]:
-    """Load base model weights then overlay the GRPO checkpoint."""
+def load_model_from_checkpoint(hf_model_name: str, checkpoint_dir: Path | None) -> tuple[Any, Any]:
+    """Load base model weights, optionally overlaying a GRPO checkpoint."""
     logger.info("Loading base model: %s", hf_model_name)
     model, tokenizer = mlx_load(hf_model_name, tokenizer_config={"trust_remote_code": True})
     mx.eval(model.parameters())
+
+    if checkpoint_dir is None:
+        logger.info("No checkpoint dir provided — evaluating base model only.")
+        return model, tokenizer
 
     adapters_path = checkpoint_dir / "adapters" / "adapters.safetensors"
     full_path = checkpoint_dir / "model.safetensors"
@@ -300,10 +304,10 @@ def load_model_from_checkpoint(hf_model_name: str, checkpoint_dir: Path) -> tupl
     return model, tokenizer
 
 
-def generate_summary(model: Any, tokenizer: Any, raw_document: str, max_tokens: int) -> str:
+def generate_summary(model: Any, tokenizer: Any, raw_document: str, max_tokens: int, system_prompt: str = PROMPT) -> str:
     """Format a chat prompt and run greedy generation."""
     messages = [
-        {"role": "system", "content": PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": raw_document},
     ]
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -316,7 +320,7 @@ def generate_summary(model: Any, tokenizer: Any, raw_document: str, max_tokens: 
 
 def run_eval_pipeline(
     hf_model_name: str,
-    checkpoint_dir: Path,
+    checkpoint_dir: Path | None,
     num_examples: int,
     max_tokens: int,
     judge_model: str,
@@ -326,9 +330,14 @@ def run_eval_pipeline(
     eval_max_concurrent: int,
     eval_throttle_seconds: float,
     inter_batch_sleep_seconds: float,
+    system_prompt: str = PROMPT,
 ) -> None:
     pipeline_start_time = time.perf_counter()
-    run_tag = f"{checkpoint_dir.parent.name}__{checkpoint_dir.name}__{time.strftime('%Y%m%d_%H%M%S')}"
+    if checkpoint_dir is None:
+        model_slug = hf_model_name.replace("/", "_")
+        run_tag = f"{model_slug}__base__{time.strftime('%Y%m%d_%H%M%S')}"
+    else:
+        run_tag = f"{checkpoint_dir.parent.name}__{checkpoint_dir.name}__{time.strftime('%Y%m%d_%H%M%S')}"
     metrics = build_geval_metrics(judge_model, _METRIC_SPECS)
     expected_metric_names = [metric.name for metric in metrics]
     metric_thresholds = {metric.name: metric.threshold for metric in metrics}
@@ -351,7 +360,7 @@ def run_eval_pipeline(
     rollout_records: list[dict[str, Any]] = []
     logger.info("Generating summaries …")
     for idx, (raw_doc, reference) in enumerate(tqdm(examples, desc="Generating")):
-        generated = generate_summary(model, tokenizer, raw_doc, max_tokens=max_tokens)
+        generated = generate_summary(model, tokenizer, raw_doc, max_tokens=max_tokens, system_prompt=system_prompt)
         test_cases.append(
             LLMTestCase(
                 input=raw_doc,
@@ -599,7 +608,7 @@ def run_eval_pipeline(
     print("=" * 58)
 
 
-# ---------------------------------------------------------------------------
+
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -607,7 +616,7 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="G-Eval evaluation for summarization GRPO checkpoint")
     p.add_argument(
         "--checkpoint-dir",
-        default="checkpoints/Qwen2.5-0.5B-instruct-bf16/length-penalty-fine-tuned/grpo-summarization-quality-rouge/latest",
+        default="checkpoints/Qwen2.5-0.5B-instruct-bf16/length-penalty-fine-tuned/grpo-summarization-quality-meteor-bleu/latest",
         help="Path to checkpoint dir containing model.safetensors (relative to project root or absolute)",
     )
     p.add_argument(
@@ -677,15 +686,32 @@ def _parse_args() -> argparse.Namespace:
             f"(default: {_DEFAULT_INTER_BATCH_SLEEP_SECONDS})"
         ),
     )
+    p.add_argument(
+        "--base-model-only",
+        action="store_true",
+        help="Evaluate the base model without loading any checkpoint weights",
+    )
+    p.add_argument(
+        "--system-prompt",
+        type=str,
+        default=None,
+        help="Override the system prompt used during generation (default: PROMPT from summarization.py)",
+    )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    checkpoint_dir = resolve_path(args.checkpoint_dir, _project_root)
-    if not checkpoint_dir.is_dir():
-        logger.error("Checkpoint directory not found: %s", checkpoint_dir)
-        sys.exit(1)
+
+    if args.base_model_only:
+        checkpoint_dir = None
+    else:
+        checkpoint_dir = resolve_path(args.checkpoint_dir, _project_root)
+        if not checkpoint_dir.is_dir():
+            logger.error("Checkpoint directory not found: %s", checkpoint_dir)
+            sys.exit(1)
+
+    system_prompt = args.system_prompt if args.system_prompt is not None else PROMPT
 
     run_eval_pipeline(
         hf_model_name=args.model_name,
@@ -699,4 +725,5 @@ if __name__ == "__main__":
         eval_max_concurrent=args.eval_max_concurrent,
         eval_throttle_seconds=args.eval_throttle_seconds,
         inter_batch_sleep_seconds=args.inter_batch_sleep_seconds,
+        system_prompt=system_prompt,
     )

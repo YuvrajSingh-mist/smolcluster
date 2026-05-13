@@ -55,7 +55,7 @@ from smolcluster.algorithms.ModelParallelism.worker import run_modelparallelism_
 from smolcluster.algorithms.ModelParallelismPipeline.worker import (
     run_modelparallelism_pipeline_worker,
 )
-from smolcluster.data.prepare_dataset import prepare_dataset
+from smolcluster.utils.data import prepare_dataset
 from smolcluster.models.gpt import BaseTransformer
 from smolcluster.models.moe import Mixtral
 from smolcluster.utils import (

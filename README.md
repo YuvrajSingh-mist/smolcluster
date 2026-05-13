@@ -142,6 +142,27 @@ smolcluster/
 └── pyproject.toml                  # Dependencies
 ```
 
+## GRPO Summarization — Evaluation
+
+Evaluate a trained checkpoint with G-Eval (GPT-4o-mini as judge):
+
+```bash
+python src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_summarization.py \
+  --checkpoint-dir checkpoints/<model>/<run>/latest \
+  --model-name mlx-community/<model>
+```
+
+**Evaluate the base model (no checkpoint) with a custom system prompt:**
+
+```bash
+python src/smolcluster/applications/reasoning/grpo/evaluation/evaluate_summarization.py \
+  --base-model-only \
+  --model-name mlx-community/Qwen2.5-0.5B-Instruct-bf16 \
+  --system-prompt "You are an assistant who is an expert at summarization task. The user gives you a post and you are required to summarize it, keeping the key points and main ideas intact, in EXACTLY 50 words"
+```
+
+Replace `--model-name` with `mlx-community/LFM-2.5-350M-bf16` to evaluate the LFM model. Results are saved under `src/smolcluster/applications/reasoning/grpo/evaluation/eval-rollouts/`.
+
 ## Contributing
 Pull requests welcome! Please ensure your code follows the existing style and includes appropriate logging.
 
