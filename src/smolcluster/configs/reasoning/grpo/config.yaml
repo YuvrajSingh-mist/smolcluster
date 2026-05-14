@@ -36,10 +36,10 @@ reward_workers: 8       # Number of threads for parallel reward computation (nul
 
 # Quality metrics used in calculate_summary_quality (any combination, at least one)
 quality_metrics:
-  length_penalty: false  # penalise deviation from target summary length
-  rouge: true
+  length_penalty: true  # penalise deviation from target summary length
+  rouge: false
   meteor: false
-  bleu: true
+  bleu: false
 
 
 
@@ -80,7 +80,7 @@ vllm_cluster:
 weight_sync:
   save_every_steps: 100              # save/overwrite latest checkpoint every N optimizer steps (0 = disabled)
   sync_steps: 5                    # sync/reload workers every N training steps (0 = disabled)
-  checkpoint_dir: "checkpoints/Qwen2.5-0.5B-instruct-bf16/length-penalty-included/grpo-summarization-length-quality-bleu-rouge"  # relative to project root
+  checkpoint_dir: "checkpoints/Qwen2.5-0.5B-instruct-bf16/gaming/"  # relative to project root
 
   # remote_user and host_ip are read from model_config_inference.yaml cluster.*
   remote_model_dir: "~/grpo_model_qwen2_5_0_5b"  # directory on each worker where checkpoint weights are copied before vLLM restart
