@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: If you use smolcluster (runs distributed training and multi-node vLLM rollouts on Apple Silicon clusters), please cite it as below.
+title: "smolcluster: An Educational Distributed Training and Inference Library for Local Computing"
+type: software
+authors:
+  - family-names: Singh
+    given-names: Yuvraj
+date-released: "2026-05-26"
+year: 2026
+url: "https://github.com/YuvrajSingh-mist/smolcluster"
+repository-code: "https://github.com/YuvrajSingh-mist/smolcluster"
+license: Apache-2.0
+preferred-citation:
+  type: generic
+  title: "smolcluster: An Educational Distributed Training and Inference Library for Local Computing"
+  authors:
+    - family-names: Singh
+      given-names: Yuvraj
+  year: 2026
+  url: "https://github.com/YuvrajSingh-mist/smolcluster"
+  howpublished: "\\url{https://github.com/YuvrajSingh-mist/smolcluster}"

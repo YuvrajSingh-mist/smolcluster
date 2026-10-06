@@ -167,4 +167,10 @@ Replace `--model-name` with `mlx-community/LFM-2.5-350M-bf16` to evaluate the LF
 Pull requests welcome! Please ensure your code follows the existing style and includes appropriate logging.
 
 ## License
-MIT
+
+- **Code** (smolcluster source, scripts, configs): [Apache License 2.0](LICENSE). Keep the copyright notice and [NOTICE](NOTICE) when you redistribute.
+- **Docs, diagrams and published artifacts**: [CC BY 4.0](LICENSE-DATASET) - free to reuse with attribution to Yuvraj Singh (name + link; indicate changes).
+
+## Citation
+
+If you use smolcluster in academic work, please cite it via [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button). Each GitHub release is archived on Zenodo, which mints a DOI for the exact version.

@@ -1,0 +1,34 @@
+{
+  "title": "smolcluster: An Educational Distributed Training and Inference Library for Local Computing",
+  "description": "<p><strong>smolcluster</strong> runs distributed training and multi-node vLLM rollouts on Apple Silicon clusters.</p>\n<p>The smolcluster source code, scripts and configuration are licensed under Apache-2.0. Smolcluster documentation, diagrams and published experiment artifacts are licensed under CC BY 4.0.</p>",
+  "creators": [
+    {
+      "name": "Singh, Yuvraj"
+    }
+  ],
+  "license": "apache-2.0",
+  "upload_type": "software",
+  "access_right": "open",
+  "language": "eng",
+  "keywords": [
+    "distributed training",
+    "MLX",
+    "vLLM",
+    "GRPO",
+    "apple silicon",
+    "tensor parallelism"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/YuvrajSingh-mist/smolcluster",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://yuvrajsingh.io/posts/reddit-summarization-posts-grpo/",
+      "relation": "isDocumentedBy",
+      "scheme": "url"
+    }
+  ],
+  "notes": "Code is licensed under Apache-2.0. Smolcluster documentation, diagrams and published experiment artifacts are additionally licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)."
+}
