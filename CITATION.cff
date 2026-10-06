@@ -10,6 +10,7 @@ year: 2026
 url: "https://github.com/YuvrajSingh-mist/smolcluster"
 repository-code: "https://github.com/YuvrajSingh-mist/smolcluster"
 license: Apache-2.0
+doi: "10.5281/zenodo.23196837"
 preferred-citation:
   type: generic
   title: "smolcluster: An Educational Distributed Training and Inference Library for Local Computing"
