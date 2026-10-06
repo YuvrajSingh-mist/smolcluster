@@ -5,6 +5,7 @@ type: software
 authors:
   - family-names: Singh
     given-names: Yuvraj
+    orcid: "https://orcid.org/0009-0005-4120-555X"
 date-released: "2026-05-26"
 year: 2026
 url: "https://github.com/YuvrajSingh-mist/smolcluster"
