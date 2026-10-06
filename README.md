@@ -174,3 +174,14 @@ Pull requests welcome! Please ensure your code follows the existing style and in
 ## Citation
 
 If you use smolcluster in academic work, please cite it via [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button). Each GitHub release is archived on Zenodo, which mints a DOI for the exact version.
+
+```bibtex
+@software{singh2026smolcluster,
+  title     = {smolcluster: An Educational Distributed Training and Inference Library for Local Computing},
+  author    = {Singh, Yuvraj},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.23196836},
+  url       = {https://github.com/YuvrajSingh-mist/smolcluster}
+}
+```
