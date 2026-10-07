@@ -1,8 +1,14 @@
+<div align="center">
+
 # Smolcluster
 
-**Website:** [smolcluster.com](https://smolcluster.com)
+**A distributed deep learning library for training neural networks across heterogeneous hardware using PyTorch and socket-based communication**
 
-A distributed deep learning library for training neural networks across heterogeneous hardware using PyTorch and socket-based communication.
+[![license: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![dataset: CC BY 4.0](https://img.shields.io/badge/dataset-CC_BY_4.0-lightgrey)](LICENSE-DATASET) [![Sponsor: GitHub](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/YuvrajSingh-mist) [![Buy me a coffee](https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://ko-fi.com/O7W120DR8R)
+
+</div>
+
+**Website:** [smolcluster.com](https://smolcluster.com)
 
 ## grove TUI — zero setup, runs immediately
 
